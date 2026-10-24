@@ -100,8 +100,27 @@ __device__ __forceinline__ short rec_i16_st(float x, float inv_s) {
 #ifndef FA2SM70_REC_MINBLK
 #define FA2SM70_REC_MINBLK 4
 #endif
-template <int K, int V, int BV, bool L2N, bool SPEC, typename TI, typename IdxT, int GATE = 0, typename StateT = float>
-__global__ __launch_bounds__(128, FA2SM70_REC_MINBLK) void volta_gdn_rec(
+// [A100 23.10] ПРЕДВЫБОРКА ВХОДОВ ВСЕХ ТОКЕНОВ (FA2_SM80). На шаге MTP (T=4) цепочка по токенам
+// последовательна, и каждый токен начинался с глобальных чтений q/k/v/a/b -- четыре полные задержки
+// памяти внутри цепи (13.3 мкс при 3.9 МБ трафика = 290 ГБ/с). Здесь входы ВСЕХ токенов уходят в
+// разделяемую через cp.async ДО чтения состояния (одна задержка на всё), скаляры a/b -- обычными
+// чтениями сразу после выдачи чтения состояния. Каждая нить читает обратно только своё (q/k), v
+// раскладывают полосы 0..3 варпа -- после ожидания нужен лишь __syncwarp. Арифметика и её порядок
+// не меняются: выход и состояние ПОБИТОВО те же.
+#ifndef FA2_SM80
+#define FA2_SM80 0
+#endif
+#define FA2_REC_TMAX 8
+// [A100 24.10] SPLIT -- варпов на группу масштаба (8 строк v, шаг 4). При одной последовательности сетка =
+// 96 блоков по 4 варпа: один варп на планировщик, и он ведёт 8 строк x T токенов цепочкой -- ядро упиралось
+// в задержки инструкций (~12 мкс при 3.9 МБ трафика). SPLIT=2/4 делит строки группы между варпами блока
+// (128*SPLIT нитей), amax группы сводится через разделяемую (один барьер на токен, буфер по чётности
+// токена). Строки, свёртки по k и максимум те же -- выход, состояние и масштабы ПОБИТОВО как при SPLIT=1.
+// Входы токенов при SPLIT>1 -- одна общая копия в разделяемой (у всех варпов блока одни q/k/v/a/b).
+template <int K, int V, int BV, bool L2N, bool SPEC, typename TI, typename IdxT, int GATE = 0, typename StateT = float,
+          int SPLIT = 1>
+__global__ __launch_bounds__(128 * SPLIT, (FA2SM70_REC_MINBLK / SPLIT > 0 ? FA2SM70_REC_MINBLK / SPLIT : 1))
+void volta_gdn_rec(
     const TI* __restrict__ q,          // [B, T, H, K]
     const TI* __restrict__ k,          // [B, T, H, K]
     const TI* __restrict__ v,          // [B, T, HV, V]
@@ -141,11 +160,23 @@ __global__ __launch_bounds__(128, FA2SM70_REC_MINBLK) void volta_gdn_rec(
     // поэтому чтение собственной записи корректно без единого барьера. Масштаб int16
     // якоря запоминается в регистре на it=0 -- чтение scl из памяти не нужно.
     // 0 -- ветвления нет, путь прежний бит в бит.
-    int branch_at = 0) {
+    int branch_at = 0,
+    // [A100 24.10] ШАГИ ПО ТОКЕНУ (в элементах) для q/k/v/a/b. 0 -- плотная раскладка (H*K, H*K, HV*V, HV, HV).
+    // Позволяют подавать СРЕЗЫ общего тензора (q/k/v -- виды mixed_qkv, a/b -- виды выхода in_proj_ba) без
+    // пяти .contiguous() на слой: в графе декода это 5 узлов и ~15 мкс на каждый из 48 слоёв GDN.
+    long sq = 0, long sk = 0, long sv = 0, long sa = 0, long sb = 0) {
   static_assert(K % 128 == 0 && K / 128 == 1, "раскладка написана на K=128");
+  if (sq == 0) sq = (long)H * K;
+  if (sk == 0) sk = (long)H * K;
+  if (sv == 0) sv = (long)HV * V;
+  if (sa == 0) sa = HV;
+  if (sb == 0) sb = HV;
   constexpr bool сост_целое = sizeof(StateT) == 2 && !std::is_same<StateT, __half>::value;
-  constexpr int RV = BV / 4;                 // строк v на варп
+  constexpr int RV = BV / 4;                 // строк v на группу масштаба (на варп при SPLIT=1)
+  constexpr int RW = RV / SPLIT;             // строк v на варп
+  static_assert(RV % SPLIT == 0, "SPLIT делит группу");
   const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+  const int grp = warp & 3, part = warp >> 2;  // группа масштаба и доля в ней; строка = grp + 4*(part*RW + j)
 
   const int i_v = blockIdx.x;                // срез BV
   const int i_hv = blockIdx.y;               // голова значения
@@ -160,10 +191,36 @@ __global__ __launch_bounds__(128, FA2SM70_REC_MINBLK) void volta_gdn_rec(
   }
   if (Tn <= 0) return;
 
+#if FA2_SM80
+  constexpr int NCP = SPLIT == 1 ? 4 : 1;            // копий входов: своя на варп (без барьера) либо общая
+  const int wc = SPLIT == 1 ? warp : 0;
+  __shared__ __align__(16) uint2 s_qk[NCP][FA2_REC_TMAX][2][32];   // [копия][токен][q|k][полоса] -- 4 значения
+  __shared__ __align__(16) TI s_v[NCP][FA2_REC_TMAX][BV];
+  __shared__ float s_ab[NCP][FA2_REC_TMAX][2];
+  const bool пред = Tn <= FA2_REC_TMAX;
+  if (пред) {
+    const TI* pq0 = q + bos * sq + (long)i_h * K + 4 * lane;
+    const TI* pk0 = k + bos * sk + (long)i_h * K + 4 * lane;
+    const TI* pv0 = v + bos * sv + (long)i_hv * V + i_v * BV;
+    for (int it = (SPLIT == 1 ? 0 : warp); it < Tn; it += (SPLIT == 1 ? 1 : 4 * SPLIT)) {
+      asm volatile("cp.async.ca.shared.global [%0], [%1], 8;\n" ::
+                   "r"((unsigned)__cvta_generic_to_shared(&s_qk[wc][it][0][lane])), "l"(pq0 + (long)it * sq));
+      asm volatile("cp.async.ca.shared.global [%0], [%1], 8;\n" ::
+                   "r"((unsigned)__cvta_generic_to_shared(&s_qk[wc][it][1][lane])), "l"(pk0 + (long)it * sk));
+      if (lane < BV * (int)sizeof(TI) / 16)
+        asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::
+                     "r"((unsigned)__cvta_generic_to_shared(&s_v[wc][it][lane * (16 / sizeof(TI))])),
+                     "l"(pv0 + (long)it * sv + lane * (16 / sizeof(TI))));
+    }
+    asm volatile("cp.async.commit_group;\n" ::);
+  }
+#endif
+  __shared__ float s_am[SPLIT > 1 ? 2 : 1][SPLIT > 1 ? 4 * SPLIT : 1];   // amax долей группы, по чётности токена
+
   // --- начальное состояние: слот по индексу токена (спекуляция: последний принятый).
-  float hreg[RV][4];
+  float hreg[RW][4];
 #pragma unroll
-  for (int j = 0; j < RV; ++j)
+  for (int j = 0; j < RW; ++j)
 #pragma unroll
     for (int c = 0; c < 4; ++c) hreg[j][c] = 0.f;
   if (hpool != nullptr) {
@@ -183,10 +240,10 @@ __global__ __launch_bounds__(128, FA2SM70_REC_MINBLK) void volta_gdn_rec(
     // строками v (warp, warp+4, ...) целиком, поэтому масштаб на варп делает редукцию
     // ЧИСТО ВАРПОВОЙ: пять shfl, ни одного __syncthreads и ни байта разделяемой.
     const float s_rd = (sizeof(StateT) == 2 && scl != nullptr)
-                           ? scl[((slot * (long)HV + i_hv) * (V / BV) + i_v) * 4 + warp] : 1.f;
+                           ? scl[((slot * (long)HV + i_hv) * (V / BV) + i_v) * 4 + grp] : 1.f;
 #pragma unroll
-    for (int j = 0; j < RV; ++j) {
-      const StateT* адр = &p_h0[(long)(warp + 4 * j) * K];
+    for (int j = 0; j < RW; ++j) {
+      const StateT* адр = &p_h0[(long)(grp + 4 * (part * RW + j)) * K];
       if constexpr (сост_целое) {
         const short4 q = *reinterpret_cast<const short4*>(адр);
         hreg[j][0] = rec_i16_ld(q.x, s_rd); hreg[j][1] = rec_i16_ld(q.y, s_rd);
@@ -205,12 +262,28 @@ __global__ __launch_bounds__(128, FA2SM70_REC_MINBLK) void volta_gdn_rec(
     }
   }
 
-  const TI* p_q = q + (bos * H + i_h) * K + 4 * lane;
-  const TI* p_k = k + (bos * H + i_h) * K + 4 * lane;
-  const TI* p_v = v + (bos * HV + i_hv) * V + i_v * BV;
+#if FA2_SM80
+  if (пред) {
+    // скаляры гейтинга всех токенов: полоса it читает токен it (чтение состояния уже выдано)
+    if (lane < Tn && (SPLIT == 1 || warp == 0)) {
+      if constexpr (GATE) {
+        s_ab[wc][lane][0] = rec_ldf<TI>(a_in + (bos + lane) * sa + i_hv);
+        s_ab[wc][lane][1] = rec_ldf<TI>(beta + (bos + lane) * sb + i_hv);
+      } else {
+        s_ab[wc][lane][0] = g[(bos + lane) * HV + i_hv];
+        s_ab[wc][lane][1] = rec_ldf<TI>(beta + (bos + lane) * sb + i_hv);
+      }
+    }
+    asm volatile("cp.async.wait_group 0;\n" ::);
+    if constexpr (SPLIT == 1) __syncwarp(); else __syncthreads();
+  }
+#endif
+  const TI* p_q = q + bos * sq + (long)i_h * K + 4 * lane;
+  const TI* p_k = k + bos * sk + (long)i_h * K + 4 * lane;
+  const TI* p_v = v + bos * sv + (long)i_hv * V + i_v * BV;
   const float*  p_g = g + bos * HV + i_hv;
-  const TI* p_b = beta + bos * HV + i_hv;
-  const TI* p_a = (GATE && a_in != nullptr) ? a_in + bos * HV + i_hv : nullptr;
+  const TI* p_b = beta + bos * sb + i_hv;
+  const TI* p_a = (GATE && a_in != nullptr) ? a_in + bos * sa + i_hv : nullptr;
   TI* p_o = o + (bos * HV + i_hv) * V + i_v * BV;
 
   float s_якоря = 1.f;                     // масштаб слота колонки 0 (только int16-пул)
@@ -220,8 +293,8 @@ __global__ __launch_bounds__(128, FA2SM70_REC_MINBLK) void volta_gdn_rec(
       if (slot0 >= 0) {
         const StateT* p_h0 = hpool + slot0 * stride_slot + ((long)i_hv * V + i_v * BV) * K + 4 * lane;
 #pragma unroll
-        for (int j = 0; j < RV; ++j) {
-          const StateT* адр = &p_h0[(long)(warp + 4 * j) * K];
+        for (int j = 0; j < RW; ++j) {
+          const StateT* адр = &p_h0[(long)(grp + 4 * (part * RW + j)) * K];
           if constexpr (сост_целое) {
             const short4 qq = *reinterpret_cast<const short4*>(адр);
             hreg[j][0] = rec_i16_ld(qq.x, s_якоря); hreg[j][1] = rec_i16_ld(qq.y, s_якоря);
@@ -242,8 +315,13 @@ __global__ __launch_bounds__(128, FA2SM70_REC_MINBLK) void volta_gdn_rec(
     // --- фрагменты q,k этой полосы (4 элемента = одна LDG.64) + скаляры головы
     float qf[4], kf[4];
     {
+#if FA2_SM80
+      const uint2 rq = пред ? s_qk[wc][it][0][lane] : *reinterpret_cast<const uint2*>(p_q);
+      const uint2 rk = пред ? s_qk[wc][it][1][lane] : *reinterpret_cast<const uint2*>(p_k);
+#else
       const uint2 rq = *reinterpret_cast<const uint2*>(p_q);
       const uint2 rk = *reinterpret_cast<const uint2*>(p_k);
+#endif
       const TI* hq = reinterpret_cast<const TI*>(&rq);
       const TI* hk = reinterpret_cast<const TI*>(&rk);
 #pragma unroll
@@ -265,20 +343,27 @@ __global__ __launch_bounds__(128, FA2SM70_REC_MINBLK) void volta_gdn_rec(
 #pragma unroll
     for (int c = 0; c < 4; ++c) qf[c] *= scale;
     float eg, bb;
+#if FA2_SM80
+    const float a_t = пред ? s_ab[wc][it][0] : (GATE ? rec_ldf<TI>(p_a) : p_g[0]);
+    const float b_t = пред ? s_ab[wc][it][1] : rec_ldf<TI>(p_b);
+#else
+    const float a_t = GATE ? rec_ldf<TI>(p_a) : p_g[0];
+    const float b_t = rec_ldf<TI>(p_b);
+#endif
     if constexpr (GATE) {
-      const float x = rec_ldf<TI>(p_a) + dt_bias[i_hv];
+      const float x = a_t + dt_bias[i_hv];
       const float sp = (x <= 20.f) ? log1pf(__expf(x)) : x;
       eg = __expf(-__expf(A_log[i_hv]) * sp);
-      bb = 1.f / (1.f + __expf(-rec_ldf<TI>(p_b)));
+      bb = 1.f / (1.f + __expf(-b_t));
     } else {
-      eg = __expf(p_g[0]);
-      bb = rec_ldf<TI>(p_b);
+      eg = __expf(a_t);
+      bb = b_t;
     }
 
     // --- шаг по RV строкам варпа
 #pragma unroll
-    for (int j = 0; j < RV; ++j) {
-      const int vrow = warp + 4 * j;                       // строка внутри среза BV
+    for (int j = 0; j < RW; ++j) {
+      const int vrow = grp + 4 * (part * RW + j);          // строка внутри среза BV
       // s = SUM_k h*e^g * k  (гейт применяется до свёртки -- как у Triton: b_h *= exp(g) раньше)
       float s = 0.f;
 #pragma unroll
@@ -288,7 +373,11 @@ __global__ __launch_bounds__(128, FA2SM70_REC_MINBLK) void volta_gdn_rec(
       }
 #pragma unroll
       for (int d = 16; d > 0; d >>= 1) s += __shfl_xor_sync(0xffffffffu, s, d, 32);
+#if FA2_SM80
+      const float bv = ((пред ? rec_ldf<TI>(&s_v[wc][it][vrow]) : rec_ldf<TI>(&p_v[vrow])) - s) * bb;
+#else
       const float bv = (rec_ldf<TI>(&p_v[vrow]) - s) * bb;
+#endif
       float po = 0.f;
 #pragma unroll
       for (int c = 0; c < 4; ++c) {
@@ -322,20 +411,29 @@ __global__ __launch_bounds__(128, FA2SM70_REC_MINBLK) void volta_gdn_rec(
           // amax ПО СТРОКАМ ЭТОГО ВАРПА: по нити, затем дерево shfl. Барьеров нет.
           float a = 0.f;
 #pragma unroll
-          for (int j = 0; j < RV; ++j)
+          for (int j = 0; j < RW; ++j)
 #pragma unroll
             for (int c = 0; c < 4; ++c) a = fmaxf(a, fabsf(hreg[j][c]));
 #pragma unroll
           for (int d = 16; d > 0; d >>= 1) a = fmaxf(a, __shfl_xor_sync(0xffffffffu, a, d, 32));
+          if constexpr (SPLIT > 1) {
+            // максимум группы по долям (порядок не важен: max точен); буфер по чётности токена --
+            // варп не уйдёт на два токена вперёд благодаря барьеру следующего токена
+            if (lane == 0) s_am[it & 1][warp] = a;
+            __syncthreads();
+            a = s_am[it & 1][grp];
+#pragma unroll
+            for (int p2 = 1; p2 < SPLIT; ++p2) a = fmaxf(a, s_am[it & 1][grp + 4 * p2]);
+          }
           const float s_new = (a > 0.f) ? (a / 32766.f) : 1.f;
           inv_s = (a > 0.f) ? (32766.f / a) : 0.f;
           if (branch_at > 0 && it == 0) s_якоря = s_new;   // якорь: масштаб для строки ветвления
-          if (lane == 0 && scl != nullptr)
-            scl[((slot * (long)HV + i_hv) * (V / BV) + i_v) * 4 + warp] = s_new;
+          if (lane == 0 && part == 0 && scl != nullptr)
+            scl[((slot * (long)HV + i_hv) * (V / BV) + i_v) * 4 + grp] = s_new;
         }
 #pragma unroll
-        for (int j = 0; j < RV; ++j) {
-          StateT* адр = &p_ht[(long)(warp + 4 * j) * K];
+        for (int j = 0; j < RW; ++j) {
+          StateT* адр = &p_ht[(long)(grp + 4 * (part * RW + j)) * K];
           if constexpr (сост_целое) {
             short4 qv;
             qv.x = rec_i16_st(hreg[j][0], inv_s); qv.y = rec_i16_st(hreg[j][1], inv_s);
@@ -356,10 +454,10 @@ __global__ __launch_bounds__(128, FA2SM70_REC_MINBLK) void volta_gdn_rec(
       }
     }
 
-    p_q += (long)H * K; p_k += (long)H * K;
-    p_v += (long)HV * V; p_o += (long)HV * V;
-    p_g += HV; p_b += HV;
-    if constexpr (GATE) p_a += HV;
+    p_q += sq; p_k += sk;
+    p_v += sv; p_o += (long)HV * V;
+    p_g += HV; p_b += sb;
+    if constexpr (GATE) p_a += sa;
   }
 }
 

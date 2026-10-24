@@ -26,6 +26,7 @@
 #   FA2SM70_CLEF_DEABL             файл обратной аблитерации (deabl_abl_fp16.safetensors); "" = нет
 #   FA2SM70_CLEF_NODELTA=1         без поправки (эталонный прогон на весах самого Clef)
 #   FA2SM70_CLEF_NSLOT             ячеек кольца подкачки (3)
+#   FA2SM70_CLEF_STREAM_FROM       слой, с которого адаптер подкачивается с хоста (40; 1000 -- всё на карте)
 #   FA2SM70_CLEF_R                 одновременных запросов Clef (2)
 #   FA2SM70_CLEF_OUT               куда класть результаты (/dev/shm/fa2sm70_clef)
 #   FA2SM70_CLEF_NMAX              предел длины записи в токенах (16384; голова сверена до 32768)
@@ -55,6 +56,10 @@ _DIR = os.environ.get("FA2SM70_CLEF_DIR", "")
 _DEABL = os.environ.get("FA2SM70_CLEF_DEABL", "deabl_abl_fp16.safetensors")
 _БЕЗ_ПОПРАВКИ = os.environ.get("FA2SM70_CLEF_NODELTA", "0") == "1"
 _NSLOT = int(os.environ.get("FA2SM70_CLEF_NSLOT", "3"))
+# [A100 24.10] С какого слоя адаптер ПОДКАЧИВАЕТСЯ из закреплённой памяти хоста (кольцо _NSLOT ячеек) вместо того,
+# чтобы жить на карте. 40 -- как на V100 (32 ГБ: слои LoRA 40-63, ~895 МБ на карту, шли по PCIe на КАЖДОМ шаге
+# Clef). На A100-40GB память есть: 1000 = всё резидентно, подкачки нет, числа побитово те же.
+_STREAM_FROM = int(os.environ.get("FA2SM70_CLEF_STREAM_FROM", "40"))
 _R = int(os.environ.get("FA2SM70_CLEF_R", "2"))
 _OUT = os.environ.get("FA2SM70_CLEF_OUT", "/dev/shm/fa2sm70_clef")
 _NMAX = int(os.environ.get("FA2SM70_CLEF_NMAX", "16384"))
@@ -116,6 +121,12 @@ def _хук(x, y, ключи):
     if not _АКТИВЕН[0]:
         return
     _С.ext.delta_keyed(x.reshape(-1, x.shape[-1]), y.view(-1, y.shape[-1]), ключи)
+
+
+def _хук_диап(x, y, ключи, r0):
+    if not _АКТИВЕН[0]:
+        return
+    _С.ext.delta_keyed_range(x.reshape(-1, x.shape[-1]), y.view(-1, y.shape[-1]), ключи, int(r0))
 
 
 def _регистрировать_лин():
@@ -183,7 +194,7 @@ def _настроить(runner):
     else:
         deabl = os.path.join(каталог, _DEABL) if _DEABL else None
         sob = clef_sborka.sobrat(os.path.join(каталог, "clef_lora_r256_fp16.safetensors"), deabl, rank, tp,
-                                 layer_types=lt, key_dim=kd, value_dim=vd)
+                                 stream_from=_STREAM_FROM, layer_types=lt, key_dim=kd, value_dim=vd)
     max_rows = int(runner.scheduler_config.max_num_batched_tokens)
     clef_sborka.ustanovit(ext, sob, nslot=_NSLOT, max_rows=min(max_rows, 4096))
     ожидаемые = {}
@@ -245,6 +256,8 @@ def _настроить(runner):
     _С.ext = ext
     import fa2sm70_clef_hook
     fa2sm70_clef_hook.ХУК[0] = _хук
+    if hasattr(_С.ext, "delta_keyed_range"):
+        fa2sm70_clef_hook.ХУК_ДИАП[0] = _хук_диап
     _С.ok = True
     torch.cuda.synchronize()
     # СЛЕД CLEF ВЫЧИТАЕТСЯ ИЗ ПОРОГА ПОДРЕЗКИ (12.10, стенд кандидата). Пул KV задан байтами

@@ -121,11 +121,15 @@ __global__ void blk_mean_i8_paged(
 // Группа нитей берёт срез слотов [i*B, min((i+1)*B, n)) и усредняет РОВНО их. Слоты внутри
 // куска идут подряд по построению движка, поэтому срез не пересекает подблок; отрицательные
 // слоты (набивка) пропускаются.
+// [A100 24.10] BT -- блок отбора ПАРАМЕТРОМ ШАБЛОНА (боевой B=64, D=256): подблок целиком идёт в разделяемую
+// через cp.async (см. ниже). BT=0 -- прежний путь для любых B/D.
+template <int BT>
 __global__ void blk_mean_update(
         const int8_t* __restrict__ K, const float* __restrict__ Ks,
-        const long* __restrict__ slots, int nslots, int bs, int Hkv, int D, int B,
+        const long* __restrict__ slots, int nslots, int bs, int Hkv, int D, int Bp,
         long pstride, __half* __restrict__ out, int subPerPage,
         __half* __restrict__ devOut, int allSub) {
+    const int B = BT > 0 ? BT : Bp;
     const int grp = blockIdx.x, hk = blockIdx.y, d = threadIdx.x;
     if (d >= D) return;
     const int s0 = grp * B, s1 = min(s0 + B, nslots);
@@ -156,11 +160,42 @@ __global__ void blk_mean_update(
     // как легли слоты, а повторный счёт того же подблока идемпотентен.
     const long base = pg * bs + sub * B;
     float acc = 0.f, vmin = 1e30f, vmax = -1e30f;
-    for (int t = 0; t < B; ++t) {
-        const long in2 = sub * B + t;
-        const float v = Ks[(base + t) * Hkv + hk]
-                      * (float)K[pg * pstride + in2 * Hkv * D + (long)hk * D + d];
-        acc += v; vmin = fminf(vmin, v); vmax = fmaxf(vmax, v);
+    if constexpr (BT > 0) {
+        // ПОДБЛОК ЦЕЛИКОМ ЧЕРЕЗ cp.async: 64 x 256 Б на голову + 64 масштаба -- в разделяемую одним махом и
+        // ОДНО ожидание. Прежний цикл с B времени исполнения ptxas выдавал пачками по ~4 загрузки (40
+        // регистров), и в декоде (сетка из 2 блоков) это ~5 холодных ожиданий подряд (Nsight, выборка PC:
+        // 80 % -- I2F, ждущие свои байты). У cp.async нет зависимости по регистрам. Счёт -- из разделяемой,
+        // тот же порядок, __fmul_rn/__fadd_rn = FMUL+FADD прежнего кода (без слияния в FFMA): побитово.
+        // Путь только при D == blockDim == 256 -- __syncthreads безопасен: ветвления цикла по слотам
+        // зависят лишь от слотов и одинаковы для всего блока.
+        __shared__ __align__(16) int8_t sK[BT][256];
+        __shared__ float sS[BT];
+        __syncthreads();                                   // прошлый подблок дочитан всеми
+        const long rowbase = pg * pstride + (long)hk * D;
+        for (int c = threadIdx.x; c < BT * 16; c += blockDim.x) {
+            const int t = c >> 4, off = (c & 15) * 16;
+            asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::
+                         "r"((unsigned)__cvta_generic_to_shared(&sK[t][off])),
+                         "l"(K + rowbase + (sub * BT + t) * (long)Hkv * D + off));
+        }
+        for (int t = threadIdx.x; t < BT; t += blockDim.x)
+            asm volatile("cp.async.ca.shared.global [%0], [%1], 4;\n" ::
+                         "r"((unsigned)__cvta_generic_to_shared(&sS[t])), "l"(Ks + (base + t) * Hkv + hk));
+        asm volatile("cp.async.commit_group;\n" ::);
+        asm volatile("cp.async.wait_group 0;\n" ::);
+        __syncthreads();
+#pragma unroll 16
+        for (int t = 0; t < BT; ++t) {
+            const float v = __fmul_rn(sS[t], (float)sK[t][d]);
+            acc = __fadd_rn(acc, v); vmin = fminf(vmin, v); vmax = fmaxf(vmax, v);
+        }
+    } else {
+        for (int t = 0; t < B; ++t) {
+            const long in2 = sub * B + t;
+            const float v = Ks[(base + t) * Hkv + hk]
+                          * (float)K[pg * pstride + in2 * Hkv * D + (long)hk * D + d];
+            acc += v; vmin = fminf(vmin, v); vmax = fmaxf(vmax, v);
+        }
     }
     const float mu = acc / (float)B;
     out[((pg * subPerPage + sub) * Hkv + hk) * D + d] = __float2half(mu);
@@ -527,7 +562,17 @@ __global__ void score_part_rows(
         const int* __restrict__ kvStart,     // [запросов] или nullptr
         int N, int H, int Hkv, int D, int B, int bs, int maxBlocks, int subPerPage,
         float scale, float gamma, int NB, int JS,
-        float* __restrict__ mOut, float* __restrict__ sOut, int gstr, int qGrp, int qCausal) {
+        float* __restrict__ mOut, float* __restrict__ sOut, int gstr, int qGrp, int qCausal, int dense_nb = 0) {
+    // [ПЛОТНЫЙ РЕЖИМ НА УСТРОЙСТВЕ, A100] При видимых блоках <= dense_nb отбор не нужен: декод A100 быстрее
+    // плотным (decode_sm80.cuh), а счёт/нормировка/отбор стоили 63 мкс на слой при 32K -- втрое дороже
+    // самого внимания. Порог по длине на хосте поставить нельзя (декод под захваченным графом), поэтому
+    // решение -- здесь, по числу блоков: ядро выходит сразу, select_csr_rows пишет плотный список.
+    if (dense_nb > 0) {
+        const int req0 = (qGrp > 1) ? (blockIdx.x / qGrp) : blockIdx.x;
+        const int T0 = seqLens[req0];
+        const int nv = min(NB, (T0 + B - 1) / B) - (kvStart ? (kvStart[req0] / B) : 0);
+        if (nv <= dense_nb) return;
+    }
     // [ВАРП НА БЛОК, 14.09 18:20] Прежде CTA шла по своим блокам J ПОСЛЕДОВАТЕЛЬНО с двумя барьерами на блок
     // (5.4 мс/шаг на 250K после подъёма JS). Теперь каждый ВАРП берёт свой J: средний ключ и размах читаются
     // прямо в регистры (8 полуслов на лейн), счёт g голов -- варповые суммы, барьеров в цикле нет.
@@ -591,7 +636,7 @@ __global__ void score_part_rows(
 __global__ void norm_units_rows(
         const int* __restrict__ seqLens, const int* __restrict__ kvStart, int Hkv, int B,
         const float* __restrict__ mOut, const float* __restrict__ sOut, float* __restrict__ Eg,
-        int NB, int grp, int gstr, int qGrp, int qCausal) {
+        int NB, int grp, int gstr, int qGrp, int qCausal, int dense_nb = 0) {
     const int r = blockIdx.x, hk = blockIdx.y, u = blockIdx.z, N = gridDim.x;
     const int gb = (grp > 1) ? (r / grp) * grp : r;
     const int ge = (grp > 1) ? min(gb + grp, N) : (r + 1);
@@ -604,6 +649,7 @@ __global__ void norm_units_rows(
         j0lim = min(j0lim, kvStart ? (kvStart[req] / B) : 0);
     }
     const int NBvis = min(NB, (T + B - 1) / B);
+    if (dense_nb > 0 && NBvis - (j0lim < (1 << 30) ? j0lim : 0) <= dense_nb) return;   // плотный режим (см. score_part_rows)
     const int q = gb + u / gs, h = u - (u / gs) * gs;
     const float* mq = mOut + (((size_t)q * Hkv + hk) * gs + h) * NB;
     const float* sq = sOut + (((size_t)q * Hkv + hk) * gs + h) * NB;
@@ -641,7 +687,7 @@ __global__ void select_csr_rows(
         int Hkv, int B, float alpha, int SINK, int WIN, int REC,
         const float* __restrict__ mOut, const float* __restrict__ sOut,
         int* __restrict__ cnt, int* __restrict__ idx, int NB, int grp, float topf, int gstr,
-        int qGrp, int qCausal, const float* __restrict__ Eg, int minblk) {
+        int qGrp, int qCausal, const float* __restrict__ Eg, int minblk, int dense_nb = 0) {
     const int r = blockIdx.x, hk = blockIdx.y, N = gridDim.x;
     const int gb = (grp > 1) ? (r / grp) * grp : r;
     const int ge = (grp > 1) ? min(gb + grp, N) : (r + 1);
@@ -654,6 +700,12 @@ __global__ void select_csr_rows(
         j0lim = min(j0lim, kvStart ? (kvStart[req] / B) : 0);
     }
     const int NBvis = min(NB, (T + B - 1) / B);
+    if (dense_nb > 0 && NBvis - j0lim <= dense_nb) {      // плотный режим: все видимые блоки подряд
+        int* dst = idx + ((size_t)r * Hkv + hk) * NB;
+        for (int J = j0lim + threadIdx.x; J < NBvis; J += blockDim.x) dst[J - j0lim] = J;
+        if (threadIdx.x == 0) cnt[(size_t)r * Hkv + hk] = max(0, NBvis - j0lim);
+        return;
+    }
     __shared__ float E[4096]; __shared__ float Mall; __shared__ float red[32]; __shared__ float thrS;
     __shared__ float Mq[64]; __shared__ float Zq[64];
     // [ОТБОР ПО СТРОКЕ, 14.09 -- FA2SM70_SPARSE_DEC_TOPF] Оракул строки (tools/orakul_dekod_stroki.py, записка 26 §7.7):
@@ -788,7 +840,8 @@ void fa2sm70_blk_mean_update(torch::Tensor Kc, torch::Tensor Kst, torch::Tensor 
     const int subPerPage = bs / (int)B, n = (int)slot_mapping.numel();
     if (n == 0) return;
     const int grp = (n + (int)B - 1) / (int)B;
-    blk_mean_update<<<dim3(grp, Hkv), 256, 0, at::cuda::getCurrentCUDAStream()>>>(
+    auto kern = (B == 64 && D == 256) ? blk_mean_update<64> : blk_mean_update<0>;
+    kern<<<dim3(grp, Hkv), 256, 0, at::cuda::getCurrentCUDAStream()>>>(
         Kc.data_ptr<int8_t>(), Kst.data_ptr<float>(), slot_mapping.data_ptr<long>(),
         n, bs, Hkv, D, (int)B, (long)Kc.stride(0),
         reinterpret_cast<__half*>(kbarPool.data_ptr<at::Half>()), subPerPage,
@@ -836,6 +889,7 @@ void fa2sm70_sparse_select_rows(
     // [14.09] цель по числу CTA поднята 160 -> 1024: при 4 строках x 2 головы было 20 CTA-срезов по ~185 блоков
     // последовательно (8.5 мс/шаг на 250K); теперь 64 среза по ~58 блоков -- все CTA идут одновременно.
     const int JS = max(1, min(64, min((1024 + N * Hkv - 1) / max(1, N * Hkv), NB)));
+    static const int dense_nb = getenv("FA2SM80_SEL_DENSE_NB") ? atoi(getenv("FA2SM80_SEL_DENSE_NB")) : 0;
     mBuf.fill_(-1e30f); sBuf.zero_();
     cudaFuncSetAttribute(score_part_rows, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)sh);
     TORCH_CHECK(grp >= 1, "grp >= 1");
@@ -913,7 +967,7 @@ void fa2sm70_sparse_select_rows(
         _dvp,
         BlockTable.data_ptr<int>(), seqLens.data_ptr<int>(), kvp,
         N, H, Hkv, D, (int)B, (int)bs, maxBlocks, subPerPage, (float)scale, (float)gamma, NB, JS,
-        mBuf.data_ptr<float>(), sBuf.data_ptr<float>(), gstr, (int)qGrp, (int)qCausal);
+        mBuf.data_ptr<float>(), sBuf.data_ptr<float>(), gstr, (int)qGrp, (int)qCausal, dense_nb);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
     const float* _Egp = nullptr;
     if (topf > 0.0) {
@@ -934,14 +988,14 @@ void fa2sm70_sparse_select_rows(
         const int NU = (int)grp * gstr;
         norm_units_rows<<<dim3(N, Hkv, NU), 256, 0, st>>>(
             seqLens.data_ptr<int>(), kvp, Hkv, (int)B, mBuf.data_ptr<float>(), sBuf.data_ptr<float>(),
-            _Eg.data_ptr<float>(), NB, (int)grp, gstr, (int)qGrp, (int)qCausal);
+            _Eg.data_ptr<float>(), NB, (int)grp, gstr, (int)qGrp, (int)qCausal, dense_nb);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
         _Egp = _Eg.data_ptr<float>();
     }
     select_csr_rows<<<dim3(N, Hkv), 256, 0, st>>>(
         seqLens.data_ptr<int>(), kvp, Hkv, (int)B, (float)alpha, (int)SINK, (int)WIN, (int)REC,
         mBuf.data_ptr<float>(), sBuf.data_ptr<float>(), cnt.data_ptr<int>(), idx.data_ptr<int>(), NB, (int)grp, (float)topf, gstr,
-        (int)qGrp, (int)qCausal, _Egp, (int)minblk);
+        (int)qGrp, (int)qCausal, _Egp, (int)minblk, dense_nb);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 

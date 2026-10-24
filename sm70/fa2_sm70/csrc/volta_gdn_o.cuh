@@ -374,8 +374,8 @@ __global__ __launch_bounds__(WM * WN * 32, 2) void volta_gdn_chunk_o(
   const int lane = tid & 31, warp = tid >> 5;
   const int wm = warp / WN, wn = warp % WN;
   const int ro = wm * SM, co = wn * SN, ca = wn * SNA;
-  const int rb = (lane & 1) | ((lane & 16) >> 2) | (lane & 8);   // wmma_acc_row, база полосы
-  const int cb = (lane & 2) | ((lane & 4) << 1);                 // wmma_acc_col, база полосы
+  const int rb = wmma_row_base(lane);   // wmma_acc_row, база полосы
+  const int cb = wmma_col_base(lane);                 // wmma_acc_col, база полосы
 
   constexpr int kQK = BT * (DK / 8) / nthr;          // uint4 на нить: 4
   constexpr int kHH = DV * (DKH / 8) / nthr;         // 4 -- ПОЛОВИНА h
@@ -440,7 +440,7 @@ __global__ __launch_bounds__(WM * WN * 32, 2) void volta_gdn_chunk_o(
 #pragma unroll
     for (int i = 0; i < MB; ++i)
 #pragma unroll
-      for (int s = 0; s < 2; ++s) gt[i][s] = sG[ro + i * 16 + rb + 2 * s];
+      for (int s = 0; s < 2; ++s) gt[i][s] = sG[ro + i * 16 + rb + FA2_RSTEP * s];
 #pragma unroll
     for (int i = 0; i < MB; ++i)
 #pragma unroll
@@ -449,7 +449,7 @@ __global__ __launch_bounds__(WM * WN * 32, 2) void volta_gdn_chunk_o(
         for (int rg = 0; rg < 8; rg += 2) {          // пара (rg,rg+1) -- СОСЕДНИЕ столбцы одной строки
           const int sub = (rg >> 1) & 1;
           const int tt = ro + i * 16 + rb + 2 * sub;
-          const int s0 = ca + j * 16 + cb + 4 * ((rg >> 2) & 1);
+          const int s0 = ca + j * 16 + cb + FA2_CHALF * ((rg >> 2) & 1);
           const float e0 = ma.acc[i][j][rg] * __expf(gt[i][sub] - sG[s0]);
           const float e1 = ma.acc[i][j][rg + 1] * __expf(gt[i][sub] - sG[s0 + 1]);
           const bool ok = tt < rows;
@@ -493,7 +493,7 @@ __global__ __launch_bounds__(WM * WN * 32, 2) void volta_gdn_chunk_o(
 #pragma unroll
     for (int i = 0; i < MB; ++i)
 #pragma unroll
-      for (int s = 0; s < 2; ++s) eg[i][s] = __expf(sG[ro + i * 16 + rb + 2 * s]);
+      for (int s = 0; s < 2; ++s) eg[i][s] = __expf(sG[ro + i * 16 + rb + FA2_RSTEP * s]);
 #pragma unroll
     for (int i = 0; i < MB; ++i)
 #pragma unroll
@@ -516,8 +516,8 @@ __global__ __launch_bounds__(WM * WN * 32, 2) void volta_gdn_chunk_o(
     for (int j = 0; j < NB; ++j)
 #pragma unroll
       for (int rg = 0; rg < 8; rg += 2) {
-        const int r = i * 16 + rb + 2 * ((rg >> 1) & 1);
-        const int c = j * 16 + cb + 4 * ((rg >> 2) & 1);
+        const int r = i * 16 + rb + FA2_RSTEP * ((rg >> 1) & 1);
+        const int c = j * 16 + cb + FA2_CHALF * ((rg >> 2) & 1);
         *reinterpret_cast<O2*>(&sO[(long)(ro + r) * LDQ + co + c]) =
             gdn_o2<OT>::pack(mv.acc[i][j][rg] * scale, mv.acc[i][j][rg + 1] * scale);
       }

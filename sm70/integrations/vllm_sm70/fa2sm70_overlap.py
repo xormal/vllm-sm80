@@ -219,6 +219,7 @@ def резать_метаданные(м, гр, всего):
             м,
             num_actual_tokens=гр,
             max_query_len=гр,
+            max_seq_len=int(м.max_seq_len) - (всего - гр),
             query_start_loc=torch.tensor([0, гр], dtype=qsl.dtype, device=qsl.device),
             query_start_loc_cpu=torch.tensor([0, гр], dtype=torch.int32),
             # ПОСЛЕДНИЙ ТОКЕН ПОЛОВИНЫ A -- НЕ последний токен куска: длина последовательности
@@ -394,9 +395,16 @@ def резать_гдн(м, гр, всего, ncomp_извне=None):
         except Exception:
             _цA = _цB = (None, None, None)
 
+        # CPU-КОПИЯ ГРАНИЦ ТОЖЕ РЕЖЕТСЯ (A100, 23.10): ветка префикс-кэша 'all' (qwen3_next.py, резка
+        # скана по границам блоков) берёт границы куска из non_spec_query_start_loc_cpu. Без этого
+        # половина видела длину ВСЕГО куска и читала мимо тензора -- illegal memory access в FLA.
+        def _qsl_cpu(n):
+            return torch.tensor([0, n], dtype=torch.int32)
+
         A = dataclasses.replace(
             м, num_actual_tokens=гр, num_prefill_tokens=гр,
             non_spec_query_start_loc=_qsl(гр),
+            non_spec_query_start_loc_cpu=_qsl_cpu(гр),
             block_idx_last_computed_token=_lcA,
             block_idx_first_scheduled_token=_fsA,
             block_idx_last_scheduled_token=_lsA,
@@ -405,6 +413,7 @@ def резать_гдн(м, гр, всего, ncomp_извне=None):
         B = dataclasses.replace(
             м, num_actual_tokens=всего - гр, num_prefill_tokens=всего - гр,
             non_spec_query_start_loc=_qsl(всего - гр),
+            non_spec_query_start_loc_cpu=_qsl_cpu(всего - гр),
             # ВТОРАЯ ПОЛОВИНА ПРОДОЛЖАЕТ ПЕРВУЮ: состояние есть всегда, посчитано на `гр` больше.
             has_initial_state=(torch.ones_like(м.has_initial_state)
                                if м.has_initial_state is not None else None),
@@ -440,3 +449,140 @@ def резать_словарь(мета_словарь, гр, всего):
             return None                      # хоть один не режется -- отказ целиком, без полумер
         A[ключ], B[ключ] = п
     return A, B
+
+
+# ---------------------------------------------------------------------------------------------
+# ВРЕЗКА В МОДЕЛЬ (A100, 23.10). Forward языковой модели целиком под torch.compile, а смена потоков
+# внутри компилируемой области невозможна -- поэтому ручной проход ставится СНАРУЖИ, в forward
+# обёртки (Qwen3_5ForConditionalGeneration / Qwen3_5ForCausalLMBase), и берётся только для чистого
+# префилла одного запроса длиной >= FA2SM70_OVERLAP_MIN_T токенов вне захвата графа. Всё прочее
+# (декод, пачки, короткие куски) идёт прежним скомпилированным путём.
+#
+# ЗАЧЕМ НА A100. Профиль префилла 8K: обмен TP 1.43 с из 3.30 (43 %), P2P на паре нет (IOMMU в режиме
+# трансляции отбрасывает DMA между картами), путь через хост ~6 ГБ/с. Байты уже int12 -- остаётся тень:
+# пока по проводу едет свёртка половины A, карта считает половину B.
+#
+# ПЕРЕКЛЮЧАТЕЛЬ ВО ВРЕМЯ РАБОТЫ: FA2SM70_OVERLAP_FILE -- файл с "1"/"0" (читается на каждый ручной
+# проход). Нужен для сверки и A/B в ОДНОМ процессе: префилл не захватывается в граф.
+_MIN_T = int(os.environ.get("FA2SM70_OVERLAP_MIN_T", "1024"))
+_ФАЙЛ_ПЕРЕКРЫТИЯ = os.environ.get("FA2SM70_OVERLAP_FILE", "")
+_ряд = {}            # id(модели) -> список row-parallel модулей со сведением
+_счёт_прохода = {"ручных": 0, "отказов": 0}
+
+
+def _включено_сейчас():
+    if not _ФАЙЛ_ПЕРЕКРЫТИЯ:
+        return True
+    try:
+        with open(_ФАЙЛ_ПЕРЕКРЫТИЯ) as f:
+            return f.read(4).strip() == "1"
+    except Exception:
+        return True
+
+
+def _строчные(модель):
+    ключ = id(модель)
+    if ключ not in _ряд:
+        _ряд[ключ] = [м for имя, м in модель.named_modules()
+                      if имя.endswith((".o_proj", ".down_proj", ".out_proj"))
+                      and getattr(м, "reduce_results", False)]
+    return _ряд[ключ]
+
+
+def _ручной_проход(модель, input_ids, positions, inputs_embeds):
+    """Две половины куска через все слои со сдвигом; None -- если неприменимо (идёт обычный путь)."""
+    from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
+    from vllm.forward_context import get_forward_context
+    if get_tensor_model_parallel_world_size() != 2 or get_pp_group().world_size != 1:
+        return None
+    if torch.cuda.is_current_stream_capturing() or getattr(модель, "aux_hidden_state_layers", ()):
+        return None
+    T = positions.shape[-1]
+    if T < _MIN_T or not _включено_сейчас():
+        return None
+    мета = get_forward_context().attn_metadata
+    if not isinstance(мета, dict) or not мета:
+        return None
+    for м in мета.values():                        # кусок без дополнения: метаданные описывают ровно T
+        n = getattr(м, "num_actual_tokens", None)
+        if n is not None and int(n) != T:
+            _почему(f"дополненный кусок: num_actual_tokens={n} T={T}")
+            return None
+    гр = (T // 2 // 128) * 128
+    разрез = резать_словарь(мета, гр, T)
+    if разрез is None:
+        _счёт_прохода["отказов"] += 1
+        return None
+    метаA, метаB = разрез
+    ar = _взять_свёртку()
+    h = inputs_embeds if inputs_embeds is not None else модель.embed_input_ids(input_ids)
+    hA, hB = h[:гр], h[гр:]
+    pA, pB = positions[..., :гр], positions[..., гр:]
+    rA = rB = None
+    ряд = _строчные(модель)
+    for м in ряд:
+        м.reduce_results = False                   # свёртку делаем сами -- отложенно, на втором потоке
+    try:
+        for слой in модель.layers[модель.start_layer:модель.end_layer]:
+            with _половина_метаданных(метаA):
+                aA, rA = _вним_часть(слой, hA, rA, pA)
+            обA = запустить(aA, ar)                # свёртка A едет по проводу...
+            with _половина_метаданных(метаB):
+                aB, rB = _вним_часть(слой, hB, rB, pB)   # ...пока считается внимание B
+            обB = запустить(aB, ar)
+            mA, rA = _млп_часть(слой, обA.забрать(), rA)
+            об2A = запустить(mA, ar)
+            mB, rB = _млп_часть(слой, обB.забрать(), rB)
+            об2B = запустить(mB, ar)
+            hA = _масштаб_ffn(слой, об2A.забрать())
+            hB = _масштаб_ffn(слой, об2B.забрать())
+    finally:
+        for м in ряд:
+            м.reduce_results = True
+    out, _ = модель.norm(torch.cat([hA, hB], 0), torch.cat([rA, rB], 0))
+    _счёт_прохода["ручных"] += 1
+    n = _счёт_прохода["ручных"]
+    if n & (n - 1) == 0:
+        print(f"[fa2_sm70 перекрытие] ручных проходов {n} (последний T={T}, половина {гр}), "
+              f"отказов разреза {_счёт_прохода['отказов']}", file=sys.stderr, flush=True)
+    return out
+
+
+def установить():
+    if not ВКЛ:
+        return False
+    try:
+        import vllm.model_executor.models.qwen3_5 as q35
+    except Exception as ex:  # noqa: BLE001
+        print(f"[fa2_sm70 перекрытие] модель недоступна: {ex}", file=sys.stderr, flush=True)
+        return False
+    n = 0
+    for имя in ("Qwen3_5ForConditionalGeneration", "Qwen3_5ForCausalLMBase"):
+        кл = getattr(q35, имя, None)
+        if кл is None or "forward" not in кл.__dict__:
+            continue
+        прежний = кл.__dict__["forward"]
+        вложенная = "language_model" if имя == "Qwen3_5ForConditionalGeneration" else None
+
+        def _forward(сам, input_ids, positions, intermediate_tensors=None, inputs_embeds=None,
+                     _прежний=прежний, _влож=вложенная, **kw):
+            if intermediate_tensors is None:
+                модель = getattr(сам, _влож).model if _влож else сам.model
+                try:
+                    out = _ручной_проход(модель, input_ids, positions, inputs_embeds)
+                except Exception as ex:  # noqa: BLE001
+                    import traceback
+                    print(f"[fa2_sm70 перекрытие] ручной проход упал, иду прежним путём: {ex}\n"
+                          f"{traceback.format_exc()}", file=sys.stderr, flush=True)
+                    for м in _строчные(модель):
+                        м.reduce_results = True
+                    out = None
+                if out is not None:
+                    return out
+            return _прежний(сам, input_ids, positions, intermediate_tensors, inputs_embeds, **kw)
+
+        кл.forward = _forward
+        n += 1
+    print(f"[fa2_sm70 перекрытие] врезка в forward ({n} классов), порог T>={_MIN_T}"
+          f"{', переключатель ' + _ФАЙЛ_ПЕРЕКРЫТИЯ if _ФАЙЛ_ПЕРЕКРЫТИЯ else ''}", file=sys.stderr, flush=True)
+    return n > 0

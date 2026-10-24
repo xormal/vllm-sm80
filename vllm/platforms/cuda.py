@@ -91,6 +91,16 @@ def _get_backend_priorities(
                 AttentionBackendEnum.TRITON_ATTN,
             ]
         else:
+            # A100 (sm_80): наш бэкенд ПЕРВЫМ только по явному VLLM_SM70_FA2=1 (int8 KV на (токен, голову),
+            # разреженный префилл/декод) -- иначе список штатный.
+            if device_capability.major == 8 and os.environ.get("VLLM_SM70_FA2", "0") not in ("0", "", "false", "False"):
+                return [
+                    AttentionBackendEnum.FA2_SM70,
+                    AttentionBackendEnum.FLASH_ATTN,
+                    AttentionBackendEnum.FLASHINFER,
+                    AttentionBackendEnum.TRITON_ATTN,
+                    AttentionBackendEnum.FLEX_ATTENTION,
+                ]
             return [
                 AttentionBackendEnum.FLASH_ATTN,
                 AttentionBackendEnum.FLASHINFER,
@@ -415,8 +425,11 @@ class CudaPlatformBase(Platform):
         # Try FlashAttention first
         if (cc := cls.get_device_capability()) and cc.major >= 8:
             try:
+                # Класс бэкенда импортируется и БЕЗ собранного _vllm_fa2_C (Python-обёртка ставится
+                # отдельно) -- проверяем, что ядра FA2 реально есть, иначе ViT уходит в SDPA.
+                from vllm.vllm_flash_attn.flash_attn_interface import FA2_UNAVAILABLE_REASON
                 backend_class = AttentionBackendEnum.FLASH_ATTN.get_class()
-                if backend_class.supports_head_size(
+                if FA2_UNAVAILABLE_REASON is None and backend_class.supports_head_size(
                     head_size
                 ) and backend_class.supports_dtype(dtype):
                     return AttentionBackendEnum.FLASH_ATTN

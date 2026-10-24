@@ -290,8 +290,8 @@ __global__ __launch_bounds__((8 + FA2_SOPROD) * 32, 1) void volta_fwd_so(
   __syncthreads();
 
   // ---- состояние ролей ----
-  const int rowbase = (lane & 1) | ((lane & 16) >> 2) | (lane & 8);
-  const int cbase = (lane & 2) | ((lane & 4) << 1);
+  const int rowbase = wmma_row_base(lane);
+  const int cbase = wmma_col_base(lane);
   WarpMma<SMB, SNB, BLayout::kKMajor> s;
   // СОСТОЯНИЕ РОЛЕЙ -- ОДИН union: у S-варпов здесь Q (64 шага x 2 регистра = 128), у O-варпов -- накопитель O
   // (2x4x8 = 64). Порознь они стоили 192 регистра в одной функции (253 занятых, потолок 255), вместе -- 128.
@@ -313,7 +313,7 @@ __global__ __launch_bounds__((8 + FA2_SOPROD) * 32, 1) void volta_fwd_so(
     s.template preload_a<D>(st.qf, sQ, LDQ, rs, lane);
 #endif
 #pragma unroll
-    for (int t = 0; t < 2; ++t) qs[t] = sQsum[rs + rowbase + 2 * t];
+    for (int t = 0; t < 2; ++t) qs[t] = sQsum[rs + rowbase + FA2_RSTEP * t];
 #pragma unroll
     for (int t = 0; t < 2; ++t) { m_run[0][t] = -CUDART_INF_F; l_run[0][t] = 0.f; }
   } else {
@@ -350,23 +350,23 @@ __global__ __launch_bounds__((8 + FA2_SOPROD) * 32, 1) void volta_fwd_so(
           const int kk = kb + cs + c;
           v *= qkm * sKs[buf * BK + cs + c];
           if ((CAUSAL && (q0 + rs + r + causal_off) < kk) || kk >= Sk) v = -CUDART_INF_F;
-          const int sub = ((r & 15) - rowbase) >> 1;
+          const int sub = ((r & 15) - rowbase) >> FA2_RSHIFT;
           if (v > mloc[sub]) mloc[sub] = v;
         });
 #pragma unroll
         for (int tt = 0; tt < 2; ++tt) {
           float x = mloc[tt];
-          float y = __shfl_xor_sync(0xffffffffu, x, 2); x = x > y ? x : y;
-          y = __shfl_xor_sync(0xffffffffu, x, 4);       x = x > y ? x : y;
+          float y = __shfl_xor_sync(0xffffffffu, x, FA2_SHFL0); x = x > y ? x : y;
+          y = __shfl_xor_sync(0xffffffffu, x, FA2_SHFL1);       x = x > y ? x : y;
           mloc[tt] = x;
-          if ((lane & 6) == 0) sRedM[half][rs + rowbase + 2 * tt] = x;
+          if (FA2_ROW_LEADER(lane)) sRedM[half][rs + rowbase + FA2_RSTEP * tt] = x;
         }
         SOPH(2);
         asm volatile("bar.sync %0, 64;" :: "r"(2 + pairId));           // пара: обмен максимумов
         SOPH(1);
 #pragma unroll
         for (int tt = 0; tt < 2; ++tt) {
-          const float y = sRedM[half ^ 1][rs + rowbase + 2 * tt];
+          const float y = sRedM[half ^ 1][rs + rowbase + FA2_RSTEP * tt];
           mloc[tt] = mloc[tt] > y ? mloc[tt] : y;
         }
         float corr2[2], cnew[2], lloc[2] = {0.f, 0.f}, vloc[2] = {0.f, 0.f};
@@ -384,8 +384,8 @@ __global__ __launch_bounds__((8 + FA2_SOPROD) * 32, 1) void volta_fwd_so(
           for (int pr = 0; pr < 4; ++pr) {
             const int rg = (pr & 1) ? (4 + ((pr >> 1) << 1)) : ((pr >> 1) << 1);
             const int reg0 = rg, reg1 = rg + 1;
-            const int row = rowbase + 2 * ((reg0 >> 1) & 1);
-            const int col = j * 16 + cbase + 4 * ((reg0 >> 2) & 1);
+            const int row = rowbase + FA2_RSTEP * ((reg0 >> 1) & 1);
+            const int col = j * 16 + cbase + FA2_CHALF * ((reg0 >> 2) & 1);
             const int sub = (reg0 >> 1) & 1;
             const float mm = mloc[sub];
             const float v0 = s.acc[0][j][reg0], v1 = s.acc[0][j][reg1];
@@ -402,12 +402,12 @@ __global__ __launch_bounds__((8 + FA2_SOPROD) * 32, 1) void volta_fwd_so(
 #pragma unroll
         for (int tt = 0; tt < 2; ++tt) {
           float x = lloc[tt], y = vloc[tt];
-          x += __shfl_xor_sync(0xffffffffu, x, 2); y += __shfl_xor_sync(0xffffffffu, y, 2);
-          x += __shfl_xor_sync(0xffffffffu, x, 4); y += __shfl_xor_sync(0xffffffffu, y, 4);
+          x += __shfl_xor_sync(0xffffffffu, x, FA2_SHFL0); y += __shfl_xor_sync(0xffffffffu, y, FA2_SHFL0);
+          x += __shfl_xor_sync(0xffffffffu, x, FA2_SHFL1); y += __shfl_xor_sync(0xffffffffu, y, FA2_SHFL1);
           l_run[0][tt] = l_run[0][tt] * corr2[tt] + x * cnew[tt];      // частичное l по своей половине
-          if ((lane & 6) == 0) {
-            sVb[buf][half][rs + rowbase + 2 * tt] = y;
-            if (half == 0) sCorr[buf][rs + rowbase + 2 * tt] = corr2[tt];
+          if (FA2_ROW_LEADER(lane)) {
+            sVb[buf][half][rs + rowbase + FA2_RSTEP * tt] = y;
+            if (half == 0) sCorr[buf][rs + rowbase + FA2_RSTEP * tt] = corr2[tt];
           }
         }
         SOPH(2);
@@ -454,7 +454,7 @@ __global__ __launch_bounds__((8 + FA2_SOPROD) * 32, 1) void volta_fwd_so(
         for (int i = 0; i < OMB; ++i)
 #pragma unroll
           for (int sub = 0; sub < 2; ++sub) {
-            const int row = i * 16 + rowbase + 2 * sub;
+            const int row = i * 16 + rowbase + FA2_RSTEP * sub;
             corr[i][sub] = sCorr[buf][row];
             vb[i][sub] = sVb[buf][0][row] + sVb[buf][1][row];
           }
@@ -487,15 +487,15 @@ __global__ __launch_bounds__((8 + FA2_SOPROD) * 32, 1) void volta_fwd_so(
   SOPH_OUT();
 
   // ---- эпилог: l = l0 + l1 (пара), inv и LSE -- S-варпы; O = acc * inv -- O-варпы ----
-  if (isS && (lane & 6) == 0) {
+  if (isS && FA2_ROW_LEADER(lane)) {
 #pragma unroll
-    for (int tt = 0; tt < 2; ++tt) sLpart[half][rs + rowbase + 2 * tt] = l_run[0][tt];
+    for (int tt = 0; tt < 2; ++tt) sLpart[half][rs + rowbase + FA2_RSTEP * tt] = l_run[0][tt];
   }
   asm volatile("bar.sync 1, %0;" :: "r"(kAllThr));
-  if (isS && half == 0 && (lane & 6) == 0) {
+  if (isS && half == 0 && FA2_ROW_LEADER(lane)) {
 #pragma unroll
     for (int tt = 0; tt < 2; ++tt) {
-      const int row = rs + rowbase + 2 * tt;
+      const int row = rs + rowbase + FA2_RSTEP * tt;
       const float l = sLpart[0][row] + sLpart[1][row];
       sInv[row] = (l > 0.f) ? (kFmtMul * __frcp_rn(l)) : 0.f;
       if (q0 + row < Sq) {
@@ -513,8 +513,8 @@ __global__ __launch_bounds__((8 + FA2_SOPROD) * 32, 1) void volta_fwd_so(
 #pragma unroll
         for (int rg = 0; rg < 8; ++rg) {
           const int sub = (rg >> 1) & 1;
-          const int row = i * 16 + rowbase + 2 * sub;
-          const int col = j * 16 + cbase + (rg & 1) + 4 * ((rg >> 2) & 1);
+          const int row = i * 16 + rowbase + FA2_RSTEP * sub;
+          const int col = j * 16 + cbase + (rg & 1) + FA2_CHALF * ((rg >> 2) & 1);
           if (q0 + row < Sq) {
             const float _v = st.oacc[i][j][rg] * sInv[row];
             if (Op != nullptr) Op[(long)(q0 + row) * D + ow * ON + col] = _v;

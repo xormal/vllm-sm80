@@ -232,8 +232,10 @@ __global__ __launch_bounds__(WM * WNw * 32, MINB) void volta_gemm_f16(
     if (ш + 2 < шагов) подать2(ш + 2);
     if (DIAG == 5) {
       fa5[0][0] ^= (uint32_t)__half_as_ushort(sA[cur * (BM * LDA) + lane]) & 0xFFFFu;
+#if !FA2_MMA_SM80   // фальсификатор на вольтовских фрагментах (DIAG-only)
 #pragma unroll
       for (int k = 0; k < BK; k += 4) o.mma(fa5, fb5);
+#endif
     } else if (DIAG != 2)
       o.template accumulate<BK>(sA + cur * (BM * LDA), LDA, row0,
                                 sB + cur * (BK * LDB), LDB, col0, lane);
@@ -254,8 +256,8 @@ __global__ __launch_bounds__(WM * WNw * 32, MINB) void volta_gemm_f16(
   // плитка целиком внутри матрицы, идёт БЕЗ проверок границ -- один вопрос на блок вместо
   // 128. Это ровно размен «узкое и много» на «широкое и мало» из плейбука §3.
   const bool плитка_целиком = (m0 + BM <= M) && (n0 + BN <= N);
-  const int rb0 = ((lane & 1) | ((lane & 16) >> 2) | (lane & 8));
-  const int cb0 = ((lane & 2) | ((lane & 4) << 1));
+  const int rb0 = (wmma_row_base(lane));
+  const int cb0 = (wmma_col_base(lane));
 #pragma unroll
   for (int i = 0; i < MB; ++i)
 #pragma unroll
@@ -263,8 +265,8 @@ __global__ __launch_bounds__(WM * WNw * 32, MINB) void volta_gemm_f16(
 #pragma unroll
       for (int пара = 0; пара < 4; ++пара) {
         const int r = (пара & 1) * 2 + (пара >> 1) * 4;   // 0, 2, 4, 6
-        const int row = rb0 + 2 * ((r >> 1) & 1) + i * 16 + row0;
-        const int col = cb0 + 4 * ((r >> 2) & 1) + j * 16 + col0;
+        const int row = rb0 + FA2_RSTEP * ((r >> 1) & 1) + i * 16 + row0;
+        const int col = cb0 + FA2_CHALF * ((r >> 2) & 1) + j * 16 + col0;
         const int mm = m0 + row, nn = n0 + col;
         const __half2 v = __floats2half2_rn(o.acc[i][j][r], o.acc[i][j][r + 1]);
         // ВОПРОС О ГРАНИЦАХ ЗАДАН ОДИН РАЗ НА БЛОК (переменная выше), а не внутри цикла:

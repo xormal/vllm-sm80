@@ -392,6 +392,7 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
         SRCS "${AWQ_SM70_TURBOMIND_SRCS}"
         CUDA_ARCHS "${AWQ_SM70_ARCHS}")
       list(APPEND VLLM_EXT_SRC "${AWQ_SM70_TURBOMIND_SRCS}")
+      add_compile_definitions(VLLM_SM70_TURBOMIND)   # регистрация ops в torch_bindings.cpp -- только с ними
       message(STATUS "Building TurboMind SM70 AWQ kernels from ${LMDEPLOY_ROOT}")
     endif()
   endif()

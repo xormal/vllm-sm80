@@ -522,6 +522,198 @@ static void ar2_all_reduce_out(at::Tensor y, at::Tensor out, at::Tensor recv,
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+// ---------------------------------------------------------------------------------------------
+// AR1: ВСЁ СВЕДЕНИЕ ОДНИМ ЯДРОМ (путь A100). У AR2 шесть запусков на сведение (ожидание «дочитано»,
+// счётчик, отправка, ожидание флага, сложение, «дочитано» соседу) -- в графе это шесть узлов по
+// ~2 мкс плюс две полные задержки PCIe между ними. Здесь тот же протокол внутри одного ядра:
+//   * блок b владеет НЕПОДВИЖНЫМ куском [b*C, (b+1)*C) (C = 2048 half = 16 Б на нить), и у куска
+//     СВОИ флаг, «дочитано» и счётчик. Блоки не ждут друг друга -- межблочной синхронизации нет;
+//   * число блоков зависит от размера, но счётчик куска b растёт ровно на тех сведениях, где кусок
+//     b был, -- одинаково у обоих рангов (формы у них одни), значит номера сходятся по построению;
+//   * порядок: ждать «дочитано» прошлого обмена -> свои байты соседу -> fence.sys -> флаг соседу
+//     (st.release.sys) -> ждать свой флаг (ld.acquire.sys, локальная память) -> чтение приёмника
+//     мимо L1 -> сумма -> «дочитано» соседу (release: чтения приёмника упорядочены до него).
+// Ожидание с потолком по тактам, как у AR2: срыв пишется в `срыв` и проверяется на каждом проходе.
+// ---------------------------------------------------------------------------------------------
+constexpr int AR1_THR = 256;
+constexpr long AR1_CHUNK = AR1_THR * 8;
+
+__device__ __forceinline__ int ar1_ld_acq(const int* p) {
+  int v;
+  asm volatile("ld.acquire.sys.global.b32 %0, [%1];\n" : "=r"(v) : "l"(p) : "memory");
+  return v;
+}
+__device__ __forceinline__ void ar1_st_rel(int* p, int v) {
+  asm volatile("st.release.sys.global.b32 [%0], %1;\n" :: "l"(p), "r"(v) : "memory");
+}
+__device__ __forceinline__ void ar1_wait(const int* p, int цель, int* срыв, int код) {
+  const long t0 = clock64();
+  while (ar1_ld_acq(p) < цель) {
+    if (clock64() - t0 > 2000000000L) { atomicExch(срыв, код); return; }
+  }
+}
+
+// VEC: все указатели кратны 16 Б -- нить везёт uint4; иначе (вид со смещением) -- поэлементно.
+// Протокол от VEC не зависит, поэтому ранги с разным выравниванием не расходятся.
+template <bool VEC>
+__global__ __launch_bounds__(AR1_THR) void ar1_kernel(
+    const __half* __restrict__ y, __half* __restrict__ out, const __half* recv, __half* peer_recv,
+    const int* flag, int* peer_flag, const int* ack, int* peer_ack, int* seq, int* срыв, long n) {
+  const int b = blockIdx.x;
+  const long i0 = (long)b * AR1_CHUNK + (long)threadIdx.x * 8;
+  __shared__ int e_s;
+  if (threadIdx.x == 0) {
+    const int e = seq[b] + 1;
+    ar1_wait(ack + b, e - 1, срыв, 2);            // сосед дочитал прошлый обмен по этому куску
+    e_s = e;
+  }
+  __syncthreads();
+  const int e = e_s;
+  uint4 v = make_uint4(0, 0, 0, 0);
+  __half* vh = reinterpret_cast<__half*>(&v);
+  if (VEC && i0 + 8 <= n) {
+    v = *reinterpret_cast<const uint4*>(y + i0);
+    *reinterpret_cast<uint4*>(peer_recv + i0) = v;
+  } else {
+#pragma unroll
+    for (int j = 0; j < 8; ++j)
+      if (i0 + j < n) { vh[j] = y[i0 + j]; peer_recv[i0 + j] = vh[j]; }
+  }
+  __threadfence_system();
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    ar1_st_rel(peer_flag + b, e);
+    ar1_wait(flag + b, e, срыв, 1);
+  }
+  __syncthreads();
+  if (VEC && i0 + 8 <= n) {
+    uint4 r = __ldcg(reinterpret_cast<const uint4*>(recv + i0));
+    __half2* v2 = reinterpret_cast<__half2*>(&v);
+    const __half2* r2 = reinterpret_cast<const __half2*>(&r);
+#pragma unroll
+    for (int j = 0; j < 4; ++j) v2[j] = __hadd2(v2[j], r2[j]);
+    *reinterpret_cast<uint4*>(out + i0) = v;
+  } else {
+#pragma unroll
+    for (int j = 0; j < 8; ++j)
+      if (i0 + j < n) out[i0 + j] = __hadd(vh[j], __ldcg(recv + i0 + j));
+  }
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    ar1_st_rel(peer_ack + b, e);
+    seq[b] = e;
+  }
+}
+
+// Аргументы как у ar2_all_reduce_out, но flag/ack/seq -- ОКНА по куску на место (длина >= блоков).
+static void ar1_all_reduce_out(at::Tensor y, at::Tensor out, at::Tensor recv,
+                               int64_t peer_recv_ptr, at::Tensor my_flag, int64_t peer_flag_ptr,
+                               at::Tensor seq, at::Tensor срыв,
+                               at::Tensor my_ack, int64_t peer_ack_ptr) {
+  TORCH_CHECK(y.is_cuda() && y.is_contiguous() && y.scalar_type() == at::kHalf,
+              "ar1_all_reduce: y -- непрерывный fp16 на карте");
+  TORCH_CHECK(out.is_contiguous() && out.numel() == y.numel(), "ar1_all_reduce: выход");
+  TORCH_CHECK(recv.numel() >= y.numel(), "ar1_all_reduce: приёмник меньше входа");
+  const long n = y.numel();
+  const int бл = (int)((n + AR1_CHUNK - 1) / AR1_CHUNK);
+  TORCH_CHECK(my_flag.numel() >= бл && my_ack.numel() >= бл && seq.numel() >= бл,
+              "ar1_all_reduce: окно флагов меньше числа кусков");
+  if (n == 0) return;
+  auto поток = at::cuda::getCurrentCUDAStream();
+  const bool vec = ((reinterpret_cast<uintptr_t>(y.data_ptr()) | reinterpret_cast<uintptr_t>(out.data_ptr())
+                     | reinterpret_cast<uintptr_t>(recv.data_ptr()) | (uintptr_t)peer_recv_ptr) & 15) == 0;
+  auto k = vec ? ar1_kernel<true> : ar1_kernel<false>;
+  k<<<бл, AR1_THR, 0, поток>>>((const __half*)y.data_ptr(), (__half*)out.data_ptr(),
+                               (const __half*)recv.data_ptr(), (__half*)peer_recv_ptr,
+                               (const int*)my_flag.data_ptr(), (int*)peer_flag_ptr,
+                               (const int*)my_ack.data_ptr(), (int*)peer_ack_ptr,
+                               (int*)seq.data_ptr(), (int*)срыв.data_ptr(), n);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+// ---------------------------------------------------------------------------------------------
+// AR1H: ТО ЖЕ ОДНО ЯДРО, НО ЧЕРЕЗ ПАМЯТЬ ХОСТА. Замер 23.10 на паре GPU0-1 (A100, корневой комплекс
+// Whitley, топология NODE): P2P-запись ядром в IPC-память соседа МОЛЧА НЕ ДОХОДИТ (проба: сосед читает
+// нули, отказа нет) -- отсюда и зависание штатного custom all-reduce. NCCL на этой паре ходит через SHM.
+// Здесь так же, но без прокси и шести запусков: общий сегмент shm закреплён (cudaHostRegister) в ОБОИХ
+// процессах, ранг пишет свой кусок в СВОЙ участок хоста и флаг, сосед читает его оттуда мимо кэшей.
+// Двойной буфер по чётности номера обмена вместо «дочитано»: ранг доходит до обмена e+2 только увидев
+// флаг соседа за e+1, а сосед ставит его, лишь закончив обмен e целиком (порядок потока) -- значит
+// участок e&1 к этому времени дочитан. Флаги монотонны, ожидание с потолком (срыв -> `срыв`).
+// ---------------------------------------------------------------------------------------------
+template <bool VEC>
+__global__ __launch_bounds__(AR1_THR) void ar1h_kernel(
+    const __half* __restrict__ y, __half* __restrict__ out, __half* my_slot, const __half* peer_slot,
+    int* my_flag, const int* peer_flag, int* seq, int* срыв, long n, long slot_elems) {
+  const int b = blockIdx.x;
+  const long i0 = (long)b * AR1_CHUNK + (long)threadIdx.x * 8;
+  __shared__ int e_s;
+  if (threadIdx.x == 0) e_s = seq[b] + 1;
+  __syncthreads();
+  const int e = e_s;
+  const long par = (long)(e & 1) * slot_elems;
+  uint4 v = make_uint4(0, 0, 0, 0);
+  __half* vh = reinterpret_cast<__half*>(&v);
+  if (VEC && i0 + 8 <= n) {
+    v = *reinterpret_cast<const uint4*>(y + i0);
+    *reinterpret_cast<uint4*>(my_slot + par + i0) = v;
+  } else {
+#pragma unroll
+    for (int j = 0; j < 8; ++j)
+      if (i0 + j < n) { vh[j] = y[i0 + j]; my_slot[par + i0 + j] = vh[j]; }
+  }
+  __threadfence_system();
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    ar1_st_rel(my_flag + b, e);
+    ar1_wait(peer_flag + b, e, срыв, 1);
+  }
+  __syncthreads();
+  if (VEC && i0 + 8 <= n) {
+    const uint4 r = __ldcv(reinterpret_cast<const uint4*>(peer_slot + par + i0));
+    __half2* v2 = reinterpret_cast<__half2*>(&v);
+    const __half2* r2 = reinterpret_cast<const __half2*>(&r);
+#pragma unroll
+    for (int j = 0; j < 4; ++j) v2[j] = __hadd2(v2[j], r2[j]);
+    *reinterpret_cast<uint4*>(out + i0) = v;
+  } else {
+#pragma unroll
+    for (int j = 0; j < 8; ++j)
+      if (i0 + j < n) out[i0 + j] = __hadd(vh[j], __ldcv(peer_slot + par + i0 + j));
+  }
+  if (threadIdx.x == 0) seq[b] = e;
+}
+
+// my_slot/peer_slot -- адреса устройства участков места [2 чётности][slot_elems] в общем сегменте хоста;
+// my_flag/peer_flag -- окна флагов места (по куску); seq -- окно счётчиков места на устройстве.
+static void ar1h_all_reduce_out(at::Tensor y, at::Tensor out, int64_t my_slot, int64_t peer_slot,
+                                int64_t my_flag, int64_t peer_flag, at::Tensor seq, at::Tensor срыв,
+                                int64_t slot_elems) {
+  TORCH_CHECK(y.is_cuda() && y.is_contiguous() && y.scalar_type() == at::kHalf,
+              "ar1h_all_reduce: y -- непрерывный fp16 на карте");
+  TORCH_CHECK(out.is_contiguous() && out.numel() == y.numel(), "ar1h_all_reduce: выход");
+  const long n = y.numel();
+  TORCH_CHECK(n <= slot_elems, "ar1h_all_reduce: участок меньше входа");
+  const int бл = (int)((n + AR1_CHUNK - 1) / AR1_CHUNK);
+  TORCH_CHECK(seq.numel() >= бл, "ar1h_all_reduce: окно счётчиков меньше числа кусков");
+  if (n == 0) return;
+  const bool vec = ((reinterpret_cast<uintptr_t>(y.data_ptr()) | reinterpret_cast<uintptr_t>(out.data_ptr())
+                     | (uintptr_t)my_slot | (uintptr_t)peer_slot) & 15) == 0 && slot_elems % 8 == 0;
+  auto k = vec ? ar1h_kernel<true> : ar1h_kernel<false>;
+  k<<<бл, AR1_THR, 0, at::cuda::getCurrentCUDAStream()>>>(
+      (const __half*)y.data_ptr(), (__half*)out.data_ptr(), (__half*)my_slot, (const __half*)peer_slot,
+      (int*)my_flag, (const int*)peer_flag, (int*)seq.data_ptr(), (int*)срыв.data_ptr(), n, slot_elems);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+// Закрепить чужое (shm) отображение хоста за CUDA и вернуть адрес устройства.
+static int64_t host_register(int64_t ptr, int64_t nbytes) {
+  C10_CUDA_CHECK(cudaHostRegister((void*)ptr, (size_t)nbytes, cudaHostRegisterMapped | cudaHostRegisterPortable));
+  void* d = nullptr;
+  C10_CUDA_CHECK(cudaHostGetDevicePointer(&d, (void*)ptr, 0));
+  return (int64_t)d;
+}
+
 // Чтение и сброс счётчика обмена (см. комментарий у ar2_schetchik).
 std::vector<int64_t> ar2_counter_read(bool reset) {
   unsigned long long h_c = 0, h_e = 0;
@@ -549,6 +741,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("ipc_open", &ipc_open, "открыть ручку соседа -> адрес как число",
         pybind11::arg("handle"), pybind11::arg("offset") = 0);
   m.def("poke_peer", &poke_peer, "ЯДРОМ записать свой тензор в память соседа (контроль)");
+  m.def("ar1_all_reduce_out", &ar1_all_reduce_out, "сведение двух карт ОДНИМ ядром (окна флагов по кускам)");
+  m.def("ar1h_all_reduce_out", &ar1h_all_reduce_out, "сведение двух карт одним ядром ЧЕРЕЗ ПАМЯТЬ ХОСТА");
+  m.def("host_register", &host_register, "cudaHostRegister(mapped|portable) -> адрес устройства");
   m.def("ar2_counter_read", &ar2_counter_read,
         "счётчик запусков обмена, переживающий граф; reset=true обнуляет",
         pybind11::arg("reset") = false);

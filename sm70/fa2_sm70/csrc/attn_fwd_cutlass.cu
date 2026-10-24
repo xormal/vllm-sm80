@@ -20,6 +20,9 @@
 #include "volta_fwd_i8.cuh"
 #include "volta_fwd_ws.cuh"
 #include "volta_fwd_so.cuh"   // развязка ролей S/O (записка 26 §3.1), рычаг FA2SM70_FWD_SO
+#if defined(FA2_SM80) && FA2_SM80
+#include "fwd_sm80_i8.cuh"     // A100: FA2-конвейер на int8-пуле (cp.async + ldmatrix + роли варпов)
+#endif
 #include "sparse_select.cu"   // Этап 1 разреженного префилла (записка 20)
 #include <math_constants.h>
 #include "kernel_forward.h"
@@ -1073,6 +1076,40 @@ std::tuple<torch::Tensor, torch::Tensor> attn_fwd_volta_i8_paged(
         if (cand > 1 && Sq <= bqEff)
             _ksplit = cand < nTilesApprox ? cand : (nTilesApprox > 1 ? nTilesApprox : 1);
     }
+#if defined(FA2_SM80) && FA2_SM80
+    {
+        // [A100] FA2-ядро fwd_sm80_i8.cuh вместо порта volta_fwd_ws. Малые Sq (хвосты, черновик) пока идут
+        // портом: у него есть расщепление по ключам, а здесь сетка = Sq/128 x H блоков.
+        static const int _minsq = getenv("FA2SM80_PF_MINSQ") ? atoi(getenv("FA2SM80_PF_MINSQ")) : 512;
+        static const bool _volta = getenv("FA2SM80_PF_VOLTA") != nullptr && atoi(getenv("FA2SM80_PF_VOLTA")) == 1;
+        if (!_volta && Sq >= _minsq) {
+            namespace P = fa2sm80_pf;
+            const int* sI8 = nullptr; const int* sC8 = nullptr; int sStr8 = 0, sGrp8 = 1, sSub8 = 0;
+            if (_sI != nullptr) {
+                TORCH_CHECK(selTI % P::BQ == 0, "sm80 префилл: плитка счёта кратна 128, дано ", selTI);
+                TORCH_CHECK(selB % P::BK == 0, "sm80 префилл: блок индекса кратен 32, дано ", selB);
+                long sub = selB / P::BK; int lg = 0; while ((1L << lg) < sub) ++lg;
+                TORCH_CHECK((1L << lg) == sub, "sm80 префилл: блок индекса / 32 -- степень двойки");
+                sI8 = _sI; sC8 = _sC; sStr8 = _sStride; sGrp8 = (int)(selTI / P::BQ); sSub8 = lg;
+            }
+            const size_t sh80 = sizeof(P::Smem);
+            auto k80 = causal ? P::fwd_i8_paged_sm80<true> : P::fwd_i8_paged_sm80<false>;
+            static bool _a80[2] = {false, false};
+            if (!_a80[causal]) {
+                C10_CUDA_CHECK(cudaFuncSetAttribute(k80, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)sh80));
+                _a80[causal] = true;
+            }
+            k80<<<dim3((Sq + P::BQ - 1) / P::BQ, H), P::NT, sh80, at::cuda::getCurrentCUDAStream()>>>(
+                reinterpret_cast<const __half*>(Q.data_ptr<at::Half>()),
+                reinterpret_cast<__half*>(O.data_ptr<at::Half>()), lse.data_ptr<float>(),
+                Kc.data_ptr<int8_t>(), Vc.data_ptr<int8_t>(), Kst.data_ptr<float>(), Vst.data_ptr<float>(),
+                vOff.data_ptr<long>(), vScl.data_ptr<long>(), Sq, Sk, H, Hkv, sc, lse_dim,
+                sI8, sC8, sStr8, sGrp8, sSub8);
+            C10_CUDA_KERNEL_LAUNCH_CHECK();
+            return std::make_tuple(O, lse.narrow(2, 0, Sq).contiguous());
+        }
+    }
+#endif
     torch::Tensor Opart, Lpart, Otmp, Ltmp;
     float *pOp = nullptr, *pLp = nullptr;
     if (_ksplit > 1) {

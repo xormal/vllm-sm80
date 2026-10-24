@@ -74,6 +74,9 @@
 #include <math_constants.h>
 static constexpr int BLK = FA2SM70_DEC_BLK, NW = BLK / 32;
 #include "decode_hmma.cuh"
+#if defined(FA2_SM80) && FA2_SM80
+#include "decode_sm80.cuh"   // декод A100: роли варпов на cp.async + ldmatrix (замена химеры)
+#endif
 
 // load this lane's EPT elements of key j as RAW floats (no per-token scale); KVB in {16,8,4}.
 // Vectorized: one 32/64-bit transaction per lane. The per-token scale is applied ONCE per key by
@@ -2212,6 +2215,43 @@ void flash_decode_hmma_paged(torch::Tensor Q, torch::Tensor K, torch::Tensor V,
     TORCH_CHECK(строк_всего % (int)qGrp == 0, "hmma decode: строк ", строк_всего,
                 " не делится на qGrp=", qGrp);
     const int ns = (int)num_splits;
+#if defined(FA2_SM80) && FA2_SM80
+    // [A100] Своё ядро вместо химеры (decode_sm80.cuh). FA2SM80_DEC_CHIMERA=1 -- прежняя химера для A/B.
+    static const bool _chim = (getenv("FA2SM80_DEC_CHIMERA") != nullptr && atoi(getenv("FA2SM80_DEC_CHIMERA")) == 1);
+    if (!_chim) {
+        const size_t sh80 = sizeof(fa2sm80_dec::Smem);
+        static bool _opt80 = false;
+        if (!_opt80) {
+            cudaError_t _e = cudaFuncSetAttribute(fa2sm80_dec::decode_sm80_kernel,
+                                                  cudaFuncAttributeMaxDynamicSharedMemorySize, (int)sh80);
+            TORCH_CHECK(_e == cudaSuccess, "decode sm80: не удалось запросить ", sh80, " Б разделяемой: ",
+                        cudaGetErrorString(_e));
+            _opt80 = true;
+        }
+        TORCH_CHECK(_sIp == nullptr || ((1 << _sBlg) % fa2sm80_dec::KT) == 0, "decode sm80: блок отбора кратен плитке");
+        TORCH_CHECK(bs >= fa2sm80_dec::KT, "decode sm80: страница пула >= 32 токенов (плитка -- в одной странице)");
+        auto st80 = at::cuda::getCurrentCUDAStream();
+        // По срезу на пару счётчиков: срезов на выходе -- чётное число. Нечётное ns округляется вниз
+        // (слот ns-1 рабочей области остаётся неиспользованным; свод читает ровно ns2 срезов).
+        const int ns2 = ns >= 2 ? (ns & ~1) : 2;
+        fa2sm80_dec::decode_sm80_kernel<<<dim3(B_, Hkv, ns2 / 2), fa2sm80_dec::NT, sh80, st80>>>(
+            reinterpret_cast<const __half*>(Q.data_ptr<at::Half>()),
+            K.data_ptr<int8_t>(), V.data_ptr<int8_t>(),
+            sK.data_ptr<float>(), sV.data_ptr<float>(),
+            A.data_ptr<float>(), B.data_ptr<float>(), H, Hkv, (float)scale, ns2,
+            block_table.data_ptr<int>(), bs_log, mb, seqlens.data_ptr<int>(), (int)qGrp, GF, (int)qCausal,
+            шаг_блока, _sIp, _sCp, _sStr, _sBlg);
+        {
+            cudaError_t _l = cudaGetLastError();
+            TORCH_CHECK(_l == cudaSuccess, "decode sm80: запуск отвергнут: ", cudaGetErrorString(_l));
+        }
+        TORCH_CHECK(ns2 <= 256, "decode sm80: срезов > 256");
+        fa2sm80_dec::svod_sm80_kernel3<256><<<dim3(строк_всего, H, (D + 31) / 32), 256, 0, st80>>>(A.data_ptr<float>(), B.data_ptr<float>(),
+                                                               reinterpret_cast<half*>(Out.data_ptr<at::Half>()),
+                                                               H, D, ns2, (int)ldo);
+        return;
+    }
+#endif
     const size_t shmem = sizeof(fa2sm70_dechmma::Obshchaya<256>);
     // ДИНАМИЧЕСКАЯ РАЗДЕЛЯЕМАЯ СВЫШЕ 48 КиБ ТРЕБУЕТ ЯВНОГО СОГЛАСИЯ, И ЕГО НАДО ПРОВЕРЯТЬ.
     // Без проверки отказ виден только как МУСОР НА ВЫХОДЕ: ядро не запускается, буфер остаётся

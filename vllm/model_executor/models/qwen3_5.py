@@ -332,6 +332,9 @@ class Qwen3_5GatedDeltaNet(Qwen3NextGatedDeltaNet):
         core_attn_out = self.norm(core_attn_out, z)
         core_attn_out = core_attn_out.reshape(z_shape_og)
         core_attn_out = core_attn_out.reshape(*core_attn_out.shape[:-2], -1)
+        if getattr(self, "_fa2_defer_proj", False):
+            # [FA2/SM80 24.10] выходная проекция -- в операции блока (fa2sm80_blockpipe): конвейер обмена
+            return core_attn_out
         out_proj = _maybe_sm70_projection(self.out_proj, core_attn_out)
         if out_proj is None:
             out_proj = self.out_proj(core_attn_out)

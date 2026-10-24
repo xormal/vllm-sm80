@@ -276,17 +276,17 @@ __global__ __launch_bounds__(WM * WN * 32) void volta_bwd_block(const __half* __
     // в индексе отсутствовал -> второй блок брал чужие lse/Delta, портилась P, а с ней ВСЕ ТРИ
     // выхода одинаково (почерк: dV/dK/dQ = 3e-01 при 8 варпах). Слотов теперь 4 на каждый блок.
     constexpr int kNB = TN / 16;                       // столбцовых блоков в плитке варпа
-    const int cb = (lane & 2) | ((lane & 4) << 1);
+    const int cb = wmma_col_base(lane);
     float lseq[4 * kNB], delq[4 * kNB];
 #pragma unroll
     for (int b = 0; b < kNB; ++b)
 #pragma unroll
       for (int sI = 0; sI < 4; ++sI) {
-        const int cc = c0 + b * 16 + cb + (sI & 1) + 4 * (sI >> 1);
+        const int cc = c0 + b * 16 + cb + (sI & 1) + FA2_CHALF * (sI >> 1);
         lseq[b * 4 + sI] = lse[q0 + cc];
         delq[b * 4 + sI] = Delta[q0 + cc];
       }
-#define FA2_SLOT(c) (((c) >> 4) * 4 + ((c) & 1) + 2 * (((c) >> 2) & 1))
+#define FA2_SLOT(c) (((c) >> 4) * 4 + ((c) & 1) + 2 * (((c) >> (FA2_CHALF == 8 ? 3 : 2)) & 1))
     qk.visit(lane, [&](float& v, int r, int c) {
       const float p = __expf(v * scale - lseq[FA2_SLOT(c)]);
       v = (CAUSAL && (kb + r0 + r) > (q0 + c0 + c)) ? 0.f : p;

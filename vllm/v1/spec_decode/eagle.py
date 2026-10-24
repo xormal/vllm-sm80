@@ -63,6 +63,16 @@ _СБОР_СКРЫТЫХ = int(__import__("os").environ.get("FA2SM70_MTP_DUMP_H"
 _И4 = int(__import__("os").environ.get("FA2SM70_MTP_I4", "0"))
 _И4_СПИСОК = int(__import__("os").environ.get("FA2SM70_MTP_I4_N", "16"))
 _И4_MMAX = int(__import__("os").environ.get("FA2SM70_MTP_I4_MMAX", "2"))
+# [A100 23.10] ДВУХСТУПЕНЧАТЫЙ АРГМАКС ЧЕРНОВИКА НА int8-СЛОВАРЕ (w8a16_sm80). Вольтовский int4-путь выше
+# на A100 отказывает: режим LMH=1 освобождает fp16-вес головы, а int4-таблица и точная досчётка строились
+# из него. Здесь обе ступени -- тем же ядром W8 по фрагментной упаковке головы: 1) грубый счёт по первым
+# R измерениям скрытого (чтение R/K словаря), верхушка N; 2) точная досчётка n-блоков кандидатов (ПОБИТОВО
+# как полное умножение, 15 мкс на 64 блока); 3) обмен рангов парой (значение, номер) вместо полных логитов.
+# Промах верхушки безвреден для выхода (цель проверяет каждый черновой токен), стоит только приёмки.
+# FA2SM80_DRAFT_ARGMAX_R=0 -- выключено; FA2SM80_DRAFT_ARGMAX_FILE -- файл "1"/"0" для A/B в одном процессе.
+_ДВУХ_R = int(__import__("os").environ.get("FA2SM80_DRAFT_ARGMAX_R", "0"))
+_ДВУХ_N = int(__import__("os").environ.get("FA2SM80_DRAFT_ARGMAX_N", "64"))   # n-блоков (по 32 столбца)
+_ДВУХ_ФАЙЛ = __import__("os").environ.get("FA2SM80_DRAFT_ARGMAX_FILE", "")
 # [СРЕЗ ИЗМЕРЕНИЙ У ПЕРВОЙ СТУПЕНИ -- 09.09, записка 25 §253]
 # Полный int4-словарь (303 МиБ) не уживается с 262 144 токенами -- проверено семью путями.
 # Но первой ступени не нужен точный счёт: ей нужно, чтобы верная строка ПОПАЛА В СПИСОК, а
@@ -685,8 +695,57 @@ class SpecDecodeBaseProposer:
         with self._карта("чер: словарь+argmax"):
             return self._greedy_sample_ядро(hidden_states)
 
+    def _двух_аргмакс(self, hidden_states: torch.Tensor):
+        R = _ДВУХ_R
+        if _ДВУХ_ФАЙЛ:                     # в файле -- R (0 = выкл.), для A/B и подбора среза в одном процессе
+            try:
+                with open(_ДВУХ_ФАЙЛ) as ф:
+                    R = int(ф.read(8).strip() or 0)
+            except (OSError, ValueError):
+                return None
+            if R <= 0:
+                return None
+        lm = self.model.lm_head
+        s80 = getattr(lm, "_fa2_s80", None)
+        if s80 is None or hidden_states.shape[0] > 4:
+            return None
+        import sys as _sys
+        w8 = _sys.modules.get("fa2sm80_w8")
+        if w8 is None:
+            return None
+        wf, meta, K, N = s80
+        т = w8._ТЮН.get((K, N))
+        if т is None:
+            return None
+        nw = т["nw"]
+        wa, st, sp = т["cfg"][4]
+        ext = w8._расш()
+        x = hidden_states.to(torch.float16).contiguous()
+        M = x.shape[0]
+        BN = 8 * nw
+        nvalid = N - lm.shard_indices.num_org_vocab_padding
+        # СЛИТЫЙ ВЫБОР: грубая ступень пишет максимум по n-блоку (3880 чисел вместо 124160), отбор B
+        # блоков -- одним ядром (радикс-отбор порога), точный досчёт блоков, пара (значение, номер) --
+        # одним ядром. Запусков столько же, сколько у прежнего пути (полная голова + max + обмен).
+        bm = ext.w8a16_sm80_bmax(x, wf, meta, N, min(R, K) // 64, nvalid, sp, nw, wa, st)
+        блоки = ext.w8a16_sm80_topblk(bm, _ДВУХ_N)                       # [M*B] int32
+        точно = ext.w8a16_sm80_mm(x, wf, meta, N, sp, nw, wa, st, 0, блоки)
+        пара = ext.w8a16_sm80_candmax(точно, блоки, _ДВУХ_N, BN, nvalid,
+                                      lm.shard_indices.org_vocab_start_index)   # [M, 2]
+        глоб = пара[:, 1]
+        tp = _tp_size()
+        if tp == 1:
+            return глоб.to(torch.int64)
+        соб = tensor_model_parallel_all_gather(пара, dim=-1).view(M, tp, 2)
+        лучш = соб[:, :, 0].argmax(dim=-1, keepdim=True)
+        return соб[:, :, 1].gather(dim=-1, index=лучш).squeeze(-1).to(torch.int64)
+
     def _greedy_sample_ядро(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """Greedy-sample draft tokens from hidden states."""
+        if _ДВУХ_R:
+            _т = self._двух_аргмакс(hidden_states)
+            if _т is not None:
+                return _т
         if _И4 and hidden_states.shape[0] <= _И4_MMAX:
             _т = self._i4_argmax(hidden_states)
             if _т is not None:

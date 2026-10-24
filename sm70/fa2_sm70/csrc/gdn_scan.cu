@@ -531,7 +531,8 @@ torch::Tensor gdn_recurrent(torch::Tensor q, torch::Tensor k, torch::Tensor v, t
         // у ядра CUDA умолчания при запуске <<<>>> НЕ действуют -- перечисляем все:
         // a_in, A_log, dt_bias (GATE=0 их не читает), ssm_idx_out (этот путь без 'all')
         // и ШИРИНУ РЯДА таблицы слотов.
-        nullptr, nullptr, nullptr, nullptr, nullptr, idx_w_r, /*branch_at=*/0);
+        nullptr, nullptr, nullptr, nullptr, nullptr, idx_w_r, /*branch_at=*/0,
+        /*шаги по токену: плотно*/ 0L, 0L, 0L, 0L, 0L);
   };
   struct TagH { using type = __half; };
   struct TagB { using type = __nv_bfloat16; };
@@ -558,19 +559,42 @@ torch::Tensor gdn_recurrent(torch::Tensor q, torch::Tensor k, torch::Tensor v, t
 // [ЗАДАЧА 180, боевой быстрый путь] СЛИТЫЙ сигмоидный гейтинг + рекуррент: замена
 // fused_sigmoid_gating_delta_rule_update (ровно её и зовёт _forward_core декода qwen3_next).
 // g и beta считаются В ЯДРЕ из a, b, A_log, dt_bias -- отдельного гейтинг-пуска нет.
-torch::Tensor gdn_rec_gating(torch::Tensor A_log, torch::Tensor a, torch::Tensor b,
-                             torch::Tensor dt_bias, torch::Tensor q, torch::Tensor k,
-                             torch::Tensor v, double scale, torch::Tensor hpool,
-                             c10::optional<torch::Tensor> ssm_idx,
-                             c10::optional<torch::Tensor> n_acc,
-                             c10::optional<torch::Tensor> cu_seqlens, bool l2norm,
-                             c10::optional<torch::Tensor> ssm_idx_out,
-                             c10::optional<torch::Tensor> state_scales,
-                             int64_t branch_at) {
+// SPLIT шага GDN по размеру сетки: FA2SM80_GDN_SPLIT=1/2/4 -- принудительно, иначе по замеру (A100, HV=24 на
+// ранг, T=4, 48 вызовов подряд в графе): N=1 (96 блоков) 12.74 / 11.82 / 14.14 мкс при SPLIT 1/2/4;
+// N=4 (384 блока) 23.0 / 30.7 / 49.5 -- то есть 2 варпа на группу только при сетке <= SPLIT_NB (96) блоков.
+static int rec_split(long blocks) {
+  static int forced = -2, nb = 0;
+  if (forced == -2) {
+    const char* e = std::getenv("FA2SM80_GDN_SPLIT");
+    forced = (e && *e) ? std::atoi(e) : 0;
+    const char* b = std::getenv("FA2SM80_GDN_SPLIT_NB");
+    nb = (b && *b) ? std::atoi(b) : 96;
+  }
+  if (forced == 1 || forced == 2 || forced == 4) return forced;
+  return blocks <= nb ? 2 : 1;
+}
+
+torch::Tensor gdn_rec_gating_out(torch::Tensor A_log, torch::Tensor a, torch::Tensor b,
+                                 torch::Tensor dt_bias, torch::Tensor q, torch::Tensor k,
+                                 torch::Tensor v, double scale, torch::Tensor hpool,
+                                 c10::optional<torch::Tensor> ssm_idx,
+                                 c10::optional<torch::Tensor> n_acc,
+                                 c10::optional<torch::Tensor> cu_seqlens, bool l2norm,
+                                 c10::optional<torch::Tensor> ssm_idx_out,
+                                 c10::optional<torch::Tensor> state_scales,
+                                 int64_t branch_at, c10::optional<torch::Tensor> out) {
   const c10::cuda::CUDAGuard guard(q.device());
-  TORCH_CHECK(q.is_cuda() && q.is_contiguous() && k.is_contiguous() && v.is_contiguous() &&
-                  a.is_contiguous() && b.is_contiguous(),
-              "gdn_rec_gating: q/k/v/a/b must be contiguous CUDA");
+  // [A100 24.10] q/k/v/a/b могут быть СРЕЗАМИ по последней оси (виды mixed_qkv / выхода in_proj_ba): внутри
+  // токена раскладка плотная (элемент 1, голова K/V), шаг по токену -- любой. Ядро получает шаги по токену.
+  auto плотно_внутри = [](const torch::Tensor& t, long per_head) {
+    return t.stride(-1) == 1 && (t.dim() < 4 || t.stride(-2) == per_head);
+  };
+  TORCH_CHECK(q.is_cuda() && плотно_внутри(q, q.size(-1)) && плотно_внутри(k, k.size(-1)) &&
+                  плотно_внутри(v, v.size(-1)) && a.stride(-1) == 1 && b.stride(-1) == 1,
+              "gdn_rec_gating: q/k/v/a/b -- плотные внутри токена (шаг по токену любой)");
+  TORCH_CHECK(q.size(0) == 1 || (q.is_contiguous() && k.is_contiguous() && v.is_contiguous() &&
+                                 a.is_contiguous() && b.is_contiguous()),
+              "gdn_rec_gating: срезы допускаются только при B=1 (varlen-раскладка)");
   TORCH_CHECK(q.scalar_type() == torch::kHalf || q.scalar_type() == torch::kBFloat16,
               "gdn_rec_gating: q must be fp16/bf16");
   TORCH_CHECK(k.scalar_type() == q.scalar_type() && v.scalar_type() == q.scalar_type() &&
@@ -678,7 +702,20 @@ torch::Tensor gdn_rec_gating(torch::Tensor A_log, torch::Tensor a, torch::Tensor
                 "gdn_rec_gating: cu_seqlens and ssm_state_indices must share the int type");
   }
   const int N = varlen ? (int)cu.size(0) - 1 : B;
-  auto o = torch::empty_like(v);
+  // выход -- плотный [B, T, HV, V] (empty_like от среза унаследовал бы чужие шаги)
+  // [A100 24.10] out -- готовый плотный приёмник [B, T, HV, V] (срез core_attn_out вызывающего): ядро пишет
+  // выход сразу на место, без отдельной копии после шага (узел графа на каждый слой GDN).
+  torch::Tensor o;
+  if (out.has_value()) {
+    o = out.value();
+    TORCH_CHECK(o.is_cuda() && o.is_contiguous() && o.scalar_type() == v.scalar_type() && o.dim() == 4 &&
+                    o.size(0) == v.size(0) && o.size(1) == v.size(1) && o.size(2) == v.size(2) && o.size(3) == v.size(3),
+                "gdn_rec_gating_out: приёмник -- плотный тензор формы v");
+  } else {
+    o = torch::empty({v.size(0), v.size(1), v.size(2), v.size(3)}, v.options());
+  }
+  // шаги по токену (в элементах); раскладка [B, T, ...] -- токен по оси 1
+  const long tq = q.stride(1), tk = k.stride(1), tv = v.stride(1), ta = a.stride(a.dim() - 2), tb = b.stride(b.dim() - 2);
   auto st = at::cuda::getCurrentCUDAStream();
   constexpr int BV = 32;
   dim3 grid(DK / BV, HV, N);
@@ -688,17 +725,27 @@ torch::Tensor gdn_rec_gating(torch::Tensor A_log, torch::Tensor a, torch::Tensor
     constexpr bool L2N = decltype(l2_tag)::value;
     constexpr bool SPEC = decltype(sp_tag)::value;
     if (state_i16) {
-      auto kern_i = fa2_sm70::gdn::volta_gdn_rec<DK, DK, BV, L2N, SPEC, TI, IdxT, 1, short>;
-      kern_i<<<grid, 128, 0, st>>>(
-          (const TI*)q.data_ptr(), (const TI*)k.data_ptr(), (const TI*)v.data_ptr(),
-          nullptr, (const TI*)b.data_ptr(), (TI*)o.data_ptr(),
-          (short*)hpool.data_ptr(),
-          has_idx ? (const IdxT*)si.data_ptr() : nullptr,
-          spec ? n_acc.value().data_ptr<int>() : nullptr,
-          varlen ? (const IdxT*)cu.data_ptr() : nullptr,
-          stride_idx, stride_slot, (float)scale, T, H, HV,
-          (const TI*)a.data_ptr(), A_log.data_ptr<float>(), dt_bias.data_ptr<float>(),
-          has_idx_out ? (const IdxT*)sio.data_ptr() : nullptr, p_scl, idx_w, (int)branch_at);
+      // [A100 24.10] SPLIT варпов на группу масштаба (см. volta_gdn_rec.cuh): при малой сетке (одна-две
+      // последовательности) блок шире -- больше варпов на планировщик, короче цепочка каждого. Побитово.
+      auto launch_i = [&](auto split_tag) {
+        constexpr int SP = decltype(split_tag)::value;
+        auto kern_i = fa2_sm70::gdn::volta_gdn_rec<DK, DK, BV, L2N, SPEC, TI, IdxT, 1, short, SP>;
+        kern_i<<<grid, 128 * SP, 0, st>>>(
+            (const TI*)q.data_ptr(), (const TI*)k.data_ptr(), (const TI*)v.data_ptr(),
+            nullptr, (const TI*)b.data_ptr(), (TI*)o.data_ptr(),
+            (short*)hpool.data_ptr(),
+            has_idx ? (const IdxT*)si.data_ptr() : nullptr,
+            spec ? n_acc.value().data_ptr<int>() : nullptr,
+            varlen ? (const IdxT*)cu.data_ptr() : nullptr,
+            stride_idx, stride_slot, (float)scale, T, H, HV,
+            (const TI*)a.data_ptr(), A_log.data_ptr<float>(), dt_bias.data_ptr<float>(),
+            has_idx_out ? (const IdxT*)sio.data_ptr() : nullptr, p_scl, idx_w, (int)branch_at,
+            tq, tk, tv, ta, tb);
+      };
+      const int sp = rec_split((long)grid.x * grid.y * grid.z);
+      if (sp == 4) launch_i(std::integral_constant<int, 4>{});
+      else if (sp == 2) launch_i(std::integral_constant<int, 2>{});
+      else launch_i(std::integral_constant<int, 1>{});
       return;
     }
     if (state_half) {
@@ -712,7 +759,8 @@ torch::Tensor gdn_rec_gating(torch::Tensor A_log, torch::Tensor a, torch::Tensor
           varlen ? (const IdxT*)cu.data_ptr() : nullptr,
           stride_idx, stride_slot, (float)scale, T, H, HV,
           (const TI*)a.data_ptr(), A_log.data_ptr<float>(), dt_bias.data_ptr<float>(),
-          has_idx_out ? (const IdxT*)sio.data_ptr() : nullptr, nullptr, idx_w, (int)branch_at);
+          has_idx_out ? (const IdxT*)sio.data_ptr() : nullptr, nullptr, idx_w, (int)branch_at,
+          tq, tk, tv, ta, tb);
       return;
     }
     auto kern = fa2_sm70::gdn::volta_gdn_rec<DK, DK, BV, L2N, SPEC, TI, IdxT, 1>;
@@ -725,7 +773,8 @@ torch::Tensor gdn_rec_gating(torch::Tensor A_log, torch::Tensor a, torch::Tensor
         varlen ? (const IdxT*)cu.data_ptr() : nullptr,
         stride_idx, stride_slot, (float)scale, T, H, HV,
         (const TI*)a.data_ptr(), A_log.data_ptr<float>(), dt_bias.data_ptr<float>(),
-        has_idx_out ? (const IdxT*)sio.data_ptr() : nullptr, nullptr, idx_w, (int)branch_at);
+        has_idx_out ? (const IdxT*)sio.data_ptr() : nullptr, nullptr, idx_w, (int)branch_at,
+          tq, tk, tv, ta, tb);
   };
   struct TagH { using type = __half; };
   struct TagB { using type = __nv_bfloat16; };
@@ -747,6 +796,19 @@ torch::Tensor gdn_rec_gating(torch::Tensor A_log, torch::Tensor a, torch::Tensor
   else         { if (idx_long) d3(TagB{}, TagL{}); else d3(TagB{}, TagI{}); }
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return o;
+}
+
+torch::Tensor gdn_rec_gating(torch::Tensor A_log, torch::Tensor a, torch::Tensor b,
+                             torch::Tensor dt_bias, torch::Tensor q, torch::Tensor k,
+                             torch::Tensor v, double scale, torch::Tensor hpool,
+                             c10::optional<torch::Tensor> ssm_idx,
+                             c10::optional<torch::Tensor> n_acc,
+                             c10::optional<torch::Tensor> cu_seqlens, bool l2norm,
+                             c10::optional<torch::Tensor> ssm_idx_out,
+                             c10::optional<torch::Tensor> state_scales,
+                             int64_t branch_at) {
+  return gdn_rec_gating_out(A_log, a, b, dt_bias, q, k, v, scale, hpool, ssm_idx, n_acc, cu_seqlens, l2norm,
+                            ssm_idx_out, state_scales, branch_at, c10::nullopt);
 }
 
 // Явный признак присутствия: гейт врезки проверяет ИМЕННО его, а не факт импорта модуля.
@@ -877,6 +939,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("gdn_scan_available", &gdn_scan_available, "признак присутствия для гейта врезки");
   m.def("gdn_recurrent", &gdn_recurrent,
         "рекуррентный шаг декода (замена fused_recurrent_gated_delta_rule), состояние inplace");
+  m.def("gdn_rec_gating_out", &gdn_rec_gating_out,
+        "то же, что gdn_rec_gating, с готовым приёмником выхода (последний аргумент)");
   m.def("gdn_rec_gating", &gdn_rec_gating,
         "СЛИТЫЙ сигмоидный гейтинг + рекуррент (замена fused_sigmoid_gating_delta_rule_update)");
   m.def("gdn_check_idx", &gdn_check_idx,

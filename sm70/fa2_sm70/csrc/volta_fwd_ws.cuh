@@ -876,12 +876,12 @@ __shared__ float sRedS[BQ * WN * 2];
     const int dcRot = 0;
     WarpMma<SMB, SNB, BLayout::kKMajor> s;
     {   // §2a: суммы строк этого потока -- подряд, чтобы примитив читал их одним шагом
-      const int rb = (lane & 1) | ((lane & 16) >> 2) | (lane & 8);
+      const int rb = wmma_row_base(lane);
       float qs[SMB * 2];
 #pragma unroll
       for (int i = 0; i < SMB; ++i)
 #pragma unroll
-        for (int t = 0; t < 2; ++t) qs[i * 2 + t] = sQsum[wm * SM + i * 16 + rb + 2 * t];
+        for (int t = 0; t < 2; ++t) qs[i * 2 + t] = sQsum[wm * SM + i * 16 + rb + FA2_RSTEP * t];
       seed_rank1<float, SMB, SNB>(s.acc, kI8Bias, qs, 2);
     }
     // SWZ идёт ТОЛЬКО сюда: перестановка касается плитки K (k-мажорный операнд, LDS.128).
@@ -893,7 +893,7 @@ __shared__ float sRedS[BQ * WN * 2];
 
     PH(2);   // ФАЗА 2: подача Q/K кусками + ПЕРВОЕ умножение (Tensor + MIO вперемешку)
     const int r0 = wm * SM, c0 = wn * SN;
-    const int rowbase = (lane & 1) | ((lane & 16) >> 2) | (lane & 8);
+    const int rowbase = wmma_row_base(lane);
     // [МАСШТАБЫ -- В РЕГИСТРЫ, А НЕ ИЗ РАЗДЕЛЯЕМОЙ НА КАЖДЫЙ ЭЛЕМЕНТ]
     // Первая редакция читала sKs[(tIdx & 1) * BK + c0+c] на каждый элемент S и sVs[(tIdx & 1) * BK + cc] дважды на каждую пару P --
     // около 8192 лишних обращений на плитку К ТОМУ САМОМУ ОГРАНИЧИТЕЛЮ, ради значений, которые
@@ -934,7 +934,7 @@ __shared__ float sRedS[BQ * WN * 2];
       // операций снова оказался не связан со временем -- ровно тот случай, ради которого в
       // CLAUDE.md записано «единица анализа -- ФАЗА, а не команда». Не возвращать без ЗАМЕРА фазы.
       if ((CAUSAL && (q0 + r0 + r + causal_off) < kk) || kk >= Sk) v = -CUDART_INF_F;
-      const int mb = r >> 4, sub = ((r & 15) - rowbase) >> 1;
+      const int mb = r >> 4, sub = ((r & 15) - rowbase) >> FA2_RSHIFT;
       if (v > mloc[mb][sub]) mloc[mb][sub] = v;
     });
 #pragma unroll
@@ -947,11 +947,11 @@ __shared__ float sRedS[BQ * WN * 2];
         // срезу ключей. Расщепление снимает только МЕЖВАРПОВУЮ часть (запись в sRedM, барьер,
         // сбор по w) -- ровно те 38.9 % тактов считающих, что дал замер фаз.
         float x = mloc[i][t];
-        float y = __shfl_xor_sync(0xffffffffu, x, 2); x = x > y ? x : y;
-        y = __shfl_xor_sync(0xffffffffu, x, 4);       x = x > y ? x : y;
+        float y = __shfl_xor_sync(0xffffffffu, x, FA2_SHFL0); x = x > y ? x : y;
+        y = __shfl_xor_sync(0xffffffffu, x, FA2_SHFL1);       x = x > y ? x : y;
         mloc[i][t] = x;
         if constexpr (!KSPL)
-          if ((lane & 6) == 0) sRedM[(wm * SM + i * 16 + rowbase + 2 * t) * WN + wn] = x;
+          if (FA2_ROW_LEADER(lane)) sRedM[(wm * SM + i * 16 + rowbase + FA2_RSTEP * t) * WN + wn] = x;
       }
     if constexpr (DIAG != 2 && !KSPL) {
       if constexpr (PHSPLIT) asm volatile("bar.sync %0, %1;" :: "r"(4 + wm), "r"(kConsThr / WM));
@@ -964,7 +964,7 @@ __shared__ float sRedS[BQ * WN * 2];
       for (int t = 0; t < 2; ++t) {
         float x = -CUDART_INF_F;
 #pragma unroll
-        for (int w = 0; w < WN; ++w) { float y = sRedM[(wm * SM + i * 16 + rowbase + 2 * t) * WN + w]; x = x > y ? x : y; }
+        for (int w = 0; w < WN; ++w) { float y = sRedM[(wm * SM + i * 16 + rowbase + FA2_RSTEP * t) * WN + w]; x = x > y ? x : y; }
         mloc[i][t] = x;
       }
     PH(3);   // ФАЗА 3: маска, максимум, редукция максимума по варпам (ALU + барьер)
@@ -978,7 +978,7 @@ __shared__ float sRedS[BQ * WN * 2];
         cnew[i][t]  = (mloc[i][t] == -CUDART_INF_F) ? 0.f : exp2f(mloc[i][t] - mn);
       }
     {
-      const int cbase = (lane & 2) | ((lane & 4) << 1);
+      const int cbase = wmma_col_base(lane);
 #pragma unroll
       for (int i = 0; i < SMB; ++i)
 #pragma unroll
@@ -987,8 +987,8 @@ __shared__ float sRedS[BQ * WN * 2];
           for (int pr = 0; pr < 4; ++pr) {
             const int rg = (pr & 1) ? (4 + ((pr >> 1) << 1)) : ((pr >> 1) << 1);
             const int reg0 = rg, reg1 = rg + 1;
-            const int row = i * 16 + rowbase + 2 * ((reg0 >> 1) & 1);
-            const int col = j * 16 + cbase + 4 * ((reg0 >> 2) & 1);
+            const int row = i * 16 + rowbase + FA2_RSTEP * ((reg0 >> 1) & 1);
+            const int col = j * 16 + cbase + FA2_CHALF * ((reg0 >> 2) & 1);
             const int mb = i, sub = (reg0 >> 1) & 1;
             const float mm = mloc[mb][sub];
             const float v0 = s.acc[i][j][reg0], v1 = s.acc[i][j][reg1];
@@ -1024,11 +1024,11 @@ __shared__ float sRedS[BQ * WN * 2];
       for (int t = 0; t < 2; ++t) {
         if constexpr (DIAG == 1) break;      // фальсификатор: редукция сумм снята
         float x = lloc[i][t], y = vloc[i][t];
-        x += __shfl_xor_sync(0xffffffffu, x, 2); y += __shfl_xor_sync(0xffffffffu, y, 2);
-        x += __shfl_xor_sync(0xffffffffu, x, 4); y += __shfl_xor_sync(0xffffffffu, y, 4);
+        x += __shfl_xor_sync(0xffffffffu, x, FA2_SHFL0); y += __shfl_xor_sync(0xffffffffu, y, FA2_SHFL0);
+        x += __shfl_xor_sync(0xffffffffu, x, FA2_SHFL1); y += __shfl_xor_sync(0xffffffffu, y, FA2_SHFL1);
         if constexpr (KSPL) { sloc[i][t] = x; vsum[i][t] = y; }
-        else if ((lane & 6) == 0) {
-          const int idx = (wm * SM + i * 16 + rowbase + 2 * t) * WN + wn;
+        else if (FA2_ROW_LEADER(lane)) {
+          const int idx = (wm * SM + i * 16 + rowbase + FA2_RSTEP * t) * WN + wn;
           sRedS[idx] = x; sRedS[BQ * WN + idx] = y;
         }
       }
@@ -1053,7 +1053,7 @@ __shared__ float sRedS[BQ * WN * 2];
         else
 #pragma unroll
         for (int w = 0; w < WN; ++w) {
-          const int idx = (wm * SM + i * 16 + rowbase + 2 * t) * WN + w;
+          const int idx = (wm * SM + i * 16 + rowbase + FA2_RSTEP * t) * WN + w;
           ss += sRedS[idx]; vv += sRedS[BQ * WN + idx];
         }
         const float mo = m_run[i][t], mn = (mo > mloc[i][t]) ? mo : mloc[i][t];
@@ -1121,14 +1121,14 @@ __shared__ float sRedS[BQ * WN * 2];
     // Цена -- WN проходов по площадке подачи ОДИН РАЗ на блок; снято -- два межварповых свода
     // НА КАЖДУЮ плитку ключей (их у боевой формы 256..719).
     const int r0 = wm * OM;
-    const int rowbase = (lane & 1) | ((lane & 16) >> 2) | (lane & 8);
+    const int rowbase = wmma_row_base(lane);
     float mycorr[SMB][2];
 #pragma unroll
     for (int i = 0; i < SMB; ++i)
 #pragma unroll
       for (int t = 0; t < 2; ++t)
-        if ((lane & 6) == 0) {
-          const int idx = (wm * SM + i * 16 + rowbase + 2 * t) * WN + wn;
+        if (FA2_ROW_LEADER(lane)) {
+          const int idx = (wm * SM + i * 16 + rowbase + FA2_RSTEP * t) * WN + wn;
           sRedM[idx] = m_run[i][t]; sRedS[idx] = l_run[i][t];
         }
     asm volatile("bar.sync 3, %0;" :: "r"(kConsThr));
@@ -1136,7 +1136,7 @@ __shared__ float sRedS[BQ * WN * 2];
     for (int i = 0; i < SMB; ++i)
 #pragma unroll
       for (int t = 0; t < 2; ++t) {
-        const int idx0 = (wm * SM + i * 16 + rowbase + 2 * t) * WN;
+        const int idx0 = (wm * SM + i * 16 + rowbase + FA2_RSTEP * t) * WN;
         float m = -CUDART_INF_F;
 #pragma unroll
         for (int w = 0; w < WN; ++w) { const float y = sRedM[idx0 + w]; m = m > y ? m : y; }
@@ -1155,12 +1155,12 @@ __shared__ float sRedS[BQ * WN * 2];
     // Нормировка строки кладётся в sQsum: после мейнлупа он свободен, а новой разделяемой стоил бы
     // занятости. Барьер -- чтобы никто не переписал sRedM/sRedS до того, как их дочитали выше.
     asm volatile("bar.sync 3, %0;" :: "r"(kConsThr));
-    if (wn == 0 && (lane & 6) == 0)
+    if (wn == 0 && FA2_ROW_LEADER(lane))
 #pragma unroll
       for (int i = 0; i < SMB; ++i)
 #pragma unroll
         for (int t = 0; t < 2; ++t) {
-          const int row = r0 + i * 16 + rowbase + 2 * t;
+          const int row = r0 + i * 16 + rowbase + FA2_RSTEP * t;
           sQsum[row] = (l_run[i][t] > 0.f) ? (kFmtMul * __frcp_rn(l_run[i][t])) : 0.f;
           if (vslice == 0 && q0 + row < Sq)
             Lse[q0 + row] = (l_run[i][t] > 0.f)
@@ -1174,7 +1174,7 @@ __shared__ float sRedS[BQ * WN * 2];
     constexpr int kPart = OM * ON;                     // частица одного варпа: строки x полоса
     static_assert((long)WM * WN * kPart * sizeof(float) <= (long)2 * kBuf,
                   "площадка свода не влезает в буфер подачи");
-    const int cbase0 = (lane & 2) | ((lane & 4) << 1);
+    const int cbase0 = wmma_col_base(lane);
     const int tg = wn * 32 + lane;                     // 0..WN*32-1 внутри группы строк
     float* my  = sMrg + (long)(wm * WN + wn) * kPart;
     float* grp = sMrg + (long)(wm * WN) * kPart;
@@ -1188,8 +1188,8 @@ __shared__ float sRedS[BQ * WN * 2];
 #pragma unroll
           for (int rg = 0; rg < 8; ++rg) {
             const int sub = (rg >> 1) & 1;
-            const int row = i * 16 + rowbase + 2 * sub;
-            const int col = jb * 16 + cbase0 + (rg & 1) + 4 * ((rg >> 2) & 1);
+            const int row = i * 16 + rowbase + FA2_RSTEP * sub;
+            const int col = jb * 16 + cbase0 + (rg & 1) + FA2_CHALF * ((rg >> 2) & 1);
             my[row * ON + col] = o.acc[i][c * (ON / 16) + jb][rg] * mycorr[i][sub];
           }
       asm volatile("bar.sync 3, %0;" :: "r"(kConsThr));
@@ -1209,7 +1209,7 @@ __shared__ float sRedS[BQ * WN * 2];
     }
   } else {                                             // эпилог: O = acc / l, LSE = m + log(l)
     const int r0 = wm * OM;
-    const int rowbase = (lane & 1) | ((lane & 16) >> 2) | (lane & 8);
+    const int rowbase = wmma_row_base(lane);
     float inv[SMB][2];
 #pragma unroll
     for (int i = 0; i < SMB; ++i)
@@ -1220,7 +1220,7 @@ __shared__ float sRedS[BQ * WN * 2];
       // округление одно и то же, что у эталона (256*acc)*(1/l).
       for (int t = 0; t < 2; ++t) inv[i][t] = (l_run[i][t] > 0.f) ? (kFmtMul * __frcp_rn(l_run[i][t])) : 0.f;
     constexpr int OMB = OM / 16, ONB = ONo / 16;
-    const int cbase0 = (lane & 2) | ((lane & 4) << 1);
+    const int cbase0 = wmma_col_base(lane);
 #pragma unroll
     for (int i = 0; i < OMB; ++i)
 #pragma unroll
@@ -1228,8 +1228,8 @@ __shared__ float sRedS[BQ * WN * 2];
 #pragma unroll
         for (int rg = 0; rg < 8; ++rg) {
           const int sub = (rg >> 1) & 1;
-          const int row = i * 16 + rowbase + 2 * sub;
-          const int col = j * 16 + cbase0 + (rg & 1) + 4 * ((rg >> 2) & 1);
+          const int row = i * 16 + rowbase + FA2_RSTEP * sub;
+          const int col = j * 16 + cbase0 + (rg & 1) + FA2_CHALF * ((rg >> 2) & 1);
           if (q0 + r0 + row < Sq) {  // смещение уже снято поплиточно -- здесь только нормировка
             const float _v = o.acc[i][j][rg] * inv[i][sub];
             // При расщеплении пишем СВОЙ (уже нормированный на свой l) выход среза в fp32 --
@@ -1238,12 +1238,12 @@ __shared__ float sRedS[BQ * WN * 2];
             else O[(long)(q0 + r0 + row) * o_sM + voff + wn * ON + col] = __float2half(_v);
           }
         }
-    if ((lane & 6) == 0 && wn == 0 && vslice == 0) {   // LSE пишет только первый срез
+    if (FA2_ROW_LEADER(lane) && wn == 0 && vslice == 0) {   // LSE пишет только первый срез
 #pragma unroll
       for (int i = 0; i < SMB; ++i)
 #pragma unroll
         for (int t = 0; t < 2; ++t) {
-          const int row = r0 + i * 16 + rowbase + 2 * t;
+          const int row = r0 + i * 16 + rowbase + FA2_RSTEP * t;
           if (q0 + row < Sq) {
             const float _lse = (l_run[i][t] > 0.f)
                 ? (m_run[i][t] * 0.6931471805599453f + __logf(l_run[i][t])) : -CUDART_INF_F;

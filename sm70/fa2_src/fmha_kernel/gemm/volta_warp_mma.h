@@ -111,13 +111,75 @@ __device__ __forceinline__ int wmma_b_nbase(int lane) {
   const int q = lane >> 2;                 // 0..7
   return 4 * ((q >> 2) & 1) + 8 * (q & 1);
 }
-// Accumulator: the SAME map for every variant.
+// [АРХИТЕКТУРА] Выдача m16n8k16 на sm_80 вместо HMMA.884 -- см. sm80_warp_mma.h. На хост-проходе и на
+// sm_70 -- вольтовский путь, на sm_80+ -- ампер-путь; интерфейс оператора один.
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
+#define FA2_MMA_SM80 1
+#else
+#define FA2_MMA_SM80 0
+#endif
+
+// Accumulator: the SAME map for every variant (на каждой архитектуре своя).
 __device__ __forceinline__ int wmma_acc_row(int lane, int reg) {
+#if FA2_MMA_SM80
+  return (lane >> 2) + 8 * ((reg >> 1) & 1);                 // c0,c1: строка g; c2,c3: g+8
+#else
   return ((lane & 1) | ((lane & 16) >> 2) | (lane & 8)) + 2 * ((reg >> 1) & 1);
+#endif
 }
 __device__ __forceinline__ int wmma_acc_col(int lane, int reg) {
+#if FA2_MMA_SM80
+  return 2 * (lane & 3) + (reg & 1) + 8 * ((reg >> 2) & 1);  // вторая n8-половина -- регистры 4..7
+#else
   return ((lane & 2) | ((lane & 4) << 1)) + (reg & 1) + 4 * ((reg >> 2) & 1);
+#endif
 }
+// Маски шаффла, сводящие СТРОКУ плитки по полосам (столбцы строки лежат в полосах, отличающихся этими
+// битами). Volta: биты 1 и 2 полосы (2, 4). sm_80: биты 0 и 1 (1, 2). Литералы 2/4 в ядрах -- ошибка
+// на sm_80: свод пойдёт по СТРОКАМ, а не по столбцам.
+__device__ __forceinline__ constexpr int wmma_row_shfl(int i) {
+#if FA2_MMA_SM80
+  return i == 0 ? 1 : 2;
+#else
+  return i == 0 ? 2 : 4;
+#endif
+}
+// Строение карты одинаково на обеих архитектурах: бит 0 регистра -- столбец +1, бит 1 -- вторая строка
+// пары, бит 2 -- вторая половина столбцов. Различаются только КОНСТАНТЫ, и ядра, где карта развёрнута
+// вручную (софтмакс внимания, эпилоги GEMV/GDN), берут их отсюда:
+//   wmma_row_base(lane) -- строка регистра 0 внутри 16-блока;  FA2_RSTEP -- сдвиг строки по биту 1;
+//   wmma_col_base(lane) -- столбец регистра 0;                 FA2_CHALF -- сдвиг столбца по биту 2;
+//   FA2_SHFL0/1 -- маски свода строки по полосам;  FA2_ROW_LEADER(lane) -- одна полоса на строку;
+//   FA2_RSHIFT -- номер строки пары из (r - rowbase): (r - rowbase) >> FA2_RSHIFT.
+__device__ __forceinline__ int wmma_row_base(int lane) {
+#if FA2_MMA_SM80
+  return lane >> 2;
+#else
+  return (lane & 1) | ((lane & 16) >> 2) | (lane & 8);
+#endif
+}
+__device__ __forceinline__ int wmma_col_base(int lane) {
+#if FA2_MMA_SM80
+  return 2 * (lane & 3);
+#else
+  return (lane & 2) | ((lane & 4) << 1);
+#endif
+}
+#if FA2_MMA_SM80
+#define FA2_RSTEP 8
+#define FA2_RSHIFT 3
+#define FA2_CHALF 8
+#define FA2_SHFL0 1
+#define FA2_SHFL1 2
+#define FA2_ROW_LEADER(l) ((((l) & 3)) == 0)
+#else
+#define FA2_RSTEP 2
+#define FA2_RSHIFT 1
+#define FA2_CHALF 4
+#define FA2_SHFL0 2
+#define FA2_SHFL1 4
+#define FA2_ROW_LEADER(l) ((((l) & 6)) == 0)
+#endif
 
 // ---------------------------------------------------------------------------------------------
 // The operator. Tile is (16*MB) x (16*NB); K is walked in steps of 4.
@@ -126,6 +188,7 @@ __device__ __forceinline__ int wmma_acc_col(int lane, int reg) {
 // halves the per-thread fragment (and so the register cost of a resident accumulator) and what puts
 // 16 warps in one threadblock.
 // ---------------------------------------------------------------------------------------------
+#if !FA2_MMA_SM80
 template <int MB, int NB, BLayout BL, ALayout AL = ALayout::kKMajor>
 struct WarpMma {
   static constexpr int kM = MB * 16, kN = NB * 16;
@@ -864,5 +927,10 @@ struct WarpMma {
     visit(lane, [&](float v, int r, int c) { dst[(long)(row0 + r) * ld + col0 + c] = __float2half(v); });
   }
 };
+#endif  // !FA2_MMA_SM80
 
 }  // namespace fa2_sm70
+
+#if FA2_MMA_SM80
+#include "sm80_warp_mma.h"
+#endif

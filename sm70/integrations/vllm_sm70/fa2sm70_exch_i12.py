@@ -46,6 +46,15 @@ _ПОРОГ = int(_рычаг("FA2SM70_EXCH12_MIN", "FA2SM70_ОБМЕН_ПОРО
 # ЧИСЛО ЗНАЧАЩИХ РАЗРЯДОВ. 12 -- боевое. Меньшие значения НЕ УСКОРЯЮТ (байты те же), они нужны
 # ТОЛЬКО как положительный контроль приёмки: путь, который ОБЯЗАН разойтись с эталоном.
 _БИТ = int(os.environ.get("FA2SM70_EXCH12_BITS", "12"))
+# [A100 24.10] ПЕРЕВОЗКА КОПИРОВЩИКОМ (FA2SM80_EXCH_CE=1, пара карт с рабочим P2P): упакованная половина идёт
+# cudaMemcpyAsync прямо в приёмник соседа (IPC), затем флаг у соседа (ar2_signal, __threadfence_system), ожидание
+# своего флага (ar2_wait, с потолком) и распаковка. Замер 24.10 на паре 0-1 (iommu=pt): NCCL all_gather по P2P
+# берёт 8.1-8.2 ГБ/с на направление при встречной полосе копировщиков 10.5 -- то есть ~78 % канала, и его ядра
+# занимают SM, а копировщик -- нет (важно для перекрытия с умножением, fa2sm80_rowpipe). Двойной буфер по
+# чётности номера обмена: ранг дойдёт до обмена e+2, только увидев флаг соседа за e+1, а тот ставит его после
+# копии e+1, то есть после распаковки e (порядок потока) -- приёмник чётности e к этому времени дочитан.
+_CE = os.environ.get("FA2SM80_EXCH_CE", "0") == "1"
+_CE_МБ = int(os.environ.get("FA2SM80_EXCH_CE_MB", "72"))      # ёмкость приёмника на чётность
 
 if _рычаг("FA2SM70_EXCH12", "FA2SM70_ОБМЕН_I12") == "1":
     import torch
@@ -63,6 +72,41 @@ if _рычаг("FA2SM70_EXCH12", "FA2SM70_ОБМЕН_I12") == "1":
     # карту с соседями) и дальше не растёт; меньшие формы берут ПРЕФИКСНЫЕ виды того же куска.
     _КЭШ = {}    # карта -> (свой_max, чужие_max, ёмкость_байт)
     _ext = None
+    _CE_СОСТ = {}   # карта -> состояние перевозки копировщиком (или None, если поднять не удалось)
+
+    def _ce(сам):
+        """Один раз на карту: приёмник 2 x ёмкость и 2 флага вне графового пула, обмен ручками через gloo."""
+        ключ = сам.device.index if hasattr(сам, "device") else torch.cuda.current_device()
+        if ключ in _CE_СОСТ:
+            return _CE_СОСТ[ключ]
+        _CE_СОСТ[ключ] = None
+        try:
+            e = _расш()
+            cap = _CE_МБ << 20
+            recv = e.ipc_alloc(2 * cap, torch.uint8)
+            flag = e.ipc_alloc(2, torch.int32)
+            мои = {"r": (bytes(e.ipc_handle(recv)), e.ipc_offset(recv)),
+                   "f": (bytes(e.ipc_handle(flag)), e.ipc_offset(flag))}
+            мир, ранг = сам.world_size, сам.rank
+            собрано = [None] * мир
+            собрано[ранг] = мои
+            for i in range(мир):
+                буф = собрано[i:i + 1]
+                dist.broadcast_object_list(буф, src=dist.get_process_group_ranks(сам.cpu_group)[i],
+                                           group=сам.cpu_group)
+                собрано[i] = буф[0]
+            чуж = собрано[1 - ранг]
+            st = {"e": e, "cap": cap, "recv": recv, "flag": flag, "seq": 0, "n": 0,
+                  "срыв": torch.zeros(2, dtype=torch.int32, device=recv.device),
+                  "p_recv": e.ipc_open(чуж["r"][0], чуж["r"][1]),
+                  "p_flag": e.ipc_open(чуж["f"][0], чуж["f"][1])}
+            dist.barrier(group=сам.cpu_group)
+            _CE_СОСТ[ключ] = st
+            print(f"[fa2_sm70 ОБМЕН-12бит] перевозка КОПИРОВЩИКОМ по P2P: приёмник 2 x {_CE_МБ} МиБ",
+                  file=sys.stderr, flush=True)
+        except Exception as ex:  # noqa: BLE001
+            print(f"[fa2_sm70 ОБМЕН-12бит] копировщик не поднят ({ex}) -- NCCL", file=sys.stderr, flush=True)
+        return _CE_СОСТ[ключ]
 
     def _расш():
         global _ext
@@ -104,6 +148,24 @@ if _рычаг("FA2SM70_EXCH12", "FA2SM70_ОБМЕН_I12") == "1":
             pk = свой[:nb_pk].view(torch.int16)
             sc = свой[nb_pk:nb].view(torch.float16)
             e.pack_i12_into(x, pk, sc, _БИТ)
+            if _CE and мир == 2 and not torch.cuda.is_current_stream_capturing():
+                st = _ce(self)
+                if st is not None and nb <= st["cap"]:
+                    par = st["seq"] & 1
+                    st["seq"] += 1
+                    val = st["seq"]
+                    e.ar2_copy(свой[:nb], st["p_recv"] + par * st["cap"])     # моя половина -> приёмник соседа
+                    e.ar2_signal(st["p_flag"], par, val)                       # флаг у соседа после копии
+                    e.ar2_wait(st["flag"], par, val, st["срыв"])               # жду половину соседа
+                    ч = st["recv"][par * st["cap"]:par * st["cap"] + nb]
+                    out = e.unpack_add_i12(x, ч[:nb_pk].view(torch.int16), ч[nb_pk:nb].view(torch.float16))
+                    st["n"] += 1
+                    if st["n"] & 255 == 0 and int(st["срыв"][0].item()):
+                        raise RuntimeError("обмен копировщиком: срыв ожидания флага соседа")
+                    С["n"] += 1
+                    С["ушло"] += nb
+                    С["было_бы"] += n * 2
+                    return out.view_as(input_)
             # НАТИВНЫЙ СБОР: прямой ncclAllGather на ТЕКУЩЕМ потоке, без питоновской обвязки
             # torch.distributed. Он же ЗАХВАТЫВАЕТСЯ в CUDA-граф -- поэтому отката по
             # is_current_stream_capturing больше нет (он стоял без объяснения и запирал нас

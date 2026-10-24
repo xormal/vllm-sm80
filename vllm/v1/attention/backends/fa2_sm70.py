@@ -1210,7 +1210,8 @@ class FA2SM70Backend(AttentionBackend):
 
     @classmethod
     def supports_compute_capability(cls, capability: DeviceCapability) -> bool:
-        return capability.major == 7 and capability.minor == 0
+        # sm_70 -- вольтовские тела; sm_80/86 -- ампер-путь (sm80_warp_mma.h, decode_sm80.cuh), FA2_SM80=1
+        return (capability.major == 7 and capability.minor == 0) or capability.major == 8
 
     @classmethod
     def supports_attn_type(cls, attn_type: str) -> bool:

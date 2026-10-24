@@ -72,6 +72,13 @@ struct Obshchaya {
     // то есть идёт параллельно первому.
     int8_t sK[KBUF][KT * LDK];
     int8_t sV[KT * LDK];
+#if defined(FA2_SM80) && FA2_SM80
+    // [sm_80] V кладётся в разделяемую УЖЕ деквантованной (fp16, целое значение байта -- шкала по-прежнему
+    // в P): тогда P*V -- обычный n-мажорный fp16-операнд, одна ldmatrix.trans на плитку 16x16. Байтовый
+    // n-мажорный V на m16n8k16 стоит четырёх LDS.U8 на столбец и шаг (соседние ключи -- разные строки).
+    // Цена -- 16 КиБ; вольтовский потолок "два блока под 48 КиБ" на sm_80 не действует (164 КиБ на SM).
+    __half sVh[KT * (D + 8)];
+#endif
     float  шк[2][KT], шv[KT];        // шкалы K всегда в двух буферах (V3 читает их в софтмаксе)         // шкалы ключей плитки
     __half sQ[MT * LDQ];
     float  S[NS][MT * LDP];           // V3: два частичных S (половины D), сумма и маска -- в софтмаксе
@@ -263,6 +270,31 @@ __global__ __launch_bounds__(NT, V3 ? 2 : 1) void decode_hmma_kernel(
             }
             // S = Q * K^T на тензорных ядрах; B-фрагмент деквантуется из int8 прямо здесь.
             WarpMma<SMB, 1, BLayout::kKMajor> ms; ms.clear();
+#if FA2_MMA_SM80
+            {   // [sm_80] переставленная карта k32: Q -- LDS.128 на строку, K -- LDS.64 байт на ключ, на ДВА шага k16
+                const int g = lane >> 2, t = lane & 3;
+                const __half* pq0 = sh->sQ + (long)((V5 ? 0 : стр0) + g) * LDQ;
+                const int8_t* pk0 = sh->sK[V3 ? 0 : буф] + (long)(кл0 + g) * LDK;
+                const int8_t* pk1 = pk0 + 8L * LDK;
+#pragma unroll 4
+                for (int k = k_lo; k < k_hi; k += 32) {
+                    uint32_t a0[SMB][4], a1[SMB][4], b0[1][4], b1[1][4];
+#pragma unroll
+                    for (int i = 0; i < SMB; ++i) {
+                        const uint4 r0 = *reinterpret_cast<const uint4*>(pq0 + (long)(i * 16) * LDQ + k + 8 * t);
+                        const uint4 r1 = *reinterpret_cast<const uint4*>(pq0 + (long)(i * 16 + 8) * LDQ + k + 8 * t);
+                        a0[i][0] = r0.x; a0[i][1] = r1.x; a0[i][2] = r0.y; a0[i][3] = r1.y;
+                        a1[i][0] = r0.z; a1[i][1] = r1.z; a1[i][2] = r0.w; a1[i][3] = r1.w;
+                    }
+                    const uint2 c0 = *reinterpret_cast<const uint2*>(pk0 + k + 8 * t);
+                    const uint2 c1 = *reinterpret_cast<const uint2*>(pk1 + k + 8 * t);
+                    i8x4_to_h2x2(c0.x, b0[0][0], b0[0][1]); i8x4_to_h2x2(c1.x, b0[0][2], b0[0][3]);
+                    i8x4_to_h2x2(c0.y, b1[0][0], b1[0][1]); i8x4_to_h2x2(c1.y, b1[0][2], b1[0][3]);
+                    ms.mma_f(a0, b0);
+                    ms.mma_f(a1, b1);
+                }
+            }
+#else
             uint32_t fa[SMB][2], fb[1][2];
             const int8_t* pk = sh->sK[V3 ? 0 : буф] + (long)(кл0 + wmma_b_col(lane)) * LDK;
             const __half* pq = sh->sQ + (long)((V5 ? 0 : стр0) + fa2_sm70::wmma_a_row(lane)) * LDQ;
@@ -283,6 +315,7 @@ __global__ __launch_bounds__(NT, V3 ? 2 : 1) void decode_hmma_kernel(
                 ms.mma(fa, fb);
                 ms.mma(fa2, fb2);
             }
+#endif
 #pragma unroll
             for (int i = 0; i < SMB; ++i)
 #pragma unroll
@@ -307,10 +340,26 @@ __global__ __launch_bounds__(NT, V3 ? 2 : 1) void decode_hmma_kernel(
 #pragma unroll
             for (int c = 0; c < ЗАГР; ++c) {
                 const int i = (tid + c * NT) * 16;
+#if defined(FA2_SM80) && FA2_SM80
+                // Хвост плитки ОБНУЛЯЕТСЯ: в fp16 мусор разделяемой может оказаться inf/NaN, а 0*NaN = NaN
+                // (в байтовом V любой байт конечен, поэтому там хвост можно было не трогать).
+                if (i < KT * D) {
+                    const int кл_ = i / D, эл_ = i - кл_ * D;
+                    uint4 h0 = make_uint4(0, 0, 0, 0), h1 = make_uint4(0, 0, 0, 0);
+                    if (i < nk * D) {
+                        i8x4_to_h2x2(pfV[c].x, h0.x, h0.y); i8x4_to_h2x2(pfV[c].y, h0.z, h0.w);
+                        i8x4_to_h2x2(pfV[c].z, h1.x, h1.y); i8x4_to_h2x2(pfV[c].w, h1.z, h1.w);
+                    }
+                    __half* dst = sh->sVh + (long)кл_ * (D + 8) + эл_;
+                    *reinterpret_cast<uint4*>(dst) = h0;
+                    *reinterpret_cast<uint4*>(dst + 8) = h1;
+                }
+#else
                 if (i < nk * D) {
                     const int кл_ = i / D, эл_ = i - кл_ * D;
                     *reinterpret_cast<uint4*>(sh->sV + (long)кл_ * LDK + эл_) = pfV[c];
                 }
+#endif
             }
             for (int кл = nk + tid; кл < KT; кл += NT) sh->шv[кл] = 0.f;
             for (int кл = tid; кл < nk; кл += NT) {
@@ -388,6 +437,10 @@ __global__ __launch_bounds__(NT, V3 ? 2 : 1) void decode_hmma_kernel(
                 for (int j = 0; j < ONB; ++j) mo.acc[i][j][r] *= попр;
             }
             // O += P * V. V берётся n-мажорно: 4 соседних столбца d одного ключа = 4 байта.
+#if defined(FA2_SM80) && FA2_SM80
+            // [sm_80] V уже fp16 в sVh: штатный n-мажорный операнд (ldmatrix.trans), A = P k-мажорный.
+            mo.template accumulate<KT>(sh->P, LDP, (V4 ? 0 : стр0), sh->sVh, D + 8, d0, lane);
+#else
             uint32_t pa[OMB][2], pb[ONB][2];
             const __half* pp = sh->P + (long)((V4 ? 0 : стр0) + fa2_sm70::wmma_a_row(lane)) * LDP;
 #pragma unroll 4
@@ -402,6 +455,7 @@ __global__ __launch_bounds__(NT, V3 ? 2 : 1) void decode_hmma_kernel(
                 for (int j = 0; j < ONB; ++j) frag_i8(pb[j], pv + j * 16);
                 mo.mma(pa, pb);
             }
+#endif
             __syncthreads();
             if constexpr (V3) { if (есть_ещё) буф ^= 1; }   // V3: K уже уложен после барьера S-фазы; переключаем только шкалы
             if (!V3 && есть_ещё) {                              // укладка предвыбранной плитки (два буфера)

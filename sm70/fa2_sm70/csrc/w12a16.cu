@@ -504,16 +504,22 @@ torch::Tensor gemm_f16(torch::Tensor x, torch::Tensor w, int64_t geom, int64_t d
     case 17: GEMM_MB(256, 128, 16, 2, 4, 2); break;
     case 18: GEMM_ONE(256, 256, 16, 4, 4); break;
     case 19: GEMM_MB(256, 256, 16, 4, 4, 2); break;
+#if !(defined(FA2_SM80) && FA2_SM80)
     case 20: GEMM_ONE(256, 128,  8, 4, 2); break;
+#endif
     case 21: GEMM_ONE(192, 128, 16, 3, 2); break;
     case 22: GEMM_MB(128, 128, 16, 2, 4, 2); break;
+#if !(defined(FA2_SM80) && FA2_SM80)
     case 23: GEMM_MB(256, 128,  8, 4, 2, 2); break;
+#endif
     case 24: GEMM_P(256, 128, 16, 4, 2, 1); break;
     case 25: GEMM_P(128, 128, 32, 2, 4, 1); break;
     case 26: GEMM_P(256, 128, 16, 4, 2, 2); break;
+#if !(defined(FA2_SM80) && FA2_SM80)   // шаг K=8 -- вольтовская геометрия; m16n8k16 требует K кратно 16
     case 27: GEMM_ONE(256, 192,  8, 2, 4); break;
     case 28: GEMM_ONE(224, 192,  8, 2, 4); break;
     case 29: GEMM_ONE(256, 160,  8, 4, 2); break;
+#endif
     case 30: GEMM_ONE(256, 192, 16, 2, 4); break;
     default: TORCH_CHECK(false, "gemm_f16: воплощение вне таблицы");
   }

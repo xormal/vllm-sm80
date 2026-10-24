@@ -484,7 +484,7 @@ FA2B_UNROLL(FA2_FUNROLL)
     }
 
     const int r0 = wm * SM, c0 = wn * SN;
-    const int rowbase = (lane & 1) | ((lane & 16) >> 2) | (lane & 8);   // строка внутри 16-блока
+    const int rowbase = wmma_row_base(lane);   // строка внутри 16-блока
     float mloc[SMB][2], lloc[SMB][2];
 #pragma unroll
     for (int i = 0; i < SMB; ++i) { mloc[i][0] = mloc[i][1] = -CUDART_INF_F; lloc[i][0] = lloc[i][1] = 0.f; }
@@ -493,7 +493,7 @@ FA2B_UNROLL(FA2_FUNROLL)
       v *= qk_scale;   // qk_scale уже = scale*log2(e), см. запуск: экспонента считается exp2
       const int kk = kb + c0 + c;
       if ((CAUSAL && (q0 + r0 + r + causal_off) < kk) || kk >= Sk) v = -CUDART_INF_F;   // ragged Sk too
-      const int mb = r >> 4, sub = ((r & 15) - rowbase) >> 1;      // 0 или 1 (смещение 0 / 2)
+      const int mb = r >> 4, sub = ((r & 15) - rowbase) >> FA2_RSHIFT;      // 0 или 1 (смещение 0 / 2)
       if (v > mloc[mb][sub]) mloc[mb][sub] = v;
     });
 #pragma unroll
@@ -501,10 +501,10 @@ FA2B_UNROLL(FA2_FUNROLL)
 #pragma unroll
       for (int t = 0; t < 2; ++t) {                               // строку держат 4 полосы: биты 1 и 2
         float x = mloc[i][t];
-        float y = __shfl_xor_sync(0xffffffffu, x, 2); x = x > y ? x : y;
-        y = __shfl_xor_sync(0xffffffffu, x, 4);       x = x > y ? x : y;
+        float y = __shfl_xor_sync(0xffffffffu, x, FA2_SHFL0); x = x > y ? x : y;
+        y = __shfl_xor_sync(0xffffffffu, x, FA2_SHFL1);       x = x > y ? x : y;
         mloc[i][t] = x;
-        if ((lane & 6) == 0) sRedM[(wm * SM + i * 16 + rowbase + 2 * t) * WN + wn] = x;
+        if (FA2_ROW_LEADER(lane)) sRedM[(wm * SM + i * 16 + rowbase + FA2_RSTEP * t) * WN + wn] = x;
       }
     __syncthreads();
 #pragma unroll
@@ -513,7 +513,7 @@ FA2B_UNROLL(FA2_FUNROLL)
       for (int t = 0; t < 2; ++t) {                               // и по варпам вдоль n
         float x = -CUDART_INF_F;
 #pragma unroll
-        for (int w = 0; w < WN; ++w) { float y = sRedM[(wm * SM + i * 16 + rowbase + 2 * t) * WN + w]; x = x > y ? x : y; }
+        for (int w = 0; w < WN; ++w) { float y = sRedM[(wm * SM + i * 16 + rowbase + FA2_RSTEP * t) * WN + w]; x = x > y ? x : y; }
         mloc[i][t] = x;
       }
 
@@ -535,7 +535,7 @@ FA2B_UNROLL(FA2_FUNROLL)
     // значит регистры (0,1), (2,3), (4,5), (6,7) — это ПАРЫ СОСЕДНИХ СТОЛБЦОВ одной строки.
     // Вдвое меньше инструкций записи; тот же приём, что в backward дал x1.265 на перезаливке.
     {
-      const int cbase = (lane & 2) | ((lane & 4) << 1);
+      const int cbase = wmma_col_base(lane);
 #pragma unroll
       for (int i = 0; i < SMB; ++i)
 #pragma unroll
@@ -544,8 +544,8 @@ FA2B_UNROLL(FA2_FUNROLL)
           for (int pr = 0; pr < 4; ++pr) {                       // пары регистров
             const int rg = (pr & 1) ? (4 + ((pr >> 1) << 1)) : ((pr >> 1) << 1);
             const int reg0 = rg, reg1 = rg + 1;
-            const int row = i * 16 + rowbase + 2 * ((reg0 >> 1) & 1);
-            const int col = j * 16 + cbase + 4 * ((reg0 >> 2) & 1);
+            const int row = i * 16 + rowbase + FA2_RSTEP * ((reg0 >> 1) & 1);
+            const int col = j * 16 + cbase + FA2_CHALF * ((reg0 >> 2) & 1);
             const int mb = i, sub = (reg0 >> 1) & 1;   // константы компиляции
             const float mm = mloc[mb][sub];
             const float v0 = s.acc[i][j][reg0], v1 = s.acc[i][j][reg1];
@@ -561,9 +561,9 @@ FA2B_UNROLL(FA2_FUNROLL)
 #pragma unroll
       for (int t = 0; t < 2; ++t) {
         float x = lloc[i][t];
-        x += __shfl_xor_sync(0xffffffffu, x, 2);
-        x += __shfl_xor_sync(0xffffffffu, x, 4);
-        if ((lane & 6) == 0) sRedS[(wm * SM + i * 16 + rowbase + 2 * t) * WN + wn] = x;
+        x += __shfl_xor_sync(0xffffffffu, x, FA2_SHFL0);
+        x += __shfl_xor_sync(0xffffffffu, x, FA2_SHFL1);
+        if (FA2_ROW_LEADER(lane)) sRedS[(wm * SM + i * 16 + rowbase + FA2_RSTEP * t) * WN + wn] = x;
       }
     __syncthreads();
     float corr[SMB][2];
@@ -573,7 +573,7 @@ FA2B_UNROLL(FA2_FUNROLL)
       for (int t = 0; t < 2; ++t) {
         float ss = 0.f;
 #pragma unroll
-        for (int w = 0; w < WN; ++w) ss += sRedS[(wm * SM + i * 16 + rowbase + 2 * t) * WN + w];
+        for (int w = 0; w < WN; ++w) ss += sRedS[(wm * SM + i * 16 + rowbase + FA2_RSTEP * t) * WN + w];
         const float mo = m_run[i][t], mn = (mo > mloc[i][t]) ? mo : mloc[i][t];
         l_run[i][t] = l_run[i][t] * corr2[i][t] + ss * cnew[i][t];
         m_run[i][t] = mn; corr[i][t] = corr2[i][t];
@@ -616,7 +616,7 @@ FA2B_UNROLL(FA2_FUNROLL)
   // ---- эпилог: O = acc / l, LSE = m + log(l). Строки принадлежат этому варпу, обмена не нужно.
   {
     const int r0 = wm * OM;
-    const int rowbase = (lane & 1) | ((lane & 16) >> 2) | (lane & 8);
+    const int rowbase = wmma_row_base(lane);
     float inv[SMB][2];
 #pragma unroll
     for (int i = 0; i < SMB; ++i)
@@ -624,7 +624,7 @@ FA2B_UNROLL(FA2_FUNROLL)
       for (int t = 0; t < 2; ++t) inv[i][t] = (l_run[i][t] > 0.f) ? __frcp_rn(l_run[i][t]) : 0.f;
     {
       constexpr int OMB = OM / 16, ONB = ON / 16;
-      const int cbase0 = (lane & 2) | ((lane & 4) << 1);
+      const int cbase0 = wmma_col_base(lane);
 #pragma unroll
       for (int i = 0; i < OMB; ++i)
 #pragma unroll
@@ -632,18 +632,18 @@ FA2B_UNROLL(FA2_FUNROLL)
 #pragma unroll
           for (int rg = 0; rg < 8; ++rg) {
             const int sub = (rg >> 1) & 1;
-            const int row = i * 16 + rowbase + 2 * sub;
-            const int col = j * 16 + cbase0 + (rg & 1) + 4 * ((rg >> 2) & 1);
+            const int row = i * 16 + rowbase + FA2_RSTEP * sub;
+            const int col = j * 16 + cbase0 + (rg & 1) + FA2_CHALF * ((rg >> 2) & 1);
             if (q0 + r0 + row < Sq)
               O[(long)(q0 + r0 + row) * o_sM + wn * ON + col] = __float2half(o.acc[i][j][rg] * inv[i][sub]);
           }
     }
-    if ((lane & 6) == 0 && wn == 0) {                       // LSE пишет один варп на строку
+    if (FA2_ROW_LEADER(lane) && wn == 0) {                       // LSE пишет один варп на строку
 #pragma unroll
       for (int i = 0; i < SMB; ++i)
 #pragma unroll
         for (int t = 0; t < 2; ++t) {
-          const int row = r0 + i * 16 + rowbase + 2 * t;
+          const int row = r0 + i * 16 + rowbase + FA2_RSTEP * t;
           if (q0 + row < Sq)
             Lse[q0 + row] = (l_run[i][t] > 0.f) ? (m_run[i][t] * 0.6931471805599453f + __logf(l_run[i][t])) : -CUDART_INF_F;
         }

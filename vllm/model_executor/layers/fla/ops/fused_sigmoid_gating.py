@@ -195,6 +195,7 @@ def fused_sigmoid_gating_delta_rule_update(
     branch_at: int = 0,
     use_qk_l2norm_in_kernel: bool = False,
     is_kda: bool = False,
+    out: torch.Tensor | None = None,
 ):
     """Fuse sigmoid gating with recurrent delta-rule update."""
     # [FA2/SM70, задача 180 -- НАТИВНАЯ ВЕТКА, БЕЗ ПИТОН-ПРОКЛАДОК ПОВЕРХ ИМПОРТОВ]
@@ -235,9 +236,19 @@ def fused_sigmoid_gating_delta_rule_update(
             if _cu is not None:
                 _cu = _cu.to(_тип)
             from fa2_sm70 import _ext as _fa2_ext
-            _o = _fa2_ext.gdn_ext().gdn_rec_gating(
-                A_log.float(), _a3.contiguous(), _b3.contiguous(), dt_bias.float(),
-                q.contiguous(), k.contiguous(), v.contiguous(), float(_scale),
+            # [A100 24.10] q/k/v -- срезы mixed_qkv, a/b -- срезы выхода in_proj_ba: ядро (сборка с шагами по
+            # токену) берёт их как есть -- без пяти копий на слой (5 узлов графа и ~15 мкс на каждый слой GDN).
+            # Старая сборка ядра шагов не знает -- для неё прежние копии (FA2SM70_GDN_REC_VIEWS=0).
+            _видом = os.environ.get("FA2SM70_GDN_REC_VIEWS", "1") == "1" and q.size(0) == 1
+            _пл = (lambda t: t) if _видом else (lambda t: t.contiguous())
+            # [A100 24.10] out -- приёмник вызывающего (срез core_attn_out): выход пишется сразу на место.
+            _гвх = _fa2_ext.gdn_ext()
+            _рк = (_гвх.gdn_rec_gating_out if (out is not None and hasattr(_гвх, "gdn_rec_gating_out"))
+                   else (lambda *ар: _гвх.gdn_rec_gating(*ар)))
+            _хвост = (out,) if (out is not None and hasattr(_гвх, "gdn_rec_gating_out")) else ()
+            _o = _рк(
+                A_log.float(), _пл(_a3), _пл(_b3), dt_bias.float(),
+                _пл(q), _пл(k), _пл(v), float(_scale),
                 initial_state, _idx_in, _nacc, _cu,
                 bool(use_qk_l2norm_in_kernel),
                 # Куда писать состояние, если это НЕ тот блок, откуда читали (режим 'all').
@@ -250,7 +261,7 @@ def fused_sigmoid_gating_delta_rule_update(
                 # локализовать падающее обращение так нельзя.
                 getattr(initial_state, "fa2sm70_scales", None),
                 # [ДЕРЕВО, 05.09] строка ветвления: b0 продолжает ЯКОРЬ, а не хвост ветви A
-                int(branch_at))
+                int(branch_at), *_хвост)
             global _FA2SM70_REC_OURS
             try:
                 _FA2SM70_REC_OURS += 1

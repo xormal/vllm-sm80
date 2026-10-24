@@ -300,8 +300,12 @@ __global__ __launch_bounds__(WN * 32, MINB) void w12a16_hmma(
 #pragma unroll
     for (int j = 0; j < NBw; ++j) { fb[j][0] = fb_reg[j][0]; fb[j][1] = fb_reg[j][1]; }
     fb[0][0] ^= (uint32_t)__half_as_ushort(pB[lane]) & 0xFFFFu;
+#if !FA2_MMA_SM80   // фальсификатор на вольтовских фрагментах; на sm_80 не собирается (DIAG-only)
 #pragma unroll
     for (int k = 0; k < KD; k += 4) { o.load_a(fa, pA, LDA, 0, lane, k); o.mma(fa, fb); }
+#else
+    (void)pA; (void)fa;
+#endif
   };
 
   if constexpr (PIPE) { подать(0); разложить(0); }
@@ -347,8 +351,8 @@ __global__ __launch_bounds__(WN * 32, MINB) void w12a16_hmma(
     for (int j = 0; j < NBw; ++j)
 #pragma unroll
       for (int r = 0; r < 8; ++r) {
-        const int row = ((lane & 1) | ((lane & 16) >> 2) | (lane & 8)) + 2 * ((r >> 1) & 1);
-        const int col = ((lane & 2) | ((lane & 4) << 1)) + (r & 1) + 4 * ((r >> 2) & 1) + j * 16
+        const int row = (wmma_row_base(lane)) + FA2_RSTEP * ((r >> 1) & 1);
+        const int col = (wmma_col_base(lane)) + (r & 1) + FA2_CHALF * ((r >> 2) & 1) + j * 16
                         + warp * (BN / WN);
         if (n0 + col < N && row < mrows)
           acc[j][r] += sS[col] * (o.acc[0][j][r] - kBias12 * sSx[row]);
@@ -359,8 +363,8 @@ __global__ __launch_bounds__(WN * 32, MINB) void w12a16_hmma(
   for (int j = 0; j < NBw; ++j)
 #pragma unroll
     for (int r = 0; r < 8; ++r) {
-      const int row = ((lane & 1) | ((lane & 16) >> 2) | (lane & 8)) + 2 * ((r >> 1) & 1);
-      const int col = ((lane & 2) | ((lane & 4) << 1)) + (r & 1) + 4 * ((r >> 2) & 1) + j * 16
+      const int row = (wmma_row_base(lane)) + FA2_RSTEP * ((r >> 1) & 1);
+      const int col = (wmma_col_base(lane)) + (r & 1) + FA2_CHALF * ((r >> 2) & 1) + j * 16
                       + warp * (BN / WN);
       const int nn = n0 + col;
       if (nn < N && row < mrows) y[(long)(m0 + row) * N + nn] = __float2half(acc[j][r]);

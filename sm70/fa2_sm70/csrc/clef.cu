@@ -518,7 +518,8 @@ void set_step(at::Tensor segs) {
   for (int j = 0; j < std::min(S, E.nslot); ++j) prefetch(j);
 }
 
-void delta(at::Tensor x, at::Tensor y, int64_t model_layer, int64_t mod) {
+// r0 >= 0: x/y -- окно строк шага [r0, r0+M) (кусок конвейера rowpipe); сегменты обрезаются по окну.
+void delta(at::Tensor x, at::Tensor y, int64_t model_layer, int64_t mod, int64_t r0 = -1) {
   if (!E.active) return;
   if (model_layer < 0 || model_layer >= 256 || E.lmap[model_layer] < 0) return;
   if (x.dim() != 2 || y.dim() != 2 || x.scalar_type() != at::kHalf || y.scalar_type() != at::kHalf ||
@@ -537,7 +538,13 @@ void delta(at::Tensor x, at::Tensor y, int64_t model_layer, int64_t mod) {
   }
   const int64_t M = x.size(0), ldx = x.stride(0), ldy = y.stride(0), K = x.size(1), N = y.size(1);
   half* tb = (half*)E.tbuf.data_ptr();
-  for (const Seg& sg : E.segs) {
+  for (const Seg& sg0 : E.segs) {
+    Seg sg = sg0;
+    if (r0 >= 0) {                                   // окно куска: обрезать и сдвинуть к началу окна
+      const int64_t a = std::max<int64_t>(sg.row0, r0), b = std::min<int64_t>(sg.row0 + sg.rows, r0 + M);
+      if (a >= b) continue;
+      sg.row0 = (int)(a - r0); sg.rows = (int)(b - a);
+    }
     if (sg.rows <= 0) continue;
     if (sg.row0 < 0 || sg.row0 + sg.rows > M) { fail("delta: сегмент за пределами строк"); return; }
     const half* xs = (const half*)x.data_ptr() + sg.row0 * ldx;
@@ -581,6 +588,21 @@ void delta_keyed(at::Tensor x, at::Tensor y, std::vector<at::Tensor> keys) {
     auto it = E.keys.find((uintptr_t)k.data_ptr());
     if (it != E.keys.end()) {
       delta(x, y, it->second.first, it->second.second);
+      return;
+    }
+  }
+  E.n_keymiss++;
+}
+
+// то же для окна строк шага [r0, r0+M) (кусок конвейера «умножение -> сведение», fa2sm80_rowpipe)
+void delta_keyed_range(at::Tensor x, at::Tensor y, std::vector<at::Tensor> keys, int64_t r0) {
+  if (!E.active) return;
+  TORCH_CHECK(r0 >= 0, "clef: delta_keyed_range: r0 < 0");
+  for (const auto& k : keys) {
+    if (!k.defined() || k.numel() == 0) continue;
+    auto it = E.keys.find((uintptr_t)k.data_ptr());
+    if (it != E.keys.end()) {
+      delta(x, y, it->second.first, it->second.second, r0);
       return;
     }
   }
@@ -909,9 +931,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("add_layer", &add_layer);
   m.def("finalize_delta", &finalize_delta);
   m.def("set_step", &set_step);
-  m.def("delta", &delta);
+  m.def("delta", &delta, py::arg("x"), py::arg("y"), py::arg("model_layer"), py::arg("mod"), py::arg("r0") = -1);
   m.def("bind", &bind);
   m.def("delta_keyed", &delta_keyed);
+  m.def("delta_keyed_range", &delta_keyed_range);
   m.def("init_head", &init_head);
   m.def("req_begin", &req_begin);
   m.def("req_end", &req_end);

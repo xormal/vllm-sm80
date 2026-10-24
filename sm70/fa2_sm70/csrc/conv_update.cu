@@ -45,7 +45,38 @@ template <> __device__ __forceinline__ __nv_bfloat16 from_f<__nv_bfloat16>(float
 // прочитан очередной входной токен, ДО того как выход затрёт вход на месте.
 // Это и есть темпоральная укладка: один проход по состоянию, ноль барьеров,
 // ноль разделяемой памяти, ни одного повторного чтения.
-template <typename T, int VEC, int W>
+// [A100 24.10] ВЕКТОРНЫЙ ВВОД-ВЫВОД (VIO): VEC=8 значений fp16/bf16 = одна 16-байтная инструкция. Скалярный
+// путь давал ~96 двухбайтных загрузок и ~56 записей на нить, и на шаге MTP (5 блоков) ядро стояло в очереди
+// LSU (Nsight: длинное табло 7.6 + LG throttle 0.9 такта на инструкцию; горячий и холодный L2 -- почти одно
+// время). Значения и порядок арифметики те же -- побитово.
+template <typename T, int VEC, bool VIO>
+__device__ __forceinline__ void ldv(const T* p, float (&o)[VEC]) {
+  if constexpr (VIO) {
+    static_assert(VEC == 8, "VIO -- только 8 значений");
+    const uint4 u = *reinterpret_cast<const uint4*>(p);
+    const T* h = reinterpret_cast<const T*>(&u);
+#pragma unroll
+    for (int v = 0; v < VEC; ++v) o[v] = to_f<T>(h[v]);
+  } else {
+#pragma unroll
+    for (int v = 0; v < VEC; ++v) o[v] = to_f<T>(p[v]);
+  }
+}
+template <typename T, int VEC, bool VIO>
+__device__ __forceinline__ void stv(T* p, const float (&o)[VEC]) {
+  if constexpr (VIO) {
+    uint4 u;
+    T* h = reinterpret_cast<T*>(&u);
+#pragma unroll
+    for (int v = 0; v < VEC; ++v) h[v] = from_f<T>(o[v]);
+    *reinterpret_cast<uint4*>(p) = u;
+  } else {
+#pragma unroll
+    for (int v = 0; v < VEC; ++v) p[v] = from_f<T>(o[v]);
+  }
+}
+
+template <typename T, int VEC, int W, bool VIO = false>
 __global__ void conv_upd_k(
     T* __restrict__ x, T* __restrict__ st_, const T* __restrict__ w_,
     const T* __restrict__ bias_, const int32_t* __restrict__ tab_,
@@ -57,6 +88,55 @@ __global__ void conv_upd_k(
 {
   const int row = blockIdx.x;
   if (row >= B) return;
+  const int ch = (blockIdx.y * blockDim.x + threadIdx.x) * VEC;
+  if (ch >= dim) return;
+
+  // [A100 24.10] ВСЕ НЕЗАВИСИМЫЕ ЧТЕНИЯ -- СРАЗУ. На шаге MTP (B=1) сетка -- 5 блоков, и время ядра --
+  // это цепочка задержек: col_r/col_w -> tab -> состояние (три зависимых чтения), затем цикл по токенам,
+  // где чтение x следующего токена уходило лишь после счёта предыдущего (выдача по порядку). Здесь веса,
+  // смещение, qsl и x первых XPRE токенов выдаются ДО цепочки индексов и идут параллельно ей.
+  // Арифметика и её порядок не меняются -- выход и состояние побитово прежние.
+  float wcol[W][VEC], bv[VEC];
+  if constexpr (VIO) {
+    // веса [dim, W] плотные (sw_dim == W): VEC каналов x W отводов -- VEC*W значений подряд
+    float wl[VEC * W];
+#pragma unroll
+    for (int c = 0; c < W; ++c) {
+      float q8[8];
+      ldv<T, 8, true>(w_ + (long)ch * W + c * 8, q8);
+#pragma unroll
+      for (int v = 0; v < 8; ++v) wl[c * 8 + v] = q8[v];
+    }
+#pragma unroll
+    for (int j = 0; j < W; ++j)
+#pragma unroll
+      for (int v = 0; v < VEC; ++v) wcol[j][v] = wl[v * W + j];
+    if (bias_) ldv<T, VEC, true>(bias_ + ch, bv);
+    else {
+#pragma unroll
+      for (int v = 0; v < VEC; ++v) bv[v] = 0.f;
+    }
+  } else {
+#pragma unroll
+    for (int j = 0; j < W; ++j)
+#pragma unroll
+      for (int v = 0; v < VEC; ++v) wcol[j][v] = to_f<T>(w_[(long)(ch + v) * sw_dim + j]);
+#pragma unroll
+    for (int v = 0; v < VEC; ++v) bv[v] = bias_ ? to_f<T>(bias_[ch + v]) : 0.f;
+  }
+
+  int qs, slen;
+  if (qsl) { qs = qsl[row]; slen = qsl[row + 1] - qs; }
+  else     { qs = row;      slen = 1; }
+  if (slen <= 0) return;
+  // ГРАНИЦА ВХОДА: qsl приходит из чужих метаданных и у паддинговых рядов бывает
+  // устаревшим. Без этой проверки чтение x уходит за буфер (чужое ядро её не имеет).
+  if (qs < 0 || (long)qs + slen > x_rows) return;
+  constexpr int XPRE = 4;                    // MTP: 1 + 3 черновых токена
+  float xpre[XPRE][VEC];
+#pragma unroll
+  for (int t = 0; t < XPRE; ++t)
+    if (t < slen) ldv<T, VEC, VIO>(x + (long)(qs + t) * sx_tok + ch, xpre[t]);
 
   // --- ОБЕ КООРДИНАТЫ И ОБЕ КОЛОНКИ. Ровно то, чего нет у чужого ядра. ---
   const int cr = col_r ? col_r[row] : 0;
@@ -67,19 +147,8 @@ __global__ void conv_upd_k(
   if (line_r == pad_id || line_w == pad_id) return;
   if (line_r < 0 || line_r >= nlines || line_w < 0 || line_w >= nlines) return;
 
-  int qs, slen;
-  if (qsl) { qs = qsl[row]; slen = qsl[row + 1] - qs; }
-  else     { qs = row;      slen = 1; }
-  if (slen <= 0) return;
-  // ГРАНИЦА ВХОДА: qsl приходит из чужих метаданных и у паддинговых рядов бывает
-  // устаревшим. Без этой проверки чтение x уходит за буфер (чужое ядро её не имеет).
-  if (qs < 0 || (long)qs + slen > x_rows) return;
-
   int toff = nacc ? (nacc[row] - 1) : 0;
   if (toff < 0) toff = 0;
-
-  const int ch = (blockIdx.y * blockDim.x + threadIdx.x) * VEC;
-  if (ch >= dim) return;
 
   const T* base_r = st_ + (long)line_r * ss_seq + ch;
   T*       base_w = st_ + (long)line_w * ss_seq + ch;
@@ -89,44 +158,42 @@ __global__ void conv_upd_k(
 #pragma unroll
   for (int j = 0; j < W - 1; ++j) {
     const int t = toff + j;
-    const T* p = base_r + (long)t * ss_tok;
+    float z[VEC];
+    if (t < win_phys) ldv<T, VEC, VIO>(base_r + (long)t * ss_tok, z);
+    else {
 #pragma unroll
-    for (int v = 0; v < VEC; ++v) {
-      float z = (t < win_phys) ? to_f<T>(p[v]) : 0.f;
-      cur[j][v] = z; ini[j][v] = z;
+      for (int v = 0; v < VEC; ++v) z[v] = 0.f;
     }
+#pragma unroll
+    for (int v = 0; v < VEC; ++v) { cur[j][v] = z[v]; ini[j][v] = z[v]; }
   }
-
-  float wcol[W][VEC], bv[VEC];
-#pragma unroll
-  for (int j = 0; j < W; ++j)
-#pragma unroll
-    for (int v = 0; v < VEC; ++v) wcol[j][v] = to_f<T>(w_[(long)(ch + v) * sw_dim + j]);
-#pragma unroll
-  for (int v = 0; v < VEC; ++v) bv[v] = bias_ ? to_f<T>(bias_[ch + v]) : 0.f;
 
   // ГОЛОВА нового окна -- из снятых регистров, до всякой записи в x
 #pragma unroll
   for (int i = 0; i < W - 2; ++i) {
     if (i >= win_phys) break;
-    T* p = base_w + (long)i * ss_tok;
-#pragma unroll
-    for (int v = 0; v < VEC; ++v) p[v] = from_f<T>(ini[i + 1][v]);
+    stv<T, VEC, VIO>(base_w + (long)i * ss_tok, ini[i + 1]);
   }
 
   for (int t = 0; t < slen; ++t) {
     T* px = x + (long)(qs + t) * sx_tok + ch;
     float xt[VEC], acc[VEC];
+    if (t < XPRE) {
 #pragma unroll
-    for (int v = 0; v < VEC; ++v) { xt[v] = to_f<T>(px[v]); acc[v] = bv[v]; }
+      for (int j = 0; j < XPRE; ++j)
+        if (j == t) {
+#pragma unroll
+          for (int v = 0; v < VEC; ++v) xt[v] = xpre[j][v];
+        }
+    } else {
+      ldv<T, VEC, VIO>(px, xt);
+    }
+#pragma unroll
+    for (int v = 0; v < VEC; ++v) acc[v] = bv[v];
 
     // ХВОСТ нового окна кладётся ЗДЕСЬ: вход ещё не затёрт выходом
     const int poz = W - 2 + t;
-    if (poz < WIN && poz < win_phys) {
-      T* ps = base_w + (long)poz * ss_tok;
-#pragma unroll
-      for (int v = 0; v < VEC; ++v) ps[v] = from_f<T>(xt[v]);
-    }
+    if (poz < WIN && poz < win_phys) stv<T, VEC, VIO>(base_w + (long)poz * ss_tok, xt);
 
 #pragma unroll
     for (int j = 0; j < W - 1; ++j)
@@ -136,8 +203,8 @@ __global__ void conv_upd_k(
     for (int v = 0; v < VEC; ++v) {
       acc[v] += xt[v] * wcol[W - 1][v];
       if (do_silu) acc[v] = acc[v] / (1.f + __expf(-acc[v]));
-      px[v] = from_f<T>(acc[v]);
     }
+    stv<T, VEC, VIO>(px, acc);
 #pragma unroll
     for (int j = 0; j < W - 2; ++j)
 #pragma unroll
@@ -192,15 +259,23 @@ torch::Tensor conv1d_update(
 
   const int nthr = 128;
   auto stream_ = at::cuda::getCurrentCUDAStream();
-#define LAUNCH(T, V, WW)                                                              \
+  auto al16 = [](const void* p) { return (reinterpret_cast<uintptr_t>(p) & 15) == 0; };
+  const bool vio = VEC == 8 && sw_dim == W && al16(x.data_ptr()) && al16(st_.data_ptr()) &&
+                   al16(w_.data_ptr()) && (!bias_.has_value() || al16(bias_->data_ptr()));
+#define LAUNCH_I(T, V, WW, VI)                                                        \
   do {                                                                                \
     dim3 grid_(B, (unsigned)div_up(div_up(dim, V), nthr));                            \
-    conv_upd_k<T, V, WW><<<grid_, nthr, 0, stream_>>>(                                \
+    conv_upd_k<T, V, WW, VI><<<grid_, nthr, 0, stream_>>>(                            \
         (T*)x.data_ptr(), (T*)st_.data_ptr(), (const T*)w_.data_ptr(),                \
         bias_.has_value() ? (const T*)bias_->data_ptr() : nullptr,                    \
         tab_.data_ptr<int32_t>(), p_cr, p_cw, p_acc, p_qsl,                           \
         B, dim, C, nlines, win_phys, WIN, x_rows,                                     \
         sx_tok, ss_seq, ss_tok, s_tab, sw_dim, (int)pad_id, do_silu, is_spec);        \
+  } while (0)
+#define LAUNCH(T, V, WW)                                                              \
+  do {                                                                                \
+    if constexpr (V == 8) { if (vio) LAUNCH_I(T, 8, WW, true); else LAUNCH_I(T, 8, WW, false); } \
+    else LAUNCH_I(T, V, WW, false);                                                   \
   } while (0)
 #define BY_WIDTH(T, V)                                                               \
   do {                                                                                \
@@ -223,6 +298,7 @@ torch::Tensor conv1d_update(
   }
 #undef BY_WIDTH
 #undef LAUNCH
+#undef LAUNCH_I
   return x;
 }
 

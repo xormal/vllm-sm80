@@ -163,8 +163,8 @@ __global__ __launch_bounds__(WN * 32) void w8a16_hmma(
     for (int j = 0; j < NBw; ++j)
 #pragma unroll
       for (int r = 0; r < 8; ++r) {
-        const int row = ((lane & 1) | ((lane & 16) >> 2) | (lane & 8)) + 2 * ((r >> 1) & 1);
-        const int col = ((lane & 2) | ((lane & 4) << 1)) + (r & 1) + 4 * ((r >> 2) & 1) + j * 16
+        const int row = (wmma_row_base(lane)) + FA2_RSTEP * ((r >> 1) & 1);
+        const int col = (wmma_col_base(lane)) + (r & 1) + FA2_CHALF * ((r >> 2) & 1) + j * 16
                         + warp * (BN / WN);
         const int nn = n0 + col;
         if (nn < N && row < mrows)
@@ -176,8 +176,8 @@ __global__ __launch_bounds__(WN * 32) void w8a16_hmma(
   for (int j = 0; j < NBw; ++j)
 #pragma unroll
     for (int r = 0; r < 8; ++r) {
-      const int row = ((lane & 1) | ((lane & 16) >> 2) | (lane & 8)) + 2 * ((r >> 1) & 1);
-      const int col = ((lane & 2) | ((lane & 4) << 1)) + (r & 1) + 4 * ((r >> 2) & 1) + j * 16
+      const int row = (wmma_row_base(lane)) + FA2_RSTEP * ((r >> 1) & 1);
+      const int col = (wmma_col_base(lane)) + (r & 1) + FA2_CHALF * ((r >> 2) & 1) + j * 16
                       + warp * (BN / WN);
       const int nn = n0 + col;
       if (nn < N && row < mrows) {

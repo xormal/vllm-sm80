@@ -94,12 +94,13 @@ def установить() -> bool:
         return False
     if getattr(UnquantizedLinearMethod, "_фа2_мтп_w8", False):
         return True
-    if not hasattr(torch.ops.vllm, "fa2sm70_w8_mm"):
+    _s80 = hasattr(torch.ops.vllm, "fa2sm80_w8_mm")      # A100: общая операция fa2sm80_w8 (FA2SM80_W8=1)
+    if not _s80 and not hasattr(torch.ops.vllm, "fa2sm70_w8_mm"):
         print("[fa2_sm70 MTP-W8] операция fa2sm70_w8_mm не зарегистрирована "
               "(нужен FA2SM70_W8=1) -- подмены нет", file=sys.stderr, flush=True)
         return False
 
-    if _NSPLIT > 1 and not hasattr(torch.ops.vllm, "fa2sm70_w8_mm_ch"):
+    if not _s80 and _NSPLIT > 1 and not hasattr(torch.ops.vllm, "fa2sm70_w8_mm_ch"):
         from typing import List
 
         from vllm.utils.torch_utils import direct_register_custom_op
@@ -149,7 +150,14 @@ def установить() -> bool:
             layer.фа2_gidx = torch.empty((0,), dtype=torch.int, device=w.device)
             layer._мтп_w8 = True
             layer._мтп_ш = int(qw.shape[1])
-            if (_NSPLIT > 1 and N >= _SPLIT_NMIN
+            if _s80:
+                # [A100] фрагментный порядок w8a16_sm80; большие M -- через ОБЩИЙ деквант-буфер fa2sm80_w8,
+                # отдельного буфера на вес (170 МиБ у gate_up, отказы на Volta 17.09) не заводится
+                import fa2sm80_w8
+                wf, meta = fa2sm80_w8.упаковать_вне_gptq(qw, qz, sc, False, K, N)
+                layer.фа2_s80 = (wf, meta, sc, K, N)
+                layer.фа2_qweight = layer.фа2_qzeros = None
+            elif (_NSPLIT > 1 and N >= _SPLIT_NMIN
                     and hasattr(torch.ops.vllm, "fa2sm70_w8_mm_ch")):
                 куски = _разделить(qw, qz, sc, _NSPLIT)
                 if куски is not None:
@@ -183,6 +191,14 @@ def установить() -> bool:
             return _чужой_apply(self, layer, x, bias)
         out_shape = x.shape[:-1] + (layer._мтп_ш,)
         xr = x.reshape(-1, x.shape[-1])
+        s80 = getattr(layer, "фа2_s80", None)
+        if s80 is not None:
+            if xr.dtype != torch.float16:
+                xr = xr.half()
+            y = torch.ops.vllm.fa2sm80_w8_mm(xr, s80[0], s80[1], s80[2], s80[3], s80[4])
+            if bias is not None:
+                y = y + bias
+            return y.reshape(out_shape)
         if getattr(layer, "_мтп_w8_ч", False):
             y = torch.ops.vllm.fa2sm70_w8_mm_ch(xr, layer.фа2_qw_ч, layer.фа2_qz_ч,
                                                 layer.фа2_sc_ч, layer.фа2_gidx, _G, False,

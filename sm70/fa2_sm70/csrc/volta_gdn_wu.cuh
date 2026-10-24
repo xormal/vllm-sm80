@@ -184,7 +184,11 @@ __global__ __launch_bounds__(WM * WN * 32, MINB) void volta_gdn_chunk_wu(
       const int q = tid + s * nthr, r = q / (DK / 8), c = (q % (DK / 8)) * 8;
       // sigma: столбцы группы восьмёрки идут в порядке 0,1,4,5,2,3,6,7, то есть средние два слова
       // uint4 меняются местами. Инструкций это не стоит вовсе -- только имена регистров.
+      #if FA2_MMA_SM80   // на sm_80 своя карта аккумулятора: sigma не нужна, эпилог пишет пары столбцов
+      *reinterpret_cast<uint4*>(&sK[r * LDB + c]) = rk[s];
+#else
       *reinterpret_cast<uint4*>(&sK[r * LDB + c]) = make_uint4(rk[s].x, rk[s].z, rk[s].y, rk[s].w);
+#endif
     }
   }
 
@@ -213,6 +217,22 @@ __global__ __launch_bounds__(WM * WN * 32, MINB) void volta_gdn_chunk_wu(
   // ЦЕЛИКОМ. Перебор (i, j, reg) ЯВНЫЙ, не через visit: visit отдаёт (r, c) во время выполнения, и
   // любой регистровый массив с таким индексом уезжает в локальную память (§43 плейбука, §4d примитивов).
   auto store_out = [&](__half* base, int ldrow) {
+#if FA2_MMA_SM80
+    // sm_80: регистры (0,1) -- столбцы 2L,2L+1, (4,5) -- те же +8 (L = lane&3); строки g и g+8.
+    const int cb80 = co + 2 * (lane & 3);
+#pragma unroll
+    for (int i = 0; i < MB; ++i)
+#pragma unroll
+      for (int j = 0; j < NB; ++j)
+#pragma unroll
+        for (int rg = 0; rg < 8; rg += 2) {
+          const int r = ro + i * 16 + wmma_acc_row(lane, rg);
+          if (r < rows)
+            *reinterpret_cast<__half2*>(&base[(bos + t0 + r) * (long)ldrow + cb80 + j * 16 + 8 * (rg >> 2)]) =
+                __floats2half2_rn(mm.acc[i][j][rg], mm.acc[i][j][rg + 1]);
+        }
+    return;
+#endif
     const int cbase = co + ((lane & 6) << 1);          // 8*L2 + 4*L1
 #pragma unroll
     for (int i = 0; i < MB; ++i)
@@ -280,7 +300,11 @@ __global__ __launch_bounds__(WM * WN * 32, MINB) void volta_gdn_chunk_wu(
 #pragma unroll
     for (int s = 0; s < kBV; ++s) {
       const int q = tid + s * nthr, r = q / (DV / 8), c = (q % (DV / 8)) * 8;
+      #if FA2_MMA_SM80
+      *reinterpret_cast<uint4*>(&sV[r * LDB + c]) = rv[s];
+#else
       *reinterpret_cast<uint4*>(&sV[r * LDB + c]) = make_uint4(rv[s].x, rv[s].z, rv[s].y, rv[s].w);
+#endif
     }
     __syncthreads();
 

@@ -362,12 +362,12 @@ __shared__ float sRedS[BQ * WN * 2];
 #endif
     WarpMma<SMB, SNB, BLayout::kKMajor> s;
     {   // §2a: суммы строк этого потока -- подряд, чтобы примитив читал их одним шагом
-      const int rb = (lane & 1) | ((lane & 16) >> 2) | (lane & 8);
+      const int rb = wmma_row_base(lane);
       float qs[SMB * 2];
 #pragma unroll
       for (int i = 0; i < SMB; ++i)
 #pragma unroll
-        for (int t = 0; t < 2; ++t) qs[i * 2 + t] = sQsum[wm * SM + i * 16 + rb + 2 * t];
+        for (int t = 0; t < 2; ++t) qs[i * 2 + t] = sQsum[wm * SM + i * 16 + rb + FA2_RSTEP * t];
       seed_rank1<float, SMB, SNB>(s.acc, kI8Bias, qs, 2);
     }
 FA2_UNROLL(FA2_DUNROLL)
@@ -433,7 +433,7 @@ FA2_UNROLL(FA2_DUNROLL)
 
     PH(2);   // ФАЗА 2: подача Q/K кусками + ПЕРВОЕ умножение (Tensor + MIO вперемешку)
     const int r0 = wm * SM, c0 = wn * SN;
-    const int rowbase = (lane & 1) | ((lane & 16) >> 2) | (lane & 8);
+    const int rowbase = wmma_row_base(lane);
     // [МАСШТАБЫ -- В РЕГИСТРЫ, А НЕ ИЗ РАЗДЕЛЯЕМОЙ НА КАЖДЫЙ ЭЛЕМЕНТ]
     // Первая редакция читала sKs[c0+c] на каждый элемент S и sVs[cc] дважды на каждую пару P --
     // около 8192 лишних обращений на плитку К ТОМУ САМОМУ ОГРАНИЧИТЕЛЮ, ради значений, которые
@@ -456,7 +456,7 @@ FA2_UNROLL(FA2_DUNROLL)
       // смещение уже снято ЗАТРАВКОЙ аккумулятора -- здесь только масштаб
       v *= qk_scale * sKs[c0 + c];
       if ((CAUSAL && (q0 + r0 + r + causal_off) < kk) || kk >= Sk) v = -CUDART_INF_F;
-      const int mb = r >> 4, sub = ((r & 15) - rowbase) >> 1;
+      const int mb = r >> 4, sub = ((r & 15) - rowbase) >> FA2_RSHIFT;
       if (v > mloc[mb][sub]) mloc[mb][sub] = v;
     });
 #pragma unroll
@@ -464,10 +464,10 @@ FA2_UNROLL(FA2_DUNROLL)
 #pragma unroll
       for (int t = 0; t < 2; ++t) {
         float x = mloc[i][t];
-        float y = __shfl_xor_sync(0xffffffffu, x, 2); x = x > y ? x : y;
-        y = __shfl_xor_sync(0xffffffffu, x, 4);       x = x > y ? x : y;
+        float y = __shfl_xor_sync(0xffffffffu, x, FA2_SHFL0); x = x > y ? x : y;
+        y = __shfl_xor_sync(0xffffffffu, x, FA2_SHFL1);       x = x > y ? x : y;
         mloc[i][t] = x;
-        if ((lane & 6) == 0) sRedM[(wm * SM + i * 16 + rowbase + 2 * t) * WN + wn] = x;
+        if (FA2_ROW_LEADER(lane)) sRedM[(wm * SM + i * 16 + rowbase + FA2_RSTEP * t) * WN + wn] = x;
       }
     __syncthreads();
 #pragma unroll
@@ -476,7 +476,7 @@ FA2_UNROLL(FA2_DUNROLL)
       for (int t = 0; t < 2; ++t) {
         float x = -CUDART_INF_F;
 #pragma unroll
-        for (int w = 0; w < WN; ++w) { float y = sRedM[(wm * SM + i * 16 + rowbase + 2 * t) * WN + w]; x = x > y ? x : y; }
+        for (int w = 0; w < WN; ++w) { float y = sRedM[(wm * SM + i * 16 + rowbase + FA2_RSTEP * t) * WN + w]; x = x > y ? x : y; }
         mloc[i][t] = x;
       }
     PH(3);   // ФАЗА 3: маска, максимум, редукция максимума по варпам (ALU + барьер)
@@ -490,7 +490,7 @@ FA2_UNROLL(FA2_DUNROLL)
         cnew[i][t]  = (mloc[i][t] == -CUDART_INF_F) ? 0.f : exp2f(mloc[i][t] - mn);
       }
     {
-      const int cbase = (lane & 2) | ((lane & 4) << 1);
+      const int cbase = wmma_col_base(lane);
 #pragma unroll
       for (int i = 0; i < SMB; ++i)
 #pragma unroll
@@ -499,8 +499,8 @@ FA2_UNROLL(FA2_DUNROLL)
           for (int pr = 0; pr < 4; ++pr) {
             const int rg = (pr & 1) ? (4 + ((pr >> 1) << 1)) : ((pr >> 1) << 1);
             const int reg0 = rg, reg1 = rg + 1;
-            const int row = i * 16 + rowbase + 2 * ((reg0 >> 1) & 1);
-            const int col = j * 16 + cbase + 4 * ((reg0 >> 2) & 1);
+            const int row = i * 16 + rowbase + FA2_RSTEP * ((reg0 >> 1) & 1);
+            const int col = j * 16 + cbase + FA2_CHALF * ((reg0 >> 2) & 1);
             const int mb = i, sub = (reg0 >> 1) & 1;
             const float mm = mloc[mb][sub];
             const float v0 = s.acc[i][j][reg0], v1 = s.acc[i][j][reg1];
@@ -529,10 +529,10 @@ FA2_UNROLL(FA2_DUNROLL)
 #pragma unroll
       for (int t = 0; t < 2; ++t) {
         float x = lloc[i][t], y = vloc[i][t];
-        x += __shfl_xor_sync(0xffffffffu, x, 2); y += __shfl_xor_sync(0xffffffffu, y, 2);
-        x += __shfl_xor_sync(0xffffffffu, x, 4); y += __shfl_xor_sync(0xffffffffu, y, 4);
-        if ((lane & 6) == 0) {
-          const int idx = (wm * SM + i * 16 + rowbase + 2 * t) * WN + wn;
+        x += __shfl_xor_sync(0xffffffffu, x, FA2_SHFL0); y += __shfl_xor_sync(0xffffffffu, y, FA2_SHFL0);
+        x += __shfl_xor_sync(0xffffffffu, x, FA2_SHFL1); y += __shfl_xor_sync(0xffffffffu, y, FA2_SHFL1);
+        if (FA2_ROW_LEADER(lane)) {
+          const int idx = (wm * SM + i * 16 + rowbase + FA2_RSTEP * t) * WN + wn;
           sRedS[idx] = x; sRedS[BQ * WN + idx] = y;
         }
       }
@@ -544,7 +544,7 @@ FA2_UNROLL(FA2_DUNROLL)
         float ss = 0.f, vv = 0.f;
 #pragma unroll
         for (int w = 0; w < WN; ++w) {
-          const int idx = (wm * SM + i * 16 + rowbase + 2 * t) * WN + w;
+          const int idx = (wm * SM + i * 16 + rowbase + FA2_RSTEP * t) * WN + w;
           ss += sRedS[idx]; vv += sRedS[BQ * WN + idx];
         }
         const float mo = m_run[i][t], mn = (mo > mloc[i][t]) ? mo : mloc[i][t];
@@ -588,14 +588,14 @@ FA2_UNROLL(FA2_DUNROLL)
   PH_OUT(phase_acc);
   {                                                    // эпилог: O = acc / l, LSE = m + log(l)
     const int r0 = wm * OM;
-    const int rowbase = (lane & 1) | ((lane & 16) >> 2) | (lane & 8);
+    const int rowbase = wmma_row_base(lane);
     float inv[SMB][2];
 #pragma unroll
     for (int i = 0; i < SMB; ++i)
 #pragma unroll
       for (int t = 0; t < 2; ++t) inv[i][t] = (l_run[i][t] > 0.f) ? __frcp_rn(l_run[i][t]) : 0.f;
     constexpr int OMB = OM / 16, ONB = ON / 16;
-    const int cbase0 = (lane & 2) | ((lane & 4) << 1);
+    const int cbase0 = wmma_col_base(lane);
 #pragma unroll
     for (int i = 0; i < OMB; ++i)
 #pragma unroll
@@ -603,17 +603,17 @@ FA2_UNROLL(FA2_DUNROLL)
 #pragma unroll
         for (int rg = 0; rg < 8; ++rg) {
           const int sub = (rg >> 1) & 1;
-          const int row = i * 16 + rowbase + 2 * sub;
-          const int col = j * 16 + cbase0 + (rg & 1) + 4 * ((rg >> 2) & 1);
+          const int row = i * 16 + rowbase + FA2_RSTEP * sub;
+          const int col = j * 16 + cbase0 + (rg & 1) + FA2_CHALF * ((rg >> 2) & 1);
           if (q0 + r0 + row < Sq)   // смещение уже снято поплиточно -- здесь только нормировка
             O[(long)(q0 + r0 + row) * o_sM + voff + wn * ON + col] = __float2half(o.acc[i][j][rg] * inv[i][sub]);
         }
-    if ((lane & 6) == 0 && wn == 0 && vslice == 0) {   // LSE пишет только первый срез
+    if (FA2_ROW_LEADER(lane) && wn == 0 && vslice == 0) {   // LSE пишет только первый срез
 #pragma unroll
       for (int i = 0; i < SMB; ++i)
 #pragma unroll
         for (int t = 0; t < 2; ++t) {
-          const int row = r0 + i * 16 + rowbase + 2 * t;
+          const int row = r0 + i * 16 + rowbase + FA2_RSTEP * t;
           if (q0 + row < Sq)
             Lse[q0 + row] = (l_run[i][t] > 0.f) ? (m_run[i][t] * 0.6931471805599453f + __logf(l_run[i][t])) : -CUDART_INF_F;
         }

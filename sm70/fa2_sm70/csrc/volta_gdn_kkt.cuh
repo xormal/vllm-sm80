@@ -168,16 +168,16 @@ __global__ __launch_bounds__(WM * WN * 32, 1) void volta_gdn_kkt(
   // --- выгрузка накопителя. Регистры 2p и 2p+1 -- СОСЕДНИЕ СТОЛБЦЫ одной строки
   // (acc_col = base + (reg&1) + 4*((reg>>2)&1)), поэтому пишем парами: одна STS.64 вместо двух STS.32.
   {
-    const int arow = (lane & 1) | ((lane & 16) >> 2) | (lane & 8);
-    const int acol = (lane & 2) | ((lane & 4) << 1);
+    const int arow = wmma_row_base(lane);
+    const int acol = wmma_col_base(lane);
 #pragma unroll
     for (int i = 0; i < MB; ++i)
 #pragma unroll
       for (int j = 0; j < NB; ++j)
 #pragma unroll
         for (int p = 0; p < 4; ++p) {
-          const int r = wm * SM + i * 16 + arow + 2 * (p & 1);
-          const int c = wn * SN + j * 16 + acol + 4 * ((p >> 1) & 1);
+          const int r = wm * SM + i * 16 + arow + FA2_RSTEP * (p & 1);
+          const int c = wn * SN + j * 16 + acol + FA2_CHALF * ((p >> 1) & 1);
           *reinterpret_cast<float2*>(&sG[r * LDG + c]) =
               make_float2(m.acc[i][j][2 * p], m.acc[i][j][2 * p + 1]);
         }

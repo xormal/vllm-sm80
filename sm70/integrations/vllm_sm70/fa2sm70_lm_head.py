@@ -149,6 +149,12 @@ def установить() -> bool:
             print(f"[fa2_sm70 LMH] сжатие/сборка не удались ({str(e)[:90]}) -- остаётся чужой путь")
             return
         layer._fa2_qw, layer._fa2_qz, layer._fa2_sc = qw, qz, sc
+        if РЕЖИМ == 1 and torch.cuda.get_device_capability()[0] >= 8 and os.environ.get("FA2SM80_W8", "0") == "1":
+            # [A100] словарь -- на w8a16_sm80 через общую операцию fa2sm80_w8_mm (подбор по форме внутри)
+            import fa2sm80_w8
+            wf, meta = fa2sm80_w8.упаковать_вне_gptq(qw, qz, sc, True, K, N)
+            layer._fa2_s80 = (wf, meta, K, N)
+            layer._fa2_qw = qw = torch.empty(0, dtype=qw.dtype, device=qw.device)   # те же байты уже в wf
         if РЕЖИМ >= 2 or АУДИТ:
             layer._fa2_w16 = w.detach()              # доводчику И СВЕРКЕ нужен ПЛОТНЫЙ вес
         else:
@@ -171,6 +177,14 @@ def установить() -> bool:
               + (", плотный вес освобождён" if getattr(layer, "_fa2_osvobozhdeno", False) else ""))
 
     def применить(self, layer, x, bias=None):
+        s80 = getattr(layer, "_fa2_s80", None)
+        if s80 is not None:
+            x2 = x.reshape(-1, x.shape[-1])
+            if x2.dtype != torch.float16:
+                x2 = x2.half()
+            y = torch.ops.vllm.fa2sm80_w8_mm(x2.contiguous(), s80[0], s80[1], layer._fa2_sc, s80[2], s80[3])
+            _счёт["наше"] = _счёт.get("наше", 0) + 1
+            return y.reshape(x.shape[:-1] + (s80[3],))
         qw = getattr(layer, "_fa2_qw", None)
         if qw is None:
             return старый_прим(self, layer, x, bias)

@@ -56,6 +56,16 @@ def установить() -> None:
 
     _УЧАСТОК = int(os.environ.get("FA2SM70_AR2_SLOT_KB", "256")) * 1024
     _МЕСТ = int(os.environ.get("FA2SM70_AR2_SLOTS", "160"))
+    # AR1 (путь A100): тот же протокол ОДНИМ ядром вместо шести запусков; флаги и счётчики -- у
+    # каждого куска 4 КиБ отдельно, поэтому на место их _ШИР штук.
+    #   FA2SM80_AR1=1 (host) -- через общий закреплённый сегмент ХОСТА (ar1h). На паре GPU0-1 этого
+    #     стенда P2P-запись в IPC-память соседа молча не доходит (проба 23.10 читает нули), NCCL ходит
+    #     через SHM; замер в графе: M=4 19.4 мкс против 28.3 у NCCL, M=16 43.0 против 67.1, точно.
+    #   FA2SM80_AR1=p2p -- окна флагов в IPC-памяти соседа (ar1), для машин с рабочим P2P/NVLink.
+    _AR1 = os.environ.get("FA2SM80_AR1", "0")
+    _AR1H = _AR1 in ("1", "host")
+    _AR1P = _AR1 == "p2p"
+    _ШИР = max(1, _УЧАСТОК // 4096) if (_AR1H or _AR1P) else 1
     # СЧЁТЧИК МЕСТ -- СВОЙ НА КОММУНИКАТОР. Общий на всех давал порчу: в проходе работает не
     # только группа TP (черновик и иные двухранговые группы зовут тот же метод), их вызовы
     # делили один счётчик, и комплекты «приёмник+флаг+счётчик» у рангов разъезжались.
@@ -89,13 +99,52 @@ def установить() -> None:
         # откату на прежний путь (поймано подъёмом 27.08).
         from fa2_sm70._ext import exch_ext
         е = exch_ext()
-        if not hasattr(е, "ar2_all_reduce_out"):
+        if not hasattr(е, "ar1h_all_reduce_out" if _AR1H else "ar1_all_reduce_out" if _AR1P
+                       else "ar2_all_reduce_out"):
             raise RuntimeError("в собранном расширении нет ar2_all_reduce -- нужна пересборка")
         _сост["ext"] = е
         return е
 
+    def _подготовить_хост(сам):
+        """AR1H: общий сегмент shm [ранг][место][2 чётности][участок] + [ранг][место][_ШИР флагов],
+        закреплённый за CUDA в обоих процессах. Создаёт ранг 0, имя уходит соседу через gloo,
+        после подключения соседа имя удаляется (сегмент живёт, пока отображён)."""
+        import ctypes
+        from multiprocessing import shared_memory
+        e = _расширение()
+        dev = сам.device
+        N = _УЧАСТОК // 2
+        на_ранг = _МЕСТ * (2 * _УЧАСТОК + 4 * _ШИР)
+        гр = dist.get_process_group_ranks(сам.cpu_group)
+        имя = [f"fa2ar1h_{os.getuid()}_{os.getpid()}_{id(сам) & 0xFFFFFF:x}" if сам.rank == 0 else None]
+        if сам.rank == 0:
+            shm = shared_memory.SharedMemory(name=имя[0], create=True, size=2 * на_ранг)
+            shm.buf[:] = bytes(2 * на_ранг)
+        dist.broadcast_object_list(имя, src=гр[0], group=сам.cpu_group)
+        if сам.rank != 0:
+            shm = shared_memory.SharedMemory(name=имя[0], create=False)
+        dist.barrier(group=сам.cpu_group)
+        if сам.rank == 0:
+            shm.unlink()
+        база = e.host_register(ctypes.addressof(ctypes.c_char.from_buffer(shm.buf)), 2 * на_ранг)
+        мой, чуж = база + сам.rank * на_ранг, база + (1 - сам.rank) * на_ранг
+        флаги = 2 * _УЧАСТОК * _МЕСТ
+        seq_all = torch.zeros(_МЕСТ * _ШИР, dtype=torch.int32, device=dev)
+        print(f"[fa2_sm70 AR2] своё сведение готово: мест {_МЕСТ} по {_УЧАСТОК >> 10} КиБ "
+              f"(AR1H: одно ядро через память хоста, сегмент {2 * на_ранг >> 20} МиБ)",
+              file=sys.stderr, flush=True)
+        return {"e": e, "h": True, "shm": shm, "N": N,
+                "my_slot": [мой + k * 2 * _УЧАСТОК for k in range(_МЕСТ)],
+                "peer_slot": [чуж + k * 2 * _УЧАСТОК for k in range(_МЕСТ)],
+                "my_flag": [мой + флаги + 4 * _ШИР * k for k in range(_МЕСТ)],
+                "peer_flag": [чуж + флаги + 4 * _ШИР * k for k in range(_МЕСТ)],
+                "seq": [seq_all[k * _ШИР:(k + 1) * _ШИР] for k in range(_МЕСТ)],
+                "срыв": torch.zeros(2, dtype=torch.int32, device=dev)}
+
     def _подготовить(сам):
         """Один раз на группу: буферы вне графового пула + обмен ручками через gloo."""
+        if _AR1H:
+            return _подготовить_хост(сам)
         e = _расширение()
         dev = сам.device
         N = _УЧАСТОК // 2                       # элементов fp16 в участке
@@ -106,9 +155,10 @@ def установить() -> None:
         # Теперь буфер ОДИН, места -- смещения внутри него: отображение ровно одно на соседа.
         recv_all = e.ipc_alloc(N * _МЕСТ, torch.float16)
         recv = [recv_all[k * N:(k + 1) * N] for k in range(_МЕСТ)]
-        flag = e.ipc_alloc(_МЕСТ, torch.int32); flag.zero_()
-        ack = e.ipc_alloc(_МЕСТ, torch.int32); ack.zero_()   # «дочитано» -- встречный флаг
-        seq = [torch.zeros(1, dtype=torch.int32, device=dev) for _ in range(_МЕСТ)]
+        flag = e.ipc_alloc(_МЕСТ * _ШИР, torch.int32); flag.zero_()
+        ack = e.ipc_alloc(_МЕСТ * _ШИР, torch.int32); ack.zero_()   # «дочитано» -- встречный флаг
+        seq_all = torch.zeros(_МЕСТ * _ШИР, dtype=torch.int32, device=dev)
+        seq = [seq_all[k * _ШИР:(k + 1) * _ШИР] for k in range(_МЕСТ)]
         # [0] -- признак срыва ожидания, [1] -- счётчик доработавших блоков отправки
         срыв = torch.zeros(2, dtype=torch.int32, device=dev)
         мои = {"r": (bytes(e.ipc_handle(recv_all)), e.ipc_offset(recv_all)),
@@ -127,7 +177,8 @@ def установить() -> None:
         сосед_recv = [сосед_база + k * N * 2 for k in range(_МЕСТ)]
         сосед_flag = e.ipc_open(чуж["f"][0], чуж["f"][1])
         сосед_ack = e.ipc_open(чуж["a"][0], чуж["a"][1])
-        print(f"[fa2_sm70 AR2] своё сведение готово: мест {_МЕСТ} по {_УЧАСТОК >> 10} КиБ",
+        print(f"[fa2_sm70 AR2] своё сведение готово: мест {_МЕСТ} по {_УЧАСТОК >> 10} КиБ"
+              f"{' (AR1: одно ядро)' if _AR1 else ''}",
               file=sys.stderr, flush=True)
         return {"e": e, "recv_all": recv_all, "recv": recv, "flag": flag, "ack": ack,
                 "seq": seq, "срыв": срыв,
@@ -141,6 +192,7 @@ def установить() -> None:
     # намеренную порчу 1.5x), а выход сети -- словесная каша, побитово одинаковая.
     # Лечение -- объявить операцию со схемой и `mutates_args`, как сделано у остальных наших тел.
     _оп = None
+    _оп_h = None
     try:
         from vllm.utils.torch_utils import direct_register_custom_op
     except Exception:  # noqa: BLE001
@@ -164,14 +216,33 @@ def установить() -> None:
                     print(f"[AR2 СЧЁТ] вызовов {_СЧЁТ_ВЫЗОВОВ[0]}, "
                           f"средний размер {_СЧЁТ_ВЫЗОВОВ[1]/_СЧЁТ_ВЫЗОВОВ[0]:.0f}",
                           file=sys.stderr, flush=True)
-            _расширение().ar2_all_reduce_out(y, out, recv, peer_recv, flag, peer_flag, seq,
-                                             fail, ack, peer_ack)
+            е = _расширение()
+            (е.ar1_all_reduce_out if _AR1P else е.ar2_all_reduce_out)(
+                y, out, recv, peer_recv, flag, peer_flag, seq, fail, ack, peer_ack)
 
         def _тело_пусто(y: torch.Tensor, out: torch.Tensor, recv: torch.Tensor, peer_recv: int,
                         flag: torch.Tensor, peer_flag: int, seq: torch.Tensor,
                         fail: torch.Tensor, ack: torch.Tensor, peer_ack: int) -> None:
             return
 
+        def _тело_h(y: torch.Tensor, out: torch.Tensor, my_slot: int, peer_slot: int,
+                    my_flag: int, peer_flag: int, seq: torch.Tensor, fail: torch.Tensor,
+                    slot_elems: int) -> None:
+            _расширение().ar1h_all_reduce_out(y, out, my_slot, peer_slot, my_flag, peer_flag,
+                                              seq, fail, slot_elems)
+
+        def _тело_h_пусто(y: torch.Tensor, out: torch.Tensor, my_slot: int, peer_slot: int,
+                          my_flag: int, peer_flag: int, seq: torch.Tensor, fail: torch.Tensor,
+                          slot_elems: int) -> None:
+            return
+
+        try:
+            direct_register_custom_op("fa2sm80_ar1h_all_reduce", _тело_h,
+                                      mutates_args=["out", "seq", "fail"], fake_impl=_тело_h_пусто)
+            _оп_h = torch.ops.vllm.fa2sm80_ar1h_all_reduce
+        except Exception as ex:  # noqa: BLE001
+            _оп_h = None
+            print(f"[fa2_sm70 AR2] объявить AR1H не вышло: {ex}", file=sys.stderr, flush=True)
         try:
             direct_register_custom_op("fa2sm70_ar2_all_reduce", _тело,
                                       mutates_args=["out", "recv", "flag", "seq", "fail", "ack"],
@@ -262,15 +333,21 @@ def установить() -> None:
             # Выключатель на всякий случай: FA2SM70_AR2_INPLACE=1 вернёт прежнее поведение.
             # БЕЗ КЛОНА: вход уезжает соседу как есть, сумма пишется в СВЕЖИЙ выход.
             цель_т = input_ if _НА_МЕСТЕ else torch.empty_like(input_)
-            if _оп is not None:
+            if с.get("h"):
+                (_оп_h or (lambda *a: с["e"].ar1h_all_reduce_out(*a)))(
+                    input_, цель_т, с["my_slot"][k], с["peer_slot"][k], с["my_flag"][k],
+                    с["peer_flag"][k], с["seq"][k], с["срыв"], с["N"])
+            elif _оп is not None:
                 _оп(input_, цель_т, с["recv"][k], с["сосед_recv"][k],
-                    с["flag"][k:k + 1], с["сосед_flag"] + 4 * k,
-                    с["seq"][k], с["срыв"], с["ack"][k:k + 1], с["сосед_ack"] + 4 * k)
+                    с["flag"][k * _ШИР:(k + 1) * _ШИР], с["сосед_flag"] + 4 * _ШИР * k,
+                    с["seq"][k], с["срыв"],
+                    с["ack"][k * _ШИР:(k + 1) * _ШИР], с["сосед_ack"] + 4 * _ШИР * k)
             else:
-                с["e"].ar2_all_reduce_out(input_, цель_т, с["recv"][k], с["сосед_recv"][k],
-                                          с["flag"][k:k + 1], с["сосед_flag"] + 4 * k,
-                                          с["seq"][k], с["срыв"],
-                                          с["ack"][k:k + 1], с["сосед_ack"] + 4 * k)
+                (с["e"].ar1_all_reduce_out if _AR1 else с["e"].ar2_all_reduce_out)(
+                    input_, цель_т, с["recv"][k], с["сосед_recv"][k],
+                    с["flag"][k * _ШИР:(k + 1) * _ШИР], с["сосед_flag"] + 4 * _ШИР * k,
+                    с["seq"][k], с["срыв"],
+                    с["ack"][k * _ШИР:(k + 1) * _ШИР], с["сосед_ack"] + 4 * _ШИР * k)
             if _ПОРЧА:
                 цель_т.mul_(1.5)
             if эталон is not None:

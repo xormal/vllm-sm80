@@ -165,6 +165,42 @@ if os.environ.get("FA2SM70_W8", "0") == "1":
 # черновик проходит её трижды за шаг: 3.94 мс из 10.59 мс прохода (записка 25 §249). Замер на
 # настоящих весах -- x2.74 при M=1 и 202 МиБ освобождённой памяти на ранг (§251). Требует
 # FA2SM70_W8=1: пользуется его зарегистрированной операцией. По умолчанию ВЫКЛЮЧЕНО.
+if os.environ.get("FA2SM80_W8", "0") == "1":
+    # A100: GPTQ int8 на w8a16_sm80 (fa2sm80_w8.py). Вольтовские FA2SM70_W8/TM8 на sm_80 выключать.
+    try:
+        import fa2sm80_w8
+        fa2sm80_w8.установить()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+
+if os.environ.get("FA2SM80_ROWPIPE", "0") == "1":
+    # Префилл: конвейер «умножение -> сведение» в строко-параллельных слоях (fa2sm80_rowpipe.py).
+    try:
+        import fa2sm80_rowpipe
+        fa2sm80_rowpipe.установить()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+
+if os.environ.get("FA2SM80_BLOCKPIPE", "0") == "1":
+    # Префилл: конвейер обмена через весь MLP-блок (fa2sm80_blockpipe.py).
+    try:
+        import fa2sm80_blockpipe
+        fa2sm80_blockpipe.установить()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+
+if os.environ.get("FA2SM70_OVERLAP", "0") == "1":
+    # Префилл: две половины куска со сдвигом, свёртка одной едет, пока считается другая (fa2sm70_overlap.py).
+    try:
+        import fa2sm70_overlap
+        fa2sm70_overlap.установить()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+
 if os.environ.get("FA2SM70_MTP_W8", "0") == "1":
     try:
         import fa2sm70_mtp_w8

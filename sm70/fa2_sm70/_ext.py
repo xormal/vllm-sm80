@@ -81,9 +81,8 @@ def _preflight():
     # 2. Device arch: the kernels are tuned for sm_70; newer archs compile but are off-target.
     try:
         cc = torch.cuda.get_device_capability(0)
-        if cc != (7, 0):
-            warnings.warn(f"fa2_sm70: device is sm_{cc[0]}{cc[1]}, but this package targets sm_70 (V100). "
-                          f"It should still build (TORCH_CUDA_ARCH_LIST=7.0), but tuning is for Volta.")
+        if cc[0] < 7 or (cc[0] == 7 and cc[1] != 0):
+            warnings.warn(f"fa2_sm70: device is sm_{cc[0]}{cc[1]}; the package targets sm_70 (V100) and sm_80 (A100).")
     except Exception:
         pass
 
@@ -121,8 +120,30 @@ def _preflight():
                            f"(the package checkout is incomplete).")
 
 
+def _arch_default():
+    """Архитектура сборки по умолчанию -- по ПЕРВОЙ видимой карте (V100 -> 7.0, A100 -> 8.0)."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            cc = torch.cuda.get_device_capability(0)
+            return f"{cc[0]}.{cc[1]}"
+    except Exception:
+        pass
+    return "7.0"
+
+
+def _is_sm80():
+    """Все цели сборки >= 8.0 -> ядра собираются в ампер-варианте (FA2_SM80=1): раскладки разделяемой и
+    параметры запуска, выбранные под sm_80, видны И хост-проходу (размер разделяемой считает хост)."""
+    al = os.environ.get("TORCH_CUDA_ARCH_LIST", "7.0").replace(";", " ").split()
+    try:
+        return bool(al) and all(float(a.split("+")[0]) >= 8.0 for a in al)
+    except ValueError:
+        return False
+
+
 def _common():
-    os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "7.0")   # Volta / V100
+    os.environ.setdefault("TORCH_CUDA_ARCH_LIST", _arch_default())
     os.makedirs(_BUILD, exist_ok=True)
     _preflight()
 
@@ -147,6 +168,8 @@ def _build(name, source, flags, inc=None, ldflags=None):
         # ФАЛЬСИФИКАТОРЫ СНЯТИЕМ ФАЗЫ -- через окружение, а не правкой исходника: снятая фаза
         # даёт заведомо неверный ответ, и путь к ней обязан быть виден в команде запуска.
         доп = os.environ.get("FA2SM70_NVCC_EXTRA", "").split()
+        if _is_sm80():
+            доп = доп + ["-DFA2_SM80=1"]
         return load(name=name, sources=[os.path.join(_CSRC, source)], build_directory=bdir,
                     extra_include_paths=inc, extra_cuda_cflags=list(flags) + доп,
                     extra_ldflags=ldflags)
@@ -276,6 +299,43 @@ def w8a16_ext():
         _w8a16 = _build("fa2sm70_w8a16", "w8a16_gemv.cu", ["-O3", "-std=c++17", "--use_fast_math"],
                         inc=[os.path.join(_FA2SRC, "fmha_kernel")])
     return _w8a16
+
+
+_dec80 = None
+
+
+def decode_sm80_ext():
+    """ОПЫТНАЯ сборка декода A100 отдельно от split_decode.cu (быстрые итерации; ядро -- decode_sm80.cuh)."""
+    global _dec80
+    if _dec80 is None:
+        _common()
+        _dec80 = _build("fa2sm70_decode_sm80", "decode_sm80_ext.cu", ["-O3", "-std=c++17", "--use_fast_math"])
+    return _dec80
+
+
+_w8a16_sm80 = None
+
+
+def w8a16_sm80_ext():
+    """W8A16 для Ampere: cp.async-конвейер варпа + m16n8k16, фрагментный порядок веса (w8a16_sm80.cu)."""
+    global _w8a16_sm80
+    if _w8a16_sm80 is None:
+        _common()
+        _w8a16_sm80 = _build("fa2sm70_w8a16_sm80", "w8a16_sm80.cu",
+                             ["-O3", "-std=c++17", "--use_fast_math", "-Xptxas", "-v"])
+    return _w8a16_sm80
+
+
+_cg_sm80 = None
+
+
+def cg_sm80_ext():
+    """Свой fp16 GEMM префилла на sm80, инвариантный к пачке (CUTLASS 2.x из fa2_src/cutlass; cg_sm80.cu)."""
+    global _cg_sm80
+    if _cg_sm80 is None:
+        _common()
+        _cg_sm80 = _build("fa2sm70_cg_sm80", "cg_sm80.cu", ["-O3", "-std=c++17", "-Xptxas", "-v"], inc=_INC)
+    return _cg_sm80
 
 
 def tm8_ext():

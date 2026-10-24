@@ -59,6 +59,21 @@ _ВКЛ = os.environ.get("FA2SM70_W12", "0") == "1"
 _MMAX = int(os.environ.get("FA2SM70_W12_MMAX", "12"))
 _ЦЕЛЬ = os.environ.get("FA2SM70_W12_TARGET", "self_attn.qkv_proj")
 _G = 128
+# AMPERE (FA2SM80_W12=1, по умолчанию ВЫКЛ.): вес перепаковывается в ПЛОСКОСТИ sm80-ядра (младший
+# байт + полубайт, w8a16_sm80.cu) и становится ЕДИНСТВЕННЫМ форматом хранения. M<=16 -- тензорное ядро
+# m16n8k16 с cp.async-конвейером варпа; M>16 -- распаковка плоскостей в общий буфер (ПОБИТОВО как
+# w12_dequant, 970 ГБ/с) + cuBLAS. Конфигурация подбирается замером на форме при обращении.
+# Замер 23.10 на форме qkv ранга [7168,5120]: M=1 69.6 мкс против 54.3 у вольтовского gemv, M=4 70.8
+# против 72.4 -- выигрыша не было: 448 блоков при 3 на SM = 1.56 волны, хвост съедал полосу.
+# STREAM-K (24.10, w12a16_sm80_sk, FA2SM80_W12_SK=1 по умолчанию): сетка в одну волну, равные отрезки
+# потока весов на варп, стыки сводит последний пришедший в фиксированном порядке. Холодный L2:
+#   M=1 52.0 / M=4 52.8 / M=8 53.9 / M=16 68.4 / M=24 93.2 / M=32 105.7 мкс
+#   против вольтовского 54.3 / 87.7 / 104 / 170 / 273 / 339 и распаковки+cuBLAS ~193 (M>12).
+# Потолок чтения тех же 55.6 МБ -- 50.7 мкс; M=4 идёт на 96.6 % от него.
+_S80_MMAX = 32
+# (warps, stages, блоков на SM) по корзине M -- ТАБЛИЦА, а не подбор замером: от раскладки зависит порядок
+# сложения стыков, и подбор по времени давал бы разную численность от подъёма к подъёму.
+_SK80 = {4: (2, 2, 4), 8: (2, 2, 4), 16: (4, 4, 2), 32: (2, 2, 4)}
 
 if _ВКЛ:
     import torch
@@ -149,15 +164,95 @@ if _ВКЛ:
                      mmax: int) -> torch.Tensor:
         return x.new_empty((*x.shape[:-1], qw.shape[2]))
 
+    _S80 = (torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8
+            and os.environ.get("FA2SM80_W12", "0") == "1")
+    _SK = os.environ.get("FA2SM80_W12_SK", "1") == "1"
+    _ext80 = None
+    _конф80 = {}                       # (N, K, корзина M) -> (nw, warps, stages, splits)
+
+    def _расш80():
+        global _ext80
+        if _ext80 is None:
+            from fa2_sm70._ext import w8a16_sm80_ext
+            _ext80 = w8a16_sm80_ext()
+        return _ext80
+
+    def _корз(m):
+        return 4 if m <= 4 else 8 if m <= 8 else 16 if m <= 16 else 32
+
+    def _w12_mm_s80(x: torch.Tensor, wf: torch.Tensor, sc: torch.Tensor, nw: int) -> torch.Tensor:
+        e = _расш80()
+        K, N = sc.shape[0] * _G, sc.shape[1]
+        xf = x.reshape(-1, K)
+        m = xf.shape[0]
+        if _SK and m <= 32 and nw == 2:
+            С["gemv"] += 1
+            wa, st, cps = _SK80[_корз(m)]
+            y = e.w12a16_sm80_sk(xf.half().contiguous(), wf, sc, N, nw, wa, cps, st)
+        elif m <= 16:
+            С["gemv"] += 1
+            _nw, wa, st, sp = _конф80.get((N, K, _корз(m)), (nw, 4, 3, 0))
+            y = e.w12a16_sm80_mm(xf.half().contiguous(), wf, sc, N, sp, _nw, wa, st)
+        else:
+            С["плотн"] += 1
+            W = e.w12a16_sm80_dequant(wf, sc, N, K, nw, _буфер)
+            y = torch.mm(xf.half(), W.t())
+        return y.to(x.dtype).view(*x.shape[:-1], N)
+
+    def _w12_mm_s80_fake(x: torch.Tensor, wf: torch.Tensor, sc: torch.Tensor, nw: int) -> torch.Tensor:
+        return x.new_empty((*x.shape[:-1], sc.shape[1]))
+
+    def _подобрать80(wf, sc, nw):
+        """Замер четырёх инстансов на форме (вне захвата, при обращении весов) -- лучший на корзину M."""
+        e = _расш80()
+        K, N = sc.shape[0] * _G, sc.shape[1]
+        if _SK:
+            # stream-K: конфигурация из таблицы; прогрев выделяет рабочую область стыков ДО захвата графа
+            for корз in (4, 8, 16, 32):
+                wa, st, cps = _SK80[корз]
+                e.w12a16_sm80_sk(torch.zeros(корз, K, device=wf.device, dtype=torch.float16), wf, sc, N, nw,
+                                 wa, cps, st)
+            return
+        for корз in (4, 8, 16):
+            if (N, K, корз) in _конф80:
+                continue
+            x = torch.randn(корз, K, device=wf.device, dtype=torch.float16) * 0.5
+            лучш = None
+            for (wa, st) in ((4, 3), (2, 4)):
+                for sp in (0, 1, 2, 4):
+                    try:
+                        for _ in range(3):
+                            e.w12a16_sm80_mm(x, wf, sc, N, sp, nw, wa, st)
+                        a = torch.cuda.Event(True); b = torch.cuda.Event(True)
+                        torch.cuda.synchronize(); a.record()
+                        for _ in range(20):
+                            e.w12a16_sm80_mm(x, wf, sc, N, sp, nw, wa, st)
+                        b.record(); torch.cuda.synchronize()
+                        t = a.elapsed_time(b) / 20
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if лучш is None or t < лучш[0]:
+                        лучш = (t, (nw, wa, st, sp))
+            if лучш is not None:
+                _конф80[(N, K, корз)] = лучш[1]
+                print(f"[fa2_sm70 W12/sm80] [{N},{K}] M<={корз}: {лучш[0]*1e3:.1f} мкс "
+                      f"(nw,warps,stages,splits)={лучш[1]}", file=sys.stderr, flush=True)
+
     from vllm.utils.torch_utils import direct_register_custom_op
     from fa2sm70_clef_hook import с_поправкой   # FA2SM70_CLEF=0 -> тело как есть
     direct_register_custom_op("fa2sm70_w12_mm", с_поправкой(_w12_mm, (1, 2)), mutates_args=[],
                               fake_impl=_w12_mm_fake)
+    if _S80:
+        direct_register_custom_op("fa2sm80_w12_mm", с_поправкой(_w12_mm_s80, (1, 2)), mutates_args=[],
+                                  fake_impl=_w12_mm_s80_fake)
 
     def _forward(сам, input_):
         # Повторяет контракт ColumnParallelLinear.forward ДОСЛОВНО: он возвращает ПАРУ, и вызывающий
         # её распаковывает. Вернуть тензор -- тихая порча на распаковке, а не падение.
-        y = torch.ops.vllm.fa2sm70_w12_mm(input_, сам.w12_qw, сам.w12_sc, _MMAX)
+        if getattr(сам, "w12_wf", None) is not None:
+            y = torch.ops.vllm.fa2sm80_w12_mm(input_, сам.w12_wf, сам.w12_sc, 2)
+        else:
+            y = torch.ops.vllm.fa2sm70_w12_mm(input_, сам.w12_qw, сам.w12_sc, _MMAX)
         if not сам.skip_bias_add and сам.bias is not None:
             y = y + сам.bias
         return y, (сам.bias if сам.skip_bias_add else None)
@@ -294,6 +389,12 @@ if _ВКЛ:
                 if новое is not None:
                     новое[имя + ".qw"], новое[имя + ".sc"] = пак, масш
             m.w12_qw, m.w12_sc, m.w12_N, m.w12_K = пак, масш, N, K
+            m.w12_wf = None
+            if _S80 and N % 16 == 0:
+                m.w12_wf = _расш80().w12a16_sm80_pack(пак, 2)
+                _подобрать80(m.w12_wf, масш, 2)
+                if новое is None:
+                    m.w12_qw = None             # плоскости -- единственный формат хранения
             С["было"] += w.numel() * w.element_size()
             С["стало"] += пак.numel() * 4 + масш.numel() * 2
             # Плотный вес освобождается, но САМ Parameter остаётся: движок обходит parameters() и
@@ -324,6 +425,10 @@ if _ВКЛ:
                 _буфер = torch.empty(_надо, dtype=torch.float16, device="cuda")
             if новое:
                 _склад_записать(путь, новое)
+                if _S80:                        # склад записан -- прежний формат больше не нужен
+                    for _, _m in model.named_modules():
+                        if getattr(_m, "w12_wf", None) is not None:
+                            _m.w12_qw = None
         torch.cuda.empty_cache()
         if С["тел"] == 0:
             print(f"[fa2_sm70 W12] НИ ОДНОГО тела по образцу '{_ЦЕЛЬ}' -- ПРИБОР СЛЕП",

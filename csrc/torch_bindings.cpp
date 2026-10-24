@@ -239,6 +239,9 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
       "Tensor _zeros, SymInt split_k_iters) -> Tensor");
   ops.impl("awq_gemm", torch::kCUDA, &awq_gemm);
 
+  // TurboMind/sm70-ядра 1Cat собираются ТОЛЬКО при цели 7.0 (CMakeLists: AWQ_SM70_ARCHS); без них
+  // регистрация давала неразрешённые символы в _C (импорт падал на A100).
+#ifdef VLLM_SM70_TURBOMIND
   ops.def(
       "awq_sm70_prepare(Tensor _kernel, Tensor _scaling_factors, Tensor _zeros, "
       "int group_size, bool interleave_gated_silu) -> Tensor[]");
@@ -313,6 +316,7 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
       "Tensor expert_offsets, Tensor strided_ptrs_w, Tensor strided_ptrs_s, "
       "int num_experts, int k, int n, int group_size, bool gated_silu) -> ()");
   ops.impl("awq_moe_gemm_sm70_out", torch::kCUDA, &awq_moe_gemm_sm70_out);
+#endif
 
   // Dequantization for AWQ.
   ops.def(

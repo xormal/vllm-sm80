@@ -175,6 +175,25 @@ _ОБЩ_ИДX = __import__("os").environ.get("FA2SM70_GDN_SHARE_IDX", "0") == "1
 QWEN3_NEXT_SM70_TRACE = os.getenv("VLLM_QWEN3_NEXT_SM70_TRACE", "0") == "1"
 # Рычаг «без трёх копий q/k/v в GDN» (пункт цели: убрать параллельную работу). Умолчание 0.
 _БЕЗ_КОПИЙ_QKV = os.environ.get("FA2SM70_GDN_QKV_NOCOPY", "0") == "1"
+# [A100 24.10] ДЕКОДНЫЕ ПУТИ -- БЕЗ КОПИЙ. Рекуррент декода (наше ядро volta_gdn_rec) теперь принимает шаги по
+# токену и берёт q/k/v срезами mixed_qkv как есть; копии остаются только префиллу (Triton-скан на несмежных
+# входах строил другой план и падал по памяти -- см. документированный отказ ниже). Убирает 3 узла графа и
+# ~10 мкс на каждый из 48 слоёв GDN шага. FA2SM80_GDN_DEC_VIEWS=0 -- прежние копии везде.
+_ДЕКОД_ВИДОМ = os.environ.get("FA2SM80_GDN_DEC_VIEWS", "1") == "1"
+_OUT_ПОДДЕРЖКА = {}
+
+
+def _принимает_out(fn):
+    """Подмены функции рекуррента (обёртка пака) могут не знать параметра out -- проверяем один раз."""
+    r = _OUT_ПОДДЕРЖКА.get(id(fn))
+    if r is None:
+        import inspect
+        try:
+            r = "out" in inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            r = False
+        _OUT_ПОДДЕРЖКА[id(fn)] = r
+    return r
 QWEN3_NEXT_FUSED_SIGMOID_GATING_ENABLED = (
     os.getenv("VLLM_QWEN3_NEXT_FUSED_SIGMOID_GATING", "1") == "1"
 )
@@ -192,6 +211,21 @@ _FALSE_MLP_СЧЁТ = 0
 FA2SM70_PHASE_PROBE_MS = float(os.getenv("FA2SM70_PHASE_PROBE_MS", "0"))
 
 KVCache = tuple[torch.Tensor, torch.Tensor]
+
+
+_CU_ОТРЕЗКА = {}
+
+
+def _cu_отрезка(n, device):
+    """cu_seqlens [0, n] для одного отрезка префилла GDN -- один и тот же тензор на (n, карта): кэш FLA (tensor_cache,
+    по идентичности объекта) попадает во всех слоях шага, без копии HtoD и без .tolist()-синхронизации."""
+    ключ = (int(n), device)
+    cu = _CU_ОТРЕЗКА.get(ключ)
+    if cu is None:
+        if len(_CU_ОТРЕЗКА) > 4096:
+            _CU_ОТРЕЗКА.clear()
+        cu = _CU_ОТРЕЗКА[ключ] = torch.tensor([0, int(n)], dtype=torch.int32, device=device)
+    return cu
 
 
 def _maybe_sm70_projection(
@@ -702,7 +736,7 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
                 _дг["nacc"][1].copy_(итог[0])
         return итог
 
-    def rearrange_mixed_qkv(self, mixed_qkv):
+    def rearrange_mixed_qkv(self, mixed_qkv, contig: bool = True):
         if mixed_qkv is None:
             return None, None, None
         query, key, value = torch.split(
@@ -727,7 +761,7 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
         # и не укладывается в память. Рычаг оставлен выключенным как документированный отказ.
         # Цена самих копий при этом мала: 64 вызова `.contiguous()` на шаг, около 0.6 мс из 85,
         # то есть меньше процента -- убирать их не стоило бы и в случае успеха.
-        if _БЕЗ_КОПИЙ_QKV:
+        if _БЕЗ_КОПИЙ_QKV or not contig:
             return query, key, value
         return query.contiguous(), key.contiguous(), value.contiguous()
 
@@ -818,6 +852,9 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
         core_attn_out = core_attn_out.reshape(z_shape_og)
         core_attn_out = core_attn_out.reshape(
             *core_attn_out.shape[:-2], -1)
+        if getattr(self, "_fa2_defer_proj", False):
+            # [FA2/SM80 24.10] выходная проекция -- в операции блока (fa2sm80_blockpipe): конвейер обмена
+            return core_attn_out
         out_proj = _maybe_sm70_projection(self.out_proj, core_attn_out)
         if out_proj is None:
             out_proj = self.out_proj(core_attn_out)
@@ -935,7 +972,7 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
                 validate_data=False,
             )
             query_decode, key_decode, value_decode = self.rearrange_mixed_qkv(
-                mixed_qkv_decode
+                mixed_qkv_decode, contig=not (_ДЕКОД_ВИДОМ and QWEN3_NEXT_FUSED_SIGMOID_GATING_ENABLED)
             )
             if QWEN3_NEXT_FUSED_SIGMOID_GATING_ENABLED:
                 core_attn_out_decode, _ = fused_sigmoid_gating_delta_rule_update(
@@ -1215,7 +1252,8 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
         else:
             mixed_qkv_non_spec = None
 
-        query_spec, key_spec, value_spec = self.rearrange_mixed_qkv(mixed_qkv_spec)
+        query_spec, key_spec, value_spec = self.rearrange_mixed_qkv(
+            mixed_qkv_spec, contig=not (_ДЕКОД_ВИДОМ and QWEN3_NEXT_FUSED_SIGMOID_GATING_ENABLED))
         query_non_spec, key_non_spec, value_non_spec = self.rearrange_mixed_qkv(
             mixed_qkv_non_spec
         )
@@ -1278,8 +1316,15 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
             else:
                 _a_spec = a.index_select(0, spec_token_indx)
                 _b_spec = b.index_select(0, spec_token_indx)
+            # [A100 24.10] чисто спекулятивный шаг: токены спекуляции = [0, num_actual_tokens) подряд -- ядро
+            # пишет выход сразу в core_attn_out (без копии после шага; узел графа на каждый слой GDN).
+            _на_место = (core_attn_out[:num_actual_tokens].unsqueeze(0)
+                         if (_всё_спек and _ДЕКОД_ВИДОМ and core_attn_out.is_contiguous()
+                             and _принимает_out(fused_sigmoid_gating_delta_rule_update)) else None)
+            _доп_out = {"out": _на_место} if _на_место is not None else {}
             core_attn_out_spec, last_recurrent_state = (
                 fused_sigmoid_gating_delta_rule_update(
+                    **_доп_out,
                     A_log=self.A_log,
                     a=_a_spec,
                     b=_b_spec,
@@ -1339,7 +1384,27 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
                 dtype=value_non_spec.dtype,
                 device=value_non_spec.device,
             )
-            has_init_cpu = has_initial_state.to("cpu")
+            # [FA2/SM80 24.10] один раз на шаг (метаданные общие для слоёв GDN), а не в каждом слое: DtoH-синхронизация.
+            # [FA2/SM80 24.10] индексы слотов -- на хост раз на шаг: индексирование пула 0-мерным тензором на карте
+            # стоило .item() (DtoH-синхронизации) на каждое присваивание, 3 на слой GDN.
+            ns_idx_cpu = getattr(attn_metadata, "_fa2_ns_idx_cpu", None)
+            if ns_idx_cpu is None:
+                ns_idx_cpu = non_spec_state_indices_tensor.to("cpu")
+                idx_read_cpu = _idx_read.to("cpu")
+                try:
+                    attn_metadata._fa2_ns_idx_cpu = ns_idx_cpu
+                    attn_metadata._fa2_idx_read_cpu = idx_read_cpu
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                idx_read_cpu = attn_metadata._fa2_idx_read_cpu
+            has_init_cpu = getattr(attn_metadata, "_fa2_has_init_cpu", None)
+            if has_init_cpu is None:
+                has_init_cpu = has_initial_state.to("cpu")
+                try:
+                    attn_metadata._fa2_has_init_cpu = has_init_cpu
+                except Exception:  # noqa: BLE001
+                    pass
             _kva_gdn_dump(self, key_non_spec, value_non_spec, g_non_spec, beta_non_spec, {"qsl": qsl_cpu.clone(), "ncomp": ncomp_cpu.clone()})
             for i in range(qsl_cpu.numel() - 1):
                 s, e = int(qsl_cpu[i]), int(qsl_cpu[i + 1])
@@ -1348,7 +1413,7 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
                 C = int(ncomp_cpu[i])          # сколько токенов запроса уже посчитано
                 # Начальное состояние -- из блока последнего ПОСЧИТАННОГО токена.
                 if bool(has_init_cpu[i]):
-                    st = _чит(ssm_state, _idx_read[i]).unsqueeze(0).contiguous()
+                    st = _чит(ssm_state, int(idx_read_cpu[i])).unsqueeze(0).contiguous()
                 else:
                     st = torch.zeros(
                         (1, *ssm_state.shape[1:]),
@@ -1362,9 +1427,9 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
                 участки = [0] + резы + [e - s]
                 for j in range(len(участки) - 1):
                     a0, a1 = s + участки[j], s + участки[j + 1]
-                    cu = torch.tensor(
-                        [0, a1 - a0], dtype=torch.int32, device=query_non_spec.device
-                    )
+                    # [FA2/SM80 24.10] cu ОДНИМ объектом на длину: tensor_cache FLA сравнивает по идентичности,
+                    # новый тензор в каждом слое давал копию HtoD + .tolist() (синхронизацию) 48 раз на шаг.
+                    cu = _cu_отрезка(a1 - a0, query_non_spec.device)
                     o_seg, st = chunk_gated_delta_rule(
                         q=query_non_spec[:, a0:a1],
                         k=key_non_spec[:, a0:a1],
@@ -1381,7 +1446,7 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
                     # Конец отрезка -- либо граница блока, либо конец куска. В обоих случаях
                     # состояние принадлежит блоку, в котором лежит ПОСЛЕДНИЙ его токен.
                     блок = (C + участки[j + 1] - 1) // mamba_block_size
-                    _пиш(ssm_state, non_spec_state_indices_tensor[i, блок], st[0])
+                    _пиш(ssm_state, int(ns_idx_cpu[i, блок]), st[0])
             last_recurrent_state = None
         elif attn_metadata.num_prefills > 0:
             _kva_gdn_dump(self, key_non_spec, value_non_spec, g_non_spec, beta_non_spec)
@@ -1437,7 +1502,8 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
             merged_out.index_copy_(1, non_spec_token_indx, core_attn_out_non_spec)
             core_attn_out[:num_actual_tokens] = merged_out.squeeze(0)
         elif spec_sequence_masks is not None:
-            core_attn_out[:num_actual_tokens] = core_attn_out_spec.squeeze(0)
+            if core_attn_out_spec.data_ptr() != core_attn_out.data_ptr():   # уже на месте -- копия не нужна
+                core_attn_out[:num_actual_tokens] = core_attn_out_spec.squeeze(0)
         else:
             core_attn_out[:num_actual_tokens] = core_attn_out_non_spec.squeeze(0)
 
@@ -1566,6 +1632,9 @@ class Qwen3NextAttention(nn.Module):
             gate = torch.sigmoid(gate)
             attn_output = attn_output * gate
 
+        if getattr(self, "_fa2_defer_proj", False):
+            # [FA2/SM80 24.10] выходная проекция -- в операции блока (fa2sm80_blockpipe): конвейер обмена
+            return attn_output
         o_proj = _maybe_sm70_projection(self.o_proj, attn_output)
         if o_proj is None:
             o_proj = self.o_proj(attn_output)
