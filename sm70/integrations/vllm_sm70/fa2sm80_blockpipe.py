@@ -29,6 +29,7 @@ _ВКЛ = os.environ.get("FA2SM80_BLOCKPIPE", "0") == "1"
 # Через границу слоя (FA2SM80_BLOCKPIPE_X=1): операция слоя L отдаёт ГОТОВЫЕ входные проекции слоя L+1 (его
 # input_layernorm + in_proj по кускам, как только сведено down куска) -- хвост сведений прячется за in_proj.
 _ВКЛ_X = os.environ.get("FA2SM80_BLOCKPIPE_X", "0") == "1"
+_УЗКО = 256          # проекции уже этого (in_proj_ba, N=48) -- torch.mm: плитка своего GEMM почти пуста
 _MIN = int(os.environ.get("FA2SM80_BLOCKPIPE_MIN", "2048"))
 _ROWS = int(os.environ.get("FA2SM80_BLOCKPIPE_ROWS", "1024"))
 # План кусков (FA2SM80_BLOCKPIPE_PLAN="голова,середина,хвост1,хвост2,..."): маленький первый кусок -- раньше первое
@@ -253,7 +254,9 @@ def установить():
 
         # 1) out_proj на _ВПЕРЁД кусков вперёд; дальше -- по одному куску перед MLP очередного: сведения на побочном
         #    потоке чередуются out/down и не копятся к концу слоя.
-        for i in range(min(_ВПЕРЁД, len(куски))):
+        # при переходе через границу -- все out_proj вперёд: буфер B потом занимает вход следующего слоя
+        вперёд = len(куски) if след_куски else _ВПЕРЁД
+        for i in range(min(вперёд, len(куски))):
             _out(i)
         # 2) веса MLP распакованы на третьем потоке -- дождаться
         осн.wait_event(ev_w)
@@ -283,14 +286,17 @@ def установить():
             h2 = torch.empty((r1_ - r0_, No), dtype=torch.float16, device=dev)
             норма(dr_, ro[r0_:r1_], n2.weight.data, n2.variance_epsilon, h2, ro2[r0_:r1_])
             for W_, y_ in zip(Wn, выходы2):
-                try:
-                    умн(h2, W_, y_[r0_:r1_]) if CG.включён() else torch.mm(h2, W_.t(), out=y_[r0_:r1_])
-                except RuntimeError:
-                    torch.mm(h2, W_.t(), out=y_[r0_:r1_])
+                if CG.включён() and W_.shape[0] >= _УЗКО:
+                    try:
+                        умн(h2, W_, y_[r0_:r1_])
+                        continue
+                    except RuntimeError:
+                        pass
+                torch.mm(h2, W_.t(), out=y_[r0_:r1_])
         # 3) MLP по кускам, как только сведено out_proj куска; сведение down -- на побочном потоке
         for i, (r0, r1) in enumerate(куски):
-            if i + _ВПЕРЁД < len(куски):
-                _out(i + _ВПЕРЁД)
+            if i + вперёд < len(куски):
+                _out(i + вперёд)
             yr, evr = сведённые.pop(i), готово.pop(i)
             осн.wait_event(evr)
             h = torch.empty((r1 - r0, No), dtype=torch.float16, device=dev)
@@ -317,16 +323,19 @@ def установить():
             if след_куски:
                 dr.record_stream(осн)
                 сведённые_d[i] = (dr, evd)
-                if i >= 1:
-                    _след(i - 1)            # предыдущий кусок -- его сведение down шло, пока считался MLP этого
         if след_куски:
-            _след(len(куски) - 1)
+            # куски следующего слоя -- после всего MLP, по порядку: сведения down шли, пока считался MLP остальных,
+            # хвост (последние сведения) -- за входными проекциями предыдущих кусков
+            for j in range(len(куски)):
+                _след(j)
             осн.wait_stream(поб)
             for y_ in выходы2:
                 y_.record_stream(осн)
             return tuple(выходы2) + (ro2,)
         осн.wait_stream(поб)
         out.record_stream(поб)
+        if N2 is not None:                  # следующий слой по кускам нельзя (Clef и т. п.) -- подряд через модули
+            return _след_прямо(N2, out, ro)
         return out, ro
 
     def _blockpipe(core: torch.Tensor, residual: torch.Tensor, key: str) -> tuple[torch.Tensor, torch.Tensor]:
@@ -397,14 +406,21 @@ def установить():
                 _регистрация(self, a, kw)
         return __init__
 
+    def _принимает(слой):
+        """Слой может получить готовые входные проекции: полное внимание (qkv_proj) или GDN с раздельными
+        in_proj_qkvz/in_proj_ba. Одно и то же правило у отдающего и у принимающего -- цепочка согласована."""
+        if слой.layer_type != "linear_attention":
+            return True
+        return bool(getattr(слой.linear_attn, "use_split_input_projections", False))
+
     def forward(self, hidden_states, residual, positions=None, **kwargs):
         key = getattr(self, "_fa2_bp_key", "")
         if not key:
             return _прежний_fwd(self, hidden_states, residual, positions=positions, **kwargs)
         # Цепочка через границу слоя: предыдущий слой отдал ГОТОВЫЕ входные проекции этого (input_layernorm уже
         # применён, residual уже сложен) -- кортеж вместо hidden_states. Решения -- по реестру при трассировке.
-        получает = _ВКЛ_X and self._fa2_bp_prev in _РЕЕСТР
-        отдаёт = _ВКЛ_X and self._fa2_bp_next in _РЕЕСТР
+        получает = _ВКЛ_X and self._fa2_bp_prev in _РЕЕСТР and _принимает(self)
+        отдаёт = _ВКЛ_X and self._fa2_bp_next in _РЕЕСТР and _принимает(_РЕЕСТР[self._fa2_bp_next])
         if получает:
             pre = hidden_states
             if self.layer_type == "linear_attention":

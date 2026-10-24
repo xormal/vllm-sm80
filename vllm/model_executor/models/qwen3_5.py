@@ -245,6 +245,7 @@ class Qwen3_5GatedDeltaNet(Qwen3NextGatedDeltaNet):
         self,
         hidden_states: torch.Tensor,
         output: torch.Tensor,
+        pre_proj: tuple | None = None,
     ):
         """
         Forward pass with three parts:
@@ -257,7 +258,11 @@ class Qwen3_5GatedDeltaNet(Qwen3NextGatedDeltaNet):
         # ============================================================
         # Part 1: Input Projection
         # ============================================================
-        if self.use_split_input_projections:
+        if self.use_split_input_projections and pre_proj is not None:
+            # [FA2/SM80 24.10] (qkvz, ba) посчитаны операцией предыдущего слоя по кускам (fa2sm80_blockpipe, через
+            # границу слоя): input_layernorm и in_proj уже сделаны, residual уже сложен.
+            projected_states_qkvz, projected_states_ba = pre_proj[0], pre_proj[1]
+        elif self.use_split_input_projections:
             projected_states_qkvz = _maybe_sm70_projection(
                 self.in_proj_qkvz, hidden_states
             )
@@ -271,7 +276,7 @@ class Qwen3_5GatedDeltaNet(Qwen3NextGatedDeltaNet):
             if projected_states_ba is None:
                 projected_states_ba = self.in_proj_ba(hidden_states)
             projected_states_ba, _ = projected_states_ba
-
+        if self.use_split_input_projections:
             qkv_size = (self.key_dim * 2 + self.value_dim) // self.tp_size
             z_size = self.value_dim // self.tp_size
             ba_size = self.num_v_heads // self.tp_size

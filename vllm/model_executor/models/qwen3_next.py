@@ -1592,11 +1592,16 @@ class Qwen3NextAttention(nn.Module):
         positions: torch.Tensor,
         output: torch.Tensor,
         hidden_states: torch.Tensor,
+        pre_proj: tuple | None = None,
     ):
-        qkv_proj = _maybe_sm70_projection(self.qkv_proj, hidden_states)
-        if qkv_proj is None:
-            qkv_proj = self.qkv_proj(hidden_states)
-        qkv, _ = qkv_proj
+        if pre_proj is not None:
+            # [FA2/SM80 24.10] qkv посчитан операцией предыдущего слоя по кускам (fa2sm80_blockpipe, через границу слоя)
+            qkv = pre_proj[0]
+        else:
+            qkv_proj = _maybe_sm70_projection(self.qkv_proj, hidden_states)
+            if qkv_proj is None:
+                qkv_proj = self.qkv_proj(hidden_states)
+            qkv, _ = qkv_proj
 
         if self.attn_output_gate:
             q_gate, k, v = qkv.split(
