@@ -70,6 +70,7 @@ def main():
 
             def stream(index):
                 item = {"index": index, "events": [], "tokens": [], "ok": False}
+                last_progress = -10.0
                 try:
                     head = post("/tokenize", {"model": MODEL, "prompt": f"Document {case}-{repeat}-{index}. Continue the exposition.\n",
                                               "add_special_tokens": False})["tokens"]
@@ -94,6 +95,12 @@ def main():
                                 if tokens:
                                     item["tokens"].extend(tokens)
                                     item["events"].append({"t": time.monotonic() - started, "tokens": len(tokens)})
+                                    now = item["events"][-1]["t"]
+                                    if now - last_progress >= 10:
+                                        (path / f"progress-{index}.json").write_text(json.dumps({
+                                            "index": index, "last_event_s": now,
+                                            "output_tokens": len(item["tokens"]), "chunks": len(item["events"])}))
+                                        last_progress = now
                                     with lock:
                                         seen.add(index)
                                         if len(seen) >= ready_count: ready.set()

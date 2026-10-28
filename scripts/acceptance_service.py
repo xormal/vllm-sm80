@@ -35,6 +35,23 @@ def main():
     old = (STATE / "active-unit").read_text().strip()
     if not re.fullmatch(r"kandidat-(?:validation|acceptance-[a-z0-9-]+)\.service", old):
         raise RuntimeError("Refusing to stop unrelated service")
+    deadline = time.monotonic() + 15
+    while True:
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:8086/metrics", timeout=3) as response:
+                metrics = response.read().decode()
+            inflight = sum(float(x) for x in re.findall(
+                r'^vllm:num_requests_(?:running|waiting)(?:\{[^}]*\})?\s+([0-9.eE+-]+)', metrics, re.M))
+        except OSError:
+            state = run("systemctl", "--user", "show", old, "-p", "ActiveState", "--value", capture_output=True).stdout.strip()
+            if state not in ("failed", "inactive"):
+                raise RuntimeError("Cannot establish whether active validation requests are finished")
+            break
+        if not inflight:
+            break
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"Refusing to interrupt {inflight} validation requests")
+        time.sleep(.5)
     run("systemctl", "--user", "stop", old)
     output = STATE / args.label
     output.mkdir(exist_ok=True)

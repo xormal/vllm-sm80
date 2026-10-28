@@ -15,7 +15,17 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pairs", type=int, default=5)
     parser.add_argument("--start-pair", type=int, default=1)
+    parser.add_argument("--wait-for", type=Path)
     args = parser.parse_args()
+    if args.wait_for:
+        deadline = time.monotonic() + 1800
+        while not args.wait_for.exists():
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"Previous workload did not finish: {args.wait_for}")
+            time.sleep(1)
+        previous = json.loads(args.wait_for.read_text())
+        if not previous or not all(x.get("ok") for x in previous):
+            raise RuntimeError("Previous workload failed; inspect it before switching variants")
     progress = []
     def save():
         (STATE / "ab-progress.json").write_text(json.dumps(progress, indent=2))
