@@ -1,0 +1,8 @@
+{
+  "model_variant": "conv-meta-fast-1",
+  "source_sha256": "aadf826a48b427da9a4df57bf65e33e22ead3711a00ea63416b671d4bb94af8a",
+  "nonempty_cases": 7,
+  "empty_input_raises_ValueError": true,
+  "passed": true,
+  "note": "Small functional check of the generated median; not a broad coding benchmark."
+}
