@@ -12,6 +12,7 @@
 
 - Текущий default-кандидат: runtime `aef8fa694`, FALLBACK_ROWS=0.
 - Reference: четыре изменённых integration-модуля из `351e4c74b`, проверенные SHA256, в `state/acceptance/baseline-overlay`. Все CUDA kernels и остальной vLLM код для A/B одинаковы; original checkout не запускается и не меняется. Разрешение imports проверено через acceptance_python.sh.
+- В overlay также копируются неизменённые `clef/clef_golova.py` и `clef/clef_sborka.py`: загрузка использует путь относительно `__file__`. Первый запуск без этих зависимостей выключил Clef и далHTTP500; он признан **невалидным стендом**, полностью сохранён в `ab-baseline-1-invalid-clef-setup` и исключён из A/B. Его чатовые ответы нельзя использовать для вывода о регрессии. Теперь до тестов требуется успешная настройка Clef на обоих рангах; рабочий контроллер — `kandidat-ab-controller-v3.service`.
 - Для вариантов отдельные VLLM compile caches, общий неизменённый kernel build и текущие Triton/tuning caches. Это сравнение Python runtime-пакета при общем окружении; оно не объявляет полную идентичность с историческими бинарниками и кэшами production.
 - Сервер: MemoryHigh20G/Max21G, swap0, CPU1600%; clients:3G/swap0/CPU200%. Сборки — прежняя отдельная группа 6G/CPU400%. Отдельный host watcher остановит только активный кандидат при MemAvailable<8G.
 - SSE-паузы считаются между чанками. Внутри speculative chunk искусственных нулевых интервалов нет. Очередь и TTFT учитываются для каждого запроса.
