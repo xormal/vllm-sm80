@@ -91,6 +91,7 @@ def main():
                             if not line.startswith(b"data: "): continue
                             if line.strip() == b"data: [DONE]": break
                             value = json.loads(line[6:])
+                            if value.get("id"): item["request_id"] = value["id"]
                             if "error" in value: raise RuntimeError(value["error"])
                             if value.get("usage"): item["usage"] = value["usage"]
                             if value.get("choices"):
