@@ -40,7 +40,7 @@ def main():
                 try:
                     subprocess.run(["python3", "-I", "scripts/acceptance_service.py", variant, label], cwd=REPO,
                                    stdout=log, stderr=subprocess.STDOUT, check=True)
-                    def client(phase, script, *argv):
+                    def client(phase, script, *argv, allow_failure=False):
                         entry["phase"] = phase; save()
                         print(label, phase, time.time(), flush=True)
                         cmd = ["systemd-run", "--user", "--scope", "--quiet", "--collect",
@@ -49,7 +49,12 @@ def main():
                                "env", "CUDA_VISIBLE_DEVICES=", "OMP_NUM_THREADS=1", "OPENBLAS_NUM_THREADS=1",
                                "python3", "-I", str(REPO / "scripts" / script), *map(str, argv)]
                         with (output / (phase + ".log")).open("w") as client_log:
-                            subprocess.run(cmd, cwd=REPO, stdout=client_log, stderr=subprocess.STDOUT, check=True)
+                            result = subprocess.run(cmd, cwd=REPO, stdout=client_log, stderr=subprocess.STDOUT)
+                        if result.returncode:
+                            if not allow_failure:
+                                raise subprocess.CalledProcessError(result.returncode, cmd)
+                            entry.setdefault("failed_phases", []).append({"phase":phase,"returncode":result.returncode})
+                            save()
                     client("quality", "acceptance_fixtures.py", output / "quality", "baza", "clef")
                     client("semantics", "acceptance_semantics.py", output / "semantics")
                     client("warmup", "acceptance_streams.py", output / "warmup", "--cases", "pure1,pure8,mixed34k", "--tokens", "512")
@@ -58,8 +63,8 @@ def main():
                         client("state", "acceptance_state.py", output / "state")
                         client("recall", "acceptance_recall_distinct.py", output / "recall-distinct")
                         client("preemption", "acceptance_streams.py", output / "preemption", "--cases", "pure8",
-                               "--prompt-tokens", "49147", "--tokens", "512")
-                    entry.update(phase="done", finished=time.time())
+                               "--prompt-tokens", "49147", "--tokens", "2048", allow_failure=True)
+                    entry.update(phase="done_with_failures" if entry.get("failed_phases") else "done", finished=time.time())
                 except Exception as exc:
                     entry.update(phase="failed", finished=time.time(), error=repr(exc)); save()
                     raise

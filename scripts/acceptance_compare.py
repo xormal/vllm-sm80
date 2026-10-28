@@ -54,6 +54,41 @@ def compare_quality(baseline, candidate):
     return {"chats": chats, "clef": clef, "semantics": semantic}
 
 
+def compare_extra(baseline, candidate):
+    out = {}
+    if all((p / "state/results.json").exists() for p in (baseline, candidate)):
+        br, cr = (read(p / "state/results.json") for p in (baseline,candidate))
+        states = {}
+        for key in br:
+            roles = ("before","after") if key == "cancel" else ("first","again") if key == "prefix_max_tokens_1" else ("solo","mixed")
+            states[key] = {}
+            for role in roles:
+                b,c = (r[key][role]["choices"][0]["logprobs"] for r in (br,cr))
+                same = b["tokens"] == c["tokens"]
+                states[key][role] = {"tokens_equal":same,"logprobs_equal":b["token_logprobs"]==c["token_logprobs"],
+                                    "max_logprob_delta_if_same_tokens":max((abs(x-y) for x,y in zip(b["token_logprobs"],c["token_logprobs"]) if x is not None and y is not None),default=0) if same else None}
+            for name,r in (("baseline",br),("candidate",cr)):
+                a,b = (r[key][role]["choices"][0]["logprobs"] for role in roles)
+                states[key][name+"_within_trial_max_logprob_delta"] = max((abs(x-y) for x,y in zip(a["token_logprobs"],b["token_logprobs"]) if x is not None and y is not None),default=0)
+        out["states"] = states
+    if all((p / "recall-distinct/summary.json").exists() for p in (baseline,candidate)):
+        out["recall"] = {"baseline":read(baseline/"recall-distinct/summary.json"),"candidate":read(candidate/"recall-distinct/summary.json"),"requests":[]}
+        for i in range(16):
+            b,c = (read(p/"recall-distinct"/f"request-{i}.json") for p in (baseline,candidate))
+            if "response" in b and "response" in c:
+                out["recall"]["requests"].append({"index":i,"same_message":b["response"]["choices"][0]["message"]==c["response"]["choices"][0]["message"],"baseline_words":b["words"],"candidate_words":c["words"]})
+    if all((p / "preemption/results.json").exists() for p in (baseline,candidate)):
+        out["preemption"] = {"baseline":read(baseline/"preemption/results.json"),"candidate":read(candidate/"preemption/results.json"),"requests":[]}
+        for i in range(8):
+            b,c = (read(p/"preemption/pure8-0"/f"chat-{i}.json") for p in (baseline,candidate))
+            out["preemption"]["requests"].append({"index":i,"tokens_equal":b.get("tokens")==c.get("tokens"),"baseline_ok":b["ok"],"candidate_ok":c["ok"]})
+        for name,p in (("baseline",baseline),("candidate",candidate)):
+            samples=read(p/"preemption/pure8-0/metrics-during.json")
+            counts=[x["num_preemptions_total"] for x in samples if "num_preemptions_total" in x]
+            out["preemption"][name+"_preemption_delta"] = max(counts)-min(counts) if counts else None
+    return out
+
+
 def main():
     pairs = []
     perf = {}
@@ -63,7 +98,7 @@ def main():
         quality = compare_quality(b,c)
         br, cr = ({x["case"]: x for x in read(p / "measure/results.json")} for p in (b,c))
         if set(br) != {"pure1","pure8","mixed34k"} or set(cr) != set(br): continue
-        pairs.append({"pair": pair, "quality": quality})
+        pairs.append({"pair": pair, "quality": quality, "extra":compare_extra(b,c) if pair==1 else {}})
         for case in br:
             for metric in ("aggregate_tokens_per_s_including_prefill", "chunk_gap_p99_s", "chunk_gap_max_s"):
                 key = case + "/" + metric

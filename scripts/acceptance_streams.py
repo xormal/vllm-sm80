@@ -169,6 +169,7 @@ def main():
             (path / "metrics-during.json").write_text(json.dumps(metric_samples, indent=2))
             gaps = [b["t"] - a["t"] for item in chat_results for a, b in zip(item["events"], item["events"][1:])]
             total = sum(item.get("usage", {}).get("completion_tokens", 0) for item in chat_results)
+            terminal_silences = [item["finished"] - item["events"][-1]["t"] for item in chat_results if item["events"]]
             seconds = time.monotonic() - started
             overlap = (not clef_length or (len(clef_results) == clef_count and
                        max(item["sent"] for item in clef_results) < min(item["finished"] for item in chat_results)))
@@ -178,9 +179,14 @@ def main():
                       "max_engine_waiting": max((x.get("num_requests_waiting", 0) for x in metric_samples), default=None), "clef_started_before_any_chat_finished": overlap,
                       "ok": coverage and overlap and all(x["ok"] for x in chat_results + clef_results),
                       "total_tokens": total, "aggregate_tokens_per_s_including_prefill": total / seconds,
+                      "requested_output_tokens": count * args.tokens,
+                      "observed_stream_tokens": sum(sum(e["tokens"] for e in item["events"]) for item in chat_results),
+                      "failed_chat_requests": [item["index"] for item in chat_results if not item["ok"]],
                       "ttft_s": [x["events"][0]["t"] - x["sent"] if x["events"] else None for x in chat_results],
                       "chunk_gap_p50_s": percentile(gaps, .50), "chunk_gap_p95_s": percentile(gaps, .95),
                       "chunk_gap_p99_s": percentile(gaps, .99), "chunk_gap_max_s": max(gaps) if gaps else None,
+                      "max_terminal_silence_s": max(terminal_silences, default=None),
+                      "max_gap_or_terminal_silence_s": max(gaps + terminal_silences, default=None),
                       "clef_latency_s": [x["finished"] - x["sent"] for x in clef_results]}
             all_results.append(result)
             (args.output / "results.json").write_text(json.dumps(all_results, indent=2))
