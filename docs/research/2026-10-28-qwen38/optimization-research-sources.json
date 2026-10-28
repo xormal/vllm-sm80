@@ -1,0 +1,44 @@
+{
+  "date": "2026-10-28",
+  "local_runtime_base_commit": "b00dbfdc5",
+  "public_sm70_commit": "58836d90e04f99146b4f6d61f49c783ed03bb223",
+  "scope": "Static source and document research only; no model experiments. Exact user-referenced long-run degradation report not yet identified.",
+  "sources": [
+    {
+      "path": "sm80_work/PLAN_PREFILL_CLEF.md",
+      "sha256": "7be637cbed127a89d3bb504262d410fdff525abfce260c4b87b657f660a6e83d"
+    },
+    {
+      "path": "docs/research/25_URAVNENIE_DEKODA_30_08.md",
+      "sha256": "933113acb9fe58cb7fbe4956b807ea31cd5122bb69661df6bc51c0fef607f8a7"
+    },
+    {
+      "path": "docs/research/18_PREFILL_RESEARCH_SM70.md",
+      "sha256": "6f249eaccd296c86801e7775d16c5fdeddfaff2d29ad2cf4fb9849fddaaab634"
+    },
+    {
+      "path": "docs/research/fable/e5m2_answer.md",
+      "sha256": "eef1e9a666aa64d15f6a6cc05421dce9e74a485d1a1eb3ac775da6ce2ca6a8ce"
+    },
+    {
+      "path": "docs/reports/delta-sloi-2026-10-17/README.md",
+      "sha256": "ef6448fc8c2ad4c52c19029e904611365fa20f9df2864efbe9d8298163b44719"
+    },
+    {
+      "path": "vllm-sm70/vllm/v1/spec_decode/ngram_iz_konteksta.py",
+      "sha256": "838d6ef4976f05ca893375a1f54dfd27bc3a91626860d6a3b5d51396b5560925"
+    },
+    {
+      "path": "vllm-sm70/vllm/v1/spec_decode/eagle.py",
+      "sha256": "62934b68ea6bb9d3e7f58f23015b07931d4f19d45b3ac7b6cbeb049422b71b2d"
+    },
+    {
+      "path": "vllm-sm70/vllm/v1/sample/rejection_sampler.py",
+      "sha256": "7ff3451294654f23f7edc8cc3df9c42bbd8554c0b51915525b313ac31489634e"
+    },
+    {
+      "path": "vllm-sm70/vllm/model_executor/models/qwen3_dflash2.py",
+      "sha256": "ff669cef1a9321f41eb2f9ba99f7adfce5b3303eb4a353c61638e97326497f98"
+    }
+  ]
+}
