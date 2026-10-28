@@ -10,6 +10,9 @@ export VLLM_CACHE_ROOT="$STATE_DIR/acceptance/vllm-$CANDIDATE_VARIANT-fallback-$
 if [[ "${FA2SM70_GRAN_CONV_ALL:-0}" == 1 ]]; then
   export VLLM_CACHE_ROOT="$VLLM_CACHE_ROOT-conv-all-1"
 fi
+if [[ "${FA2SM80_CONV_META_FUSED:-0}" == 1 ]]; then
+  export VLLM_CACHE_ROOT="$VLLM_CACHE_ROOT-conv-meta-fused-1"
+fi
 export FA2SM70_CLEF_OUT="$STATE_DIR/acceptance/clef-$CANDIDATE_VARIANT"
 cd "$CANDIDATE_REPO"
 exec scripts/serve_qwen38_sm80.sh

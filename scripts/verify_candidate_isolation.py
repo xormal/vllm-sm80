@@ -32,7 +32,7 @@ def main():
         environment = Path(f"/proc/{fields['MainPID']}/environ").read_bytes().split(b"\0")
         for item in environment:
             key, _, value = item.partition(b"=")
-            if key in (b"CUDA_VISIBLE_DEVICES",b"CANDIDATE_VARIANT",b"FA2SM80_BLOCKPIPE_FALLBACK_ROWS",b"FA2SM80_RESUME_ADMISSION",b"FA2SM70_GRAN_CONV_ALL",b"CANDIDATE_SCHEDULER_TRACE"):
+            if key in (b"CUDA_VISIBLE_DEVICES",b"CANDIDATE_VARIANT",b"FA2SM80_BLOCKPIPE_FALLBACK_ROWS",b"FA2SM80_RESUME_ADMISSION",b"FA2SM70_GRAN_CONV_ALL",b"FA2SM80_CONV_META_FUSED",b"CANDIDATE_SCHEDULER_TRACE"):
                 selected[key.decode()] = value.decode()
     ports = output("ss", "-ltnH", "( sport = :8085 or sport = :8086 )")
     result = {"recorded_utc":datetime.now(timezone.utc).isoformat(),

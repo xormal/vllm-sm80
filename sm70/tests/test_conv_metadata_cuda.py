@@ -75,8 +75,9 @@ def main():
     assert torch.equal(out,expected) and torch.equal(write,expected_write)
     timings=[]
     for n in (1,8):
-        def slow():reference(table,ctx,seq,aligned,spec,out,write,n)
-        def fast():fill_uniform_conv_metadata(table,ctx,seq,aligned,spec,out,write,num_rows=n,block_size=PAGE,pad_slot=PAD)
+        t,c,s,a,p=table[:n],ctx[:n],seq[:n],aligned[:n],spec[:n]
+        def slow():reference(t,c,s,a,p,out,write,n)
+        def fast():fill_uniform_conv_metadata(t,c,s,a,p,out,write,num_rows=n,block_size=PAGE,pad_slot=PAD)
         for name,fn in (('torch',slow),('fused',fast)):
             for _ in range(10):fn()
             torch.cuda.synchronize();started=time.perf_counter()

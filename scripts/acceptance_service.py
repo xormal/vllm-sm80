@@ -26,7 +26,10 @@ def main():
                         help="Separate diagnostic process; not performance acceptance")
     parser.add_argument("--resume-admission",type=int,choices=(0,1),default=None)
     parser.add_argument("--gran-conv-all",type=int,choices=(0,1),default=0)
+    parser.add_argument("--conv-meta-fused",type=int,choices=(0,1),default=0)
     args = parser.parse_args()
+    if args.conv_meta_fused and (args.variant != "candidate" or not args.gran_conv_all):
+        raise ValueError("Fused conv metadata requires the candidate convolution correction")
     if args.resume_admission is None:
         args.resume_admission = int(args.variant == "candidate")
     if args.variant == "baseline" and args.gran_conv_all:
@@ -77,6 +80,7 @@ def main():
     for env in (f"CANDIDATE_VARIANT={args.variant}", f"FA2SM80_BLOCKPIPE_FALLBACK_ROWS={args.fallback_rows}",
                 f"FA2SM80_RESUME_ADMISSION={args.resume_admission}",
                 f"FA2SM70_GRAN_CONV_ALL={args.gran_conv_all}",
+                f"FA2SM80_CONV_META_FUSED={args.conv_meta_fused}",
                 "OMP_NUM_THREADS=1", "OPENBLAS_NUM_THREADS=1", "TORCHINDUCTOR_COMPILE_THREADS=1"):
         cmd += ["--setenv=" + env]
     if args.scheduler_trace:
@@ -88,7 +92,8 @@ def main():
     (output / "launch.json").write_text(json.dumps({"variant": args.variant, "fallback_rows": args.fallback_rows, "unit": unit,
              "epoch": time.time(), "command": cmd, "reference_overlay": manifest,
              "scheduler_trace": args.scheduler_trace,"resume_admission":args.resume_admission,
-             "gran_conv_all":args.gran_conv_all}, indent=2))
+             "gran_conv_all":args.gran_conv_all,"conv_meta_fused":args.conv_meta_fused,
+             "repository_head":run("git","rev-parse","HEAD",capture_output=True).stdout.strip()}, indent=2))
     started = time.monotonic()
     while time.monotonic() - started < 900:
         state = run("systemctl", "--user", "show", unit, "-p", "ActiveState", "--value", capture_output=True).stdout.strip()
