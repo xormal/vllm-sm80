@@ -1,0 +1,122 @@
+{
+  "measurements": [
+    {
+      "variant": "resume-admission-plain",
+      "case": "pure1",
+      "drafts": 192.0,
+      "accepted": 320.0,
+      "accepted_per_draft": 1.6666666666666667,
+      "per_position": [
+        0.6822916666666666,
+        0.4635416666666667,
+        0.3333333333333333,
+        0.1875
+      ]
+    },
+    {
+      "variant": "resume-admission-plain",
+      "case": "pure8",
+      "drafts": 1610.0,
+      "accepted": 2490.0,
+      "accepted_per_draft": 1.546583850931677,
+      "per_position": [
+        0.6919254658385093,
+        0.4229813664596273,
+        0.2732919254658385,
+        0.15838509316770186
+      ]
+    },
+    {
+      "variant": "resume-admission-plain",
+      "case": "mixed34k",
+      "drafts": 1498.0,
+      "accepted": 2599.0,
+      "accepted_per_draft": 1.7349799732977302,
+      "per_position": [
+        0.7069425901201603,
+        0.47930574098798395,
+        0.3190921228304406,
+        0.22963951935914553
+      ]
+    },
+    {
+      "variant": "conv-boundary-1",
+      "case": "pure1",
+      "drafts": 186.0,
+      "accepted": 326.0,
+      "accepted_per_draft": 1.7526881720430108,
+      "per_position": [
+        0.6666666666666666,
+        0.489247311827957,
+        0.3763440860215054,
+        0.22043010752688172
+      ]
+    },
+    {
+      "variant": "conv-boundary-1",
+      "case": "pure8",
+      "drafts": 1505.0,
+      "accepted": 2604.0,
+      "accepted_per_draft": 1.7302325581395348,
+      "per_position": [
+        0.7269102990033223,
+        0.4677740863787375,
+        0.3229235880398671,
+        0.21262458471760798
+      ]
+    },
+    {
+      "variant": "conv-boundary-1",
+      "case": "mixed34k",
+      "drafts": 1493.0,
+      "accepted": 2602.0,
+      "accepted_per_draft": 1.7427997320830542,
+      "per_position": [
+        0.7186872069658405,
+        0.47890154052243805,
+        0.3201607501674481,
+        0.22505023442732752
+      ]
+    },
+    {
+      "variant": "fallback-1024",
+      "case": "pure1",
+      "drafts": 143.0,
+      "accepted": 370.0,
+      "accepted_per_draft": 2.5874125874125875,
+      "per_position": [
+        0.8671328671328671,
+        0.6853146853146853,
+        0.5594405594405595,
+        0.4755244755244755
+      ]
+    },
+    {
+      "variant": "fallback-1024",
+      "case": "pure8",
+      "drafts": 1568.0,
+      "accepted": 2527.0,
+      "accepted_per_draft": 1.6116071428571428,
+      "per_position": [
+        0.7021683673469388,
+        0.4413265306122449,
+        0.29209183673469385,
+        0.1760204081632653
+      ]
+    },
+    {
+      "variant": "fallback-1024",
+      "case": "mixed34k",
+      "drafts": 1534.0,
+      "accepted": 2560.0,
+      "accepted_per_draft": 1.66883963494133,
+      "per_position": [
+        0.7027379400260756,
+        0.4576271186440678,
+        0.3050847457627119,
+        0.2033898305084746
+      ]
+    }
+  ],
+  "note": "Counter deltas from raw Prometheus snapshots. Different tokens/arrival order can change acceptance; not entropy or isolated kernel throughput."
+}

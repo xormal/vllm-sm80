@@ -1,0 +1,27 @@
+{
+  "parity_cases": 48,
+  "capture_replay": true,
+  "timings": [
+    {
+      "rows": 1,
+      "path": "torch",
+      "wall_us_per_call": 324.1369948955253
+    },
+    {
+      "rows": 1,
+      "path": "fused",
+      "wall_us_per_call": 38.26344502158463
+    },
+    {
+      "rows": 8,
+      "path": "torch",
+      "wall_us_per_call": 314.8587152827531
+    },
+    {
+      "rows": 8,
+      "path": "fused",
+      "wall_us_per_call": 33.32548018079251
+    }
+  ],
+  "note": "Standalone metadata timing; not model throughput. Physical GPU0 only."
+}
