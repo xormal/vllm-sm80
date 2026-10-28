@@ -36,9 +36,12 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--cases", default="pure1,pure8,mixed2k,mixed8k,mixed34k")
     parser.add_argument("--tokens", type=int, default=1024)
+    parser.add_argument("--prompt-tokens", type=int, default=2048)
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--distinct-clef", action="store_true")
     args = parser.parse_args()
+    if not 128 <= args.prompt_tokens < 262144 or args.prompt_tokens + args.tokens > 262144:
+        raise ValueError("Prompt and generation must fit the unchanged context limit")
     args.output.mkdir(parents=True, exist_ok=True)
     source = REPO / "sm70/integrations/vllm_sm70/clef/proverka_stenda.py"
     spec = importlib.util.spec_from_file_location("fixtures", source)
@@ -49,9 +52,9 @@ def main():
     all_results = []
     for repeat in range(args.repeat):
         for case in args.cases.split(","):
-            if case not in ("pure1", "pure8", "pure40", "mixed2k", "mixed8k", "mixed34k", "mixedqueue34k"):
+            if case not in ("pure1", "pure3", "pure8", "pure16", "pure40", "mixed2k", "mixed8k", "mixed34k", "mixedqueue34k"):
                 raise ValueError(case)
-            count = {"pure1": 1, "pure40": 40, "mixedqueue34k": 20}.get(case, 8)
+            count = {"pure1": 1, "pure3": 3, "pure16": 16, "pure40": 40, "mixedqueue34k": 20}.get(case, 8)
             clef_count = 10 if case == "mixedqueue34k" else 4
             ready_count = min(count, 8)
             clef_length = {"mixed2k": 2048, "mixed8k": 8192, "mixed34k": 34816, "mixedqueue34k": 34816}.get(case)
@@ -69,7 +72,7 @@ def main():
                 try:
                     head = post("/tokenize", {"model": MODEL, "prompt": f"Document {case}-{repeat}-{index}. Continue the exposition.\n",
                                               "add_special_tokens": False})["tokens"]
-                    ids = head + corpus[:2048 - len(head)]
+                    ids = head + (corpus * (args.prompt_tokens // len(corpus) + 1))[:args.prompt_tokens - len(head)]
                     req = urllib.request.Request(URL + "/v1/completions", json.dumps({
                         "model": MODEL, "prompt": ids, "max_tokens": args.tokens,
                         "temperature": 0, "seed": 17, "ignore_eos": True, "logprobs": 1,
@@ -146,7 +149,7 @@ def main():
             with cf.ThreadPoolExecutor(count + clef_count) as pool:
                 chats = [pool.submit(stream, i) for i in range(count)]
                 clefs = []
-                coverage = ready.wait(timeout=120)
+                coverage = ready.wait(timeout=600 if args.prompt_tokens > 32768 else 120)
                 seen_at_gate = len(seen)
                 if clef_length and coverage:
                     clefs = [pool.submit(clef, i) for i in range(clef_count)]
@@ -162,7 +165,7 @@ def main():
                        max(item["sent"] for item in clef_results) < min(item["finished"] for item in chat_results)))
             result = {"case": case, "repeat": repeat, "seconds": seconds, "distinct_clef": args.distinct_clef,
                       "start_gate_met": coverage, "start_gate_requests": ready_count, "seen_at_gate": seen_at_gate,
-                      "chat_requests": count, "clef_requests": len(clef_results),
+                      "chat_requests": count, "prompt_tokens_each": args.prompt_tokens, "clef_requests": len(clef_results),
                       "max_engine_waiting": max((x.get("num_requests_waiting", 0) for x in metric_samples), default=None), "clef_started_before_any_chat_finished": overlap,
                       "ok": coverage and overlap and all(x["ok"] for x in chat_results + clef_results),
                       "total_tokens": total, "aggregate_tokens_per_s_including_prefill": total / seconds,

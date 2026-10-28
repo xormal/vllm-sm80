@@ -41,6 +41,7 @@ def main():
                         with (output / (phase + ".log")).open("w") as client_log:
                             subprocess.run(cmd, cwd=REPO, stdout=client_log, stderr=subprocess.STDOUT, check=True)
                     client("quality", "acceptance_fixtures.py", output / "quality", "baza", "clef")
+                    client("semantics", "acceptance_semantics.py", output / "semantics")
                     client("warmup", "acceptance_streams.py", output / "warmup", "--cases", "pure1,pure8,mixed34k", "--tokens", "512")
                     client("measure", "acceptance_streams.py", output / "measure", "--cases", "pure1,pure8,mixed34k", "--tokens", "512")
                     entry.update(phase="done", finished=time.time())
