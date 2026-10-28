@@ -1,0 +1,94 @@
+[
+  {
+    "pair": 1,
+    "variant": "baseline",
+    "label": "ab-baseline-1",
+    "started": 1793213122.63201,
+    "phase": "done_with_failures",
+    "failed_phases": [
+      {
+        "phase": "preemption",
+        "returncode": 1
+      }
+    ],
+    "finished": 1793214400.0439374
+  },
+  {
+    "pair": 1,
+    "variant": "candidate",
+    "label": "ab-candidate-1",
+    "started": 1793214400.0441957,
+    "phase": "done_with_failures",
+    "failed_phases": [
+      {
+        "phase": "preemption",
+        "returncode": 1
+      }
+    ],
+    "finished": 1793215699.227981
+  },
+  {
+    "pair": 2,
+    "variant": "baseline",
+    "label": "ab-baseline-2",
+    "started": 1793215699.2281766,
+    "phase": "done",
+    "finished": 1793216001.834857
+  },
+  {
+    "pair": 2,
+    "variant": "candidate",
+    "label": "ab-candidate-2",
+    "started": 1793216001.8357937,
+    "phase": "done",
+    "finished": 1793216302.1095326
+  },
+  {
+    "pair": 3,
+    "variant": "baseline",
+    "label": "ab-baseline-3",
+    "started": 1793216302.1098447,
+    "phase": "done",
+    "finished": 1793216605.8583844
+  },
+  {
+    "pair": 3,
+    "variant": "candidate",
+    "label": "ab-candidate-3",
+    "started": 1793216605.8589923,
+    "phase": "done",
+    "finished": 1793216907.7032883
+  },
+  {
+    "pair": 4,
+    "variant": "baseline",
+    "label": "ab-baseline-4",
+    "started": 1793216907.7041361,
+    "phase": "done",
+    "finished": 1793217208.2625592
+  },
+  {
+    "pair": 4,
+    "variant": "candidate",
+    "label": "ab-candidate-4",
+    "started": 1793217208.2636862,
+    "phase": "done",
+    "finished": 1793217507.351316
+  },
+  {
+    "pair": 5,
+    "variant": "baseline",
+    "label": "ab-baseline-5",
+    "started": 1793217507.352139,
+    "phase": "done",
+    "finished": 1793217810.260951
+  },
+  {
+    "pair": 5,
+    "variant": "candidate",
+    "label": "ab-candidate-5",
+    "started": 1793217810.2618759,
+    "phase": "done",
+    "finished": 1793218111.6305823
+  }
+]

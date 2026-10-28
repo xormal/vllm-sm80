@@ -1,0 +1,26 @@
+{
+  "fa2sm70_exch_i12.py": {
+    "baseline_commit": "351e4c74b",
+    "sha256": "85f76c42ce90e766d0a2a0491293ec3a68896eae406a32b329da8bf4852ffded"
+  },
+  "fa2sm80_blockpipe.py": {
+    "baseline_commit": "351e4c74b",
+    "sha256": "d77d029c8a3a2295d705c2bde180eab3b746043fe4f75e36616ededa68f9f9e2"
+  },
+  "fa2sm70_clef.py": {
+    "baseline_commit": "351e4c74b",
+    "sha256": "b21ced4825d397f78dbd730f1e7ba7a3b72a44952bd2f8fefb5beb55539157af"
+  },
+  "fa2sm70_clef_hook.py": {
+    "baseline_commit": "351e4c74b",
+    "sha256": "98db04697e1f9c9d97c292b11b74211f6463e902af9c2a38ef35abb9c422600b"
+  },
+  "clef/clef_golova.py": {
+    "baseline_commit": "351e4c74b",
+    "sha256": "903221aa6c616f03297159edf7ace844a34fa7d022cc83afbcd14d39b4db0a23"
+  },
+  "clef/clef_sborka.py": {
+    "baseline_commit": "351e4c74b",
+    "sha256": "230ba1545b4d577310202dcaeff216fa0e845b38a962ec06ba5a3765f103704e"
+  }
+}

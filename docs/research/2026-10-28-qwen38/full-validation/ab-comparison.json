@@ -1,0 +1,1732 @@
+{
+  "completed_pairs": 5,
+  "required_pairs": 5,
+  "pairs": [
+    {
+      "pair": 1,
+      "quality": {
+        "chats": {
+          "чат0": {
+            "text_equal": true,
+            "logprobs_equal": true,
+            "max_logprob_delta_if_same_text": 0.0
+          },
+          "чат1": {
+            "text_equal": true,
+            "logprobs_equal": true,
+            "max_logprob_delta_if_same_text": 0.0
+          },
+          "чат2": {
+            "text_equal": true,
+            "logprobs_equal": true,
+            "max_logprob_delta_if_same_text": 0.0
+          }
+        },
+        "clef": {
+          "answers_equal": true,
+          "max_numeric_delta": 0.0,
+          "baseline_repeat_equal": true,
+          "candidate_repeat_equal": true
+        },
+        "semantics": {
+          "arithmetic": {
+            "message_equal": true,
+            "logprobs_equal": true,
+            "common_input_prefix_positions": 4,
+            "all_aligned_top20_equal": true,
+            "max_aligned_entropy_bound_delta": 0.0,
+            "baseline_expected": true,
+            "candidate_expected": true
+          },
+          "reasoning": {
+            "message_equal": true,
+            "logprobs_equal": true,
+            "common_input_prefix_positions": 85,
+            "all_aligned_top20_equal": true,
+            "max_aligned_entropy_bound_delta": 0.0,
+            "baseline_expected": true,
+            "candidate_expected": true
+          },
+          "code": {
+            "message_equal": true,
+            "logprobs_equal": true,
+            "common_input_prefix_positions": 84,
+            "all_aligned_top20_equal": true,
+            "max_aligned_entropy_bound_delta": 0.0,
+            "baseline_expected": null,
+            "candidate_expected": null
+          },
+          "russian": {
+            "message_equal": true,
+            "logprobs_equal": true,
+            "common_input_prefix_positions": 58,
+            "all_aligned_top20_equal": true,
+            "max_aligned_entropy_bound_delta": 0.0,
+            "baseline_expected": null,
+            "candidate_expected": null
+          }
+        },
+        "seed": {
+          "baseline_repeat_equal": true,
+          "candidate_repeat_equal": true,
+          "cross_variant_messages_equal": true
+        },
+        "tools": {
+          "baseline": true,
+          "candidate": true
+        }
+      },
+      "extra": {
+        "states": {
+          "cancel": {
+            "before": {
+              "tokens_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_tokens": 0.0
+            },
+            "after": {
+              "tokens_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_tokens": 0.0
+            },
+            "baseline_within_trial_max_logprob_delta": 0.0,
+            "candidate_within_trial_max_logprob_delta": 0.0
+          },
+          "prefix_max_tokens_1": {
+            "first": {
+              "tokens_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_tokens": 0.0
+            },
+            "again": {
+              "tokens_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_tokens": 0.0
+            },
+            "baseline_within_trial_max_logprob_delta": 0.0,
+            "candidate_within_trial_max_logprob_delta": 0.0
+          },
+          "8196": {
+            "solo": {
+              "tokens_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_tokens": 0.0
+            },
+            "mixed": {
+              "tokens_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_tokens": 0.0
+            },
+            "baseline_within_trial_max_logprob_delta": 0.0029399730265140533,
+            "candidate_within_trial_max_logprob_delta": 0.0029399730265140533
+          },
+          "8197": {
+            "solo": {
+              "tokens_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_tokens": 0.0
+            },
+            "mixed": {
+              "tokens_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_tokens": 0.0
+            },
+            "baseline_within_trial_max_logprob_delta": 0.006869501667097211,
+            "candidate_within_trial_max_logprob_delta": 0.006869501667097211
+          },
+          "8198": {
+            "solo": {
+              "tokens_equal": true,
+              "logprobs_equal": false,
+              "max_logprob_delta_if_same_tokens": 4.7654611989855766e-07
+            },
+            "mixed": {
+              "tokens_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_tokens": 0.0
+            },
+            "baseline_within_trial_max_logprob_delta": 0.003931500017642975,
+            "candidate_within_trial_max_logprob_delta": 0.003931500017642975
+          },
+          "16389": {
+            "solo": {
+              "tokens_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_tokens": 0.0
+            },
+            "mixed": {
+              "tokens_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_tokens": 0.0
+            },
+            "baseline_within_trial_max_logprob_delta": 0.9467649443249684,
+            "candidate_within_trial_max_logprob_delta": 0.9467649443249684
+          }
+        },
+        "recall": {
+          "baseline": {
+            "requests": 16,
+            "correct_first": 16,
+            "recall_equal": 14,
+            "unique_first_codes": 16,
+            "stopped": 15,
+            "errors": [],
+            "note": "Code is computed from input arithmetic; this probes cross-request isolation but is not pure unconstrained self-generated recall."
+          },
+          "candidate": {
+            "requests": 16,
+            "correct_first": 16,
+            "recall_equal": 16,
+            "unique_first_codes": 16,
+            "stopped": 16,
+            "errors": [],
+            "note": "Code is computed from input arithmetic; this probes cross-request isolation but is not pure unconstrained self-generated recall."
+          },
+          "requests": [
+            {
+              "index": 0,
+              "same_message": false,
+              "baseline_words": 2426,
+              "candidate_words": 901,
+              "baseline_repeated_tail_12grams": 343,
+              "candidate_repeated_tail_12grams": 0
+            },
+            {
+              "index": 1,
+              "same_message": false,
+              "baseline_words": 786,
+              "candidate_words": 912,
+              "baseline_repeated_tail_12grams": 0,
+              "candidate_repeated_tail_12grams": 0
+            },
+            {
+              "index": 2,
+              "same_message": false,
+              "baseline_words": 1081,
+              "candidate_words": 958,
+              "baseline_repeated_tail_12grams": 0,
+              "candidate_repeated_tail_12grams": 0
+            },
+            {
+              "index": 3,
+              "same_message": false,
+              "baseline_words": 596,
+              "candidate_words": 686,
+              "baseline_repeated_tail_12grams": 0,
+              "candidate_repeated_tail_12grams": 0
+            },
+            {
+              "index": 4,
+              "same_message": false,
+              "baseline_words": 813,
+              "candidate_words": 540,
+              "baseline_repeated_tail_12grams": 0,
+              "candidate_repeated_tail_12grams": 0
+            },
+            {
+              "index": 5,
+              "same_message": false,
+              "baseline_words": 808,
+              "candidate_words": 825,
+              "baseline_repeated_tail_12grams": 0,
+              "candidate_repeated_tail_12grams": 0
+            },
+            {
+              "index": 6,
+              "same_message": false,
+              "baseline_words": 701,
+              "candidate_words": 758,
+              "baseline_repeated_tail_12grams": 0,
+              "candidate_repeated_tail_12grams": 0
+            },
+            {
+              "index": 7,
+              "same_message": true,
+              "baseline_words": 948,
+              "candidate_words": 948,
+              "baseline_repeated_tail_12grams": 0,
+              "candidate_repeated_tail_12grams": 0
+            },
+            {
+              "index": 8,
+              "same_message": false,
+              "baseline_words": 698,
+              "candidate_words": 889,
+              "baseline_repeated_tail_12grams": 0,
+              "candidate_repeated_tail_12grams": 0
+            },
+            {
+              "index": 9,
+              "same_message": false,
+              "baseline_words": 897,
+              "candidate_words": 804,
+              "baseline_repeated_tail_12grams": 0,
+              "candidate_repeated_tail_12grams": 0
+            },
+            {
+              "index": 10,
+              "same_message": false,
+              "baseline_words": 632,
+              "candidate_words": 725,
+              "baseline_repeated_tail_12grams": 0,
+              "candidate_repeated_tail_12grams": 0
+            },
+            {
+              "index": 11,
+              "same_message": false,
+              "baseline_words": 730,
+              "candidate_words": 723,
+              "baseline_repeated_tail_12grams": 0,
+              "candidate_repeated_tail_12grams": 0
+            },
+            {
+              "index": 12,
+              "same_message": false,
+              "baseline_words": 880,
+              "candidate_words": 996,
+              "baseline_repeated_tail_12grams": 0,
+              "candidate_repeated_tail_12grams": 0
+            },
+            {
+              "index": 13,
+              "same_message": false,
+              "baseline_words": 709,
+              "candidate_words": 644,
+              "baseline_repeated_tail_12grams": 0,
+              "candidate_repeated_tail_12grams": 0
+            },
+            {
+              "index": 14,
+              "same_message": false,
+              "baseline_words": 846,
+              "candidate_words": 779,
+              "baseline_repeated_tail_12grams": 0,
+              "candidate_repeated_tail_12grams": 0
+            },
+            {
+              "index": 15,
+              "same_message": false,
+              "baseline_words": 843,
+              "candidate_words": 884,
+              "baseline_repeated_tail_12grams": 0,
+              "candidate_repeated_tail_12grams": 0
+            }
+          ]
+        },
+        "preemption": {
+          "baseline": [
+            {
+              "case": "pure8",
+              "repeat": 0,
+              "seconds": 731.0284118400305,
+              "distinct_clef": false,
+              "start_gate_met": true,
+              "start_gate_requests": 8,
+              "seen_at_gate": 8,
+              "chat_requests": 8,
+              "prompt_tokens_each": 49147,
+              "clef_requests": 0,
+              "max_engine_waiting": 7.0,
+              "clef_started_before_any_chat_finished": true,
+              "ok": false,
+              "total_tokens": 14336,
+              "aggregate_tokens_per_s_including_prefill": 19.61072889618019,
+              "requested_output_tokens": 16384,
+              "observed_stream_tokens": 14338,
+              "failed_chat_requests": [
+                5
+              ],
+              "ttft_s": [
+                11.679708080017008,
+                52.92439810803626,
+                79.26436127000488,
+                26.407560815045144,
+                92.53013187798206,
+                104.42758079699706,
+                66.043363631994,
+                39.72715334297391
+              ],
+              "chunk_gap_p50_s": 0.0727061529760249,
+              "chunk_gap_p95_s": 2.56728341197595,
+              "chunk_gap_p99_s": 2.583840921986848,
+              "chunk_gap_max_s": 5.2411846409668215,
+              "max_terminal_silence_s": 600.0234073760221,
+              "max_gap_or_terminal_silence_s": 600.0234073760221,
+              "clef_latency_s": []
+            }
+          ],
+          "candidate": [
+            {
+              "case": "pure8",
+              "repeat": 0,
+              "seconds": 729.2231942150393,
+              "distinct_clef": false,
+              "start_gate_met": true,
+              "start_gate_requests": 8,
+              "seen_at_gate": 8,
+              "chat_requests": 8,
+              "prompt_tokens_each": 49147,
+              "clef_requests": 0,
+              "max_engine_waiting": 7.0,
+              "clef_started_before_any_chat_finished": true,
+              "ok": false,
+              "total_tokens": 14336,
+              "aggregate_tokens_per_s_including_prefill": 19.659275944221385,
+              "requested_output_tokens": 16384,
+              "observed_stream_tokens": 14338,
+              "failed_chat_requests": [
+                3
+              ],
+              "ttft_s": [
+                25.889444136992097,
+                51.48986045201309,
+                11.462323267012835,
+                102.39765342802275,
+                90.56349932699231,
+                77.42367064103018,
+                38.65015795396175,
+                64.37960183504038
+              ],
+              "chunk_gap_p50_s": 0.06982800096739084,
+              "chunk_gap_p95_s": 2.5743371949647553,
+              "chunk_gap_p99_s": 2.603612211998552,
+              "chunk_gap_max_s": 5.232080329966266,
+              "max_terminal_silence_s": 600.0038338140002,
+              "max_gap_or_terminal_silence_s": 600.0038338140002,
+              "clef_latency_s": []
+            }
+          ],
+          "requests": [
+            {
+              "index": 0,
+              "tokens_equal": false,
+              "baseline_ok": true,
+              "candidate_ok": true
+            },
+            {
+              "index": 1,
+              "tokens_equal": false,
+              "baseline_ok": true,
+              "candidate_ok": true
+            },
+            {
+              "index": 2,
+              "tokens_equal": false,
+              "baseline_ok": true,
+              "candidate_ok": true
+            },
+            {
+              "index": 3,
+              "tokens_equal": false,
+              "baseline_ok": true,
+              "candidate_ok": false
+            },
+            {
+              "index": 4,
+              "tokens_equal": false,
+              "baseline_ok": true,
+              "candidate_ok": true
+            },
+            {
+              "index": 5,
+              "tokens_equal": false,
+              "baseline_ok": false,
+              "candidate_ok": true
+            },
+            {
+              "index": 6,
+              "tokens_equal": false,
+              "baseline_ok": true,
+              "candidate_ok": true
+            },
+            {
+              "index": 7,
+              "tokens_equal": false,
+              "baseline_ok": true,
+              "candidate_ok": true
+            }
+          ],
+          "baseline_preemption_delta": 2.0,
+          "candidate_preemption_delta": 2.0
+        }
+      }
+    },
+    {
+      "pair": 2,
+      "quality": {
+        "chats": {
+          "чат0": {
+            "text_equal": true,
+            "logprobs_equal": true,
+            "max_logprob_delta_if_same_text": 0.0
+          },
+          "чат1": {
+            "text_equal": true,
+            "logprobs_equal": true,
+            "max_logprob_delta_if_same_text": 0.0
+          },
+          "чат2": {
+            "text_equal": true,
+            "logprobs_equal": true,
+            "max_logprob_delta_if_same_text": 0.0
+          }
+        },
+        "clef": {
+          "answers_equal": true,
+          "max_numeric_delta": 0.0,
+          "baseline_repeat_equal": true,
+          "candidate_repeat_equal": true
+        },
+        "semantics": {
+          "arithmetic": {
+            "message_equal": true,
+            "logprobs_equal": true,
+            "common_input_prefix_positions": 4,
+            "all_aligned_top20_equal": true,
+            "max_aligned_entropy_bound_delta": 0.0,
+            "baseline_expected": true,
+            "candidate_expected": true
+          },
+          "reasoning": {
+            "message_equal": true,
+            "logprobs_equal": true,
+            "common_input_prefix_positions": 85,
+            "all_aligned_top20_equal": true,
+            "max_aligned_entropy_bound_delta": 0.0,
+            "baseline_expected": true,
+            "candidate_expected": true
+          },
+          "code": {
+            "message_equal": true,
+            "logprobs_equal": true,
+            "common_input_prefix_positions": 84,
+            "all_aligned_top20_equal": true,
+            "max_aligned_entropy_bound_delta": 0.0,
+            "baseline_expected": null,
+            "candidate_expected": null
+          },
+          "russian": {
+            "message_equal": true,
+            "logprobs_equal": true,
+            "common_input_prefix_positions": 58,
+            "all_aligned_top20_equal": true,
+            "max_aligned_entropy_bound_delta": 0.0,
+            "baseline_expected": null,
+            "candidate_expected": null
+          }
+        },
+        "seed": {
+          "baseline_repeat_equal": true,
+          "candidate_repeat_equal": true,
+          "cross_variant_messages_equal": true
+        },
+        "tools": {
+          "baseline": true,
+          "candidate": true
+        }
+      },
+      "extra": {}
+    },
+    {
+      "pair": 3,
+      "quality": {
+        "chats": {
+          "чат0": {
+            "text_equal": true,
+            "logprobs_equal": true,
+            "max_logprob_delta_if_same_text": 0.0
+          },
+          "чат1": {
+            "text_equal": true,
+            "logprobs_equal": true,
+            "max_logprob_delta_if_same_text": 0.0
+          },
+          "чат2": {
+            "text_equal": true,
+            "logprobs_equal": true,
+            "max_logprob_delta_if_same_text": 0.0
+          }
+        },
+        "clef": {
+          "answers_equal": true,
+          "max_numeric_delta": 0.0,
+          "baseline_repeat_equal": true,
+          "candidate_repeat_equal": true
+        },
+        "semantics": {
+          "arithmetic": {
+            "message_equal": true,
+            "logprobs_equal": true,
+            "common_input_prefix_positions": 4,
+            "all_aligned_top20_equal": true,
+            "max_aligned_entropy_bound_delta": 0.0,
+            "baseline_expected": true,
+            "candidate_expected": true
+          },
+          "reasoning": {
+            "message_equal": true,
+            "logprobs_equal": true,
+            "common_input_prefix_positions": 85,
+            "all_aligned_top20_equal": true,
+            "max_aligned_entropy_bound_delta": 0.0,
+            "baseline_expected": true,
+            "candidate_expected": true
+          },
+          "code": {
+            "message_equal": true,
+            "logprobs_equal": true,
+            "common_input_prefix_positions": 84,
+            "all_aligned_top20_equal": true,
+            "max_aligned_entropy_bound_delta": 0.0,
+            "baseline_expected": null,
+            "candidate_expected": null
+          },
+          "russian": {
+            "message_equal": true,
+            "logprobs_equal": true,
+            "common_input_prefix_positions": 58,
+            "all_aligned_top20_equal": true,
+            "max_aligned_entropy_bound_delta": 0.0,
+            "baseline_expected": null,
+            "candidate_expected": null
+          }
+        },
+        "seed": {
+          "baseline_repeat_equal": true,
+          "candidate_repeat_equal": true,
+          "cross_variant_messages_equal": true
+        },
+        "tools": {
+          "baseline": true,
+          "candidate": true
+        }
+      },
+      "extra": {}
+    },
+    {
+      "pair": 4,
+      "quality": {
+        "chats": {
+          "чат0": {
+            "text_equal": true,
+            "logprobs_equal": true,
+            "max_logprob_delta_if_same_text": 0.0
+          },
+          "чат1": {
+            "text_equal": true,
+            "logprobs_equal": true,
+            "max_logprob_delta_if_same_text": 0.0
+          },
+          "чат2": {
+            "text_equal": true,
+            "logprobs_equal": true,
+            "max_logprob_delta_if_same_text": 0.0
+          }
+        },
+        "clef": {
+          "answers_equal": true,
+          "max_numeric_delta": 0.0,
+          "baseline_repeat_equal": true,
+          "candidate_repeat_equal": true
+        },
+        "semantics": {
+          "arithmetic": {
+            "message_equal": true,
+            "logprobs_equal": true,
+            "common_input_prefix_positions": 4,
+            "all_aligned_top20_equal": true,
+            "max_aligned_entropy_bound_delta": 0.0,
+            "baseline_expected": true,
+            "candidate_expected": true
+          },
+          "reasoning": {
+            "message_equal": true,
+            "logprobs_equal": true,
+            "common_input_prefix_positions": 85,
+            "all_aligned_top20_equal": true,
+            "max_aligned_entropy_bound_delta": 0.0,
+            "baseline_expected": true,
+            "candidate_expected": true
+          },
+          "code": {
+            "message_equal": true,
+            "logprobs_equal": true,
+            "common_input_prefix_positions": 84,
+            "all_aligned_top20_equal": true,
+            "max_aligned_entropy_bound_delta": 0.0,
+            "baseline_expected": null,
+            "candidate_expected": null
+          },
+          "russian": {
+            "message_equal": true,
+            "logprobs_equal": true,
+            "common_input_prefix_positions": 58,
+            "all_aligned_top20_equal": true,
+            "max_aligned_entropy_bound_delta": 0.0,
+            "baseline_expected": null,
+            "candidate_expected": null
+          }
+        },
+        "seed": {
+          "baseline_repeat_equal": true,
+          "candidate_repeat_equal": true,
+          "cross_variant_messages_equal": true
+        },
+        "tools": {
+          "baseline": true,
+          "candidate": true
+        }
+      },
+      "extra": {}
+    },
+    {
+      "pair": 5,
+      "quality": {
+        "chats": {
+          "чат0": {
+            "text_equal": true,
+            "logprobs_equal": true,
+            "max_logprob_delta_if_same_text": 0.0
+          },
+          "чат1": {
+            "text_equal": true,
+            "logprobs_equal": true,
+            "max_logprob_delta_if_same_text": 0.0
+          },
+          "чат2": {
+            "text_equal": true,
+            "logprobs_equal": true,
+            "max_logprob_delta_if_same_text": 0.0
+          }
+        },
+        "clef": {
+          "answers_equal": true,
+          "max_numeric_delta": 0.0,
+          "baseline_repeat_equal": true,
+          "candidate_repeat_equal": true
+        },
+        "semantics": {
+          "arithmetic": {
+            "message_equal": true,
+            "logprobs_equal": true,
+            "common_input_prefix_positions": 4,
+            "all_aligned_top20_equal": true,
+            "max_aligned_entropy_bound_delta": 0.0,
+            "baseline_expected": true,
+            "candidate_expected": true
+          },
+          "reasoning": {
+            "message_equal": true,
+            "logprobs_equal": true,
+            "common_input_prefix_positions": 85,
+            "all_aligned_top20_equal": true,
+            "max_aligned_entropy_bound_delta": 0.0,
+            "baseline_expected": true,
+            "candidate_expected": true
+          },
+          "code": {
+            "message_equal": true,
+            "logprobs_equal": true,
+            "common_input_prefix_positions": 84,
+            "all_aligned_top20_equal": true,
+            "max_aligned_entropy_bound_delta": 0.0,
+            "baseline_expected": null,
+            "candidate_expected": null
+          },
+          "russian": {
+            "message_equal": true,
+            "logprobs_equal": true,
+            "common_input_prefix_positions": 58,
+            "all_aligned_top20_equal": true,
+            "max_aligned_entropy_bound_delta": 0.0,
+            "baseline_expected": null,
+            "candidate_expected": null
+          }
+        },
+        "seed": {
+          "baseline_repeat_equal": true,
+          "candidate_repeat_equal": true,
+          "cross_variant_messages_equal": true
+        },
+        "tools": {
+          "baseline": true,
+          "candidate": true
+        }
+      },
+      "extra": {}
+    }
+  ],
+  "performance": {
+    "pure1/aggregate_tokens_per_s_including_prefill": {
+      "runs": [
+        {
+          "pair": 1,
+          "baseline": 111.1170033504153,
+          "candidate": 102.66814146544463,
+          "workloads_ok": true
+        },
+        {
+          "pair": 2,
+          "baseline": 104.28725563763668,
+          "candidate": 102.50649375115651,
+          "workloads_ok": true
+        },
+        {
+          "pair": 3,
+          "baseline": 101.89687338636166,
+          "candidate": 104.04953215138276,
+          "workloads_ok": true
+        },
+        {
+          "pair": 4,
+          "baseline": 104.64767389253616,
+          "candidate": 109.99589843122999,
+          "workloads_ok": true
+        },
+        {
+          "pair": 5,
+          "baseline": 103.79668947804069,
+          "candidate": 104.16997752627927,
+          "workloads_ok": true
+        }
+      ],
+      "geomean_candidate_over_baseline": 0.9956165670143017,
+      "paired_logratio_t95_interval": [
+        0.9374912014586899,
+        1.0573457617212876
+      ]
+    },
+    "pure1/chunk_gap_p99_s": {
+      "runs": [
+        {
+          "pair": 1,
+          "baseline": 0.024395241984166205,
+          "candidate": 0.026026170002296567,
+          "workloads_ok": true
+        },
+        {
+          "pair": 2,
+          "baseline": 0.024401249014772475,
+          "candidate": 0.024727824958972633,
+          "workloads_ok": true
+        },
+        {
+          "pair": 3,
+          "baseline": 0.0270866789505817,
+          "candidate": 0.025293504004366696,
+          "workloads_ok": true
+        },
+        {
+          "pair": 4,
+          "baseline": 0.02701782895019278,
+          "candidate": 0.02496029797475785,
+          "workloads_ok": true
+        },
+        {
+          "pair": 5,
+          "baseline": 0.026610697037540376,
+          "candidate": 0.024584389000665396,
+          "workloads_ok": true
+        }
+      ],
+      "geomean_candidate_over_baseline": 0.9706595759386819,
+      "paired_logratio_t95_interval": [
+        0.8948240497657418,
+        1.0529220941347266
+      ]
+    },
+    "pure1/chunk_gap_max_s": {
+      "runs": [
+        {
+          "pair": 1,
+          "baseline": 0.027335972990840673,
+          "candidate": 0.02615140803391114,
+          "workloads_ok": true
+        },
+        {
+          "pair": 2,
+          "baseline": 0.02542504802113399,
+          "candidate": 0.024774332996457815,
+          "workloads_ok": true
+        },
+        {
+          "pair": 3,
+          "baseline": 0.02878342295298353,
+          "candidate": 0.02639415202429518,
+          "workloads_ok": true
+        },
+        {
+          "pair": 4,
+          "baseline": 0.02735734300222248,
+          "candidate": 0.02692935394588858,
+          "workloads_ok": true
+        },
+        {
+          "pair": 5,
+          "baseline": 0.030109419021755457,
+          "candidate": 0.027487248997204006,
+          "workloads_ok": true
+        }
+      ],
+      "geomean_candidate_over_baseline": 0.9486136829260174,
+      "paired_logratio_t95_interval": [
+        0.9087572683088515,
+        0.990218126242961
+      ]
+    },
+    "pure8/aggregate_tokens_per_s_including_prefill": {
+      "runs": [
+        {
+          "pair": 1,
+          "baseline": 290.6103149185331,
+          "candidate": 285.69928827480214,
+          "workloads_ok": true
+        },
+        {
+          "pair": 2,
+          "baseline": 270.5557819211289,
+          "candidate": 278.1885475543615,
+          "workloads_ok": true
+        },
+        {
+          "pair": 3,
+          "baseline": 283.0957180752106,
+          "candidate": 275.583125481893,
+          "workloads_ok": true
+        },
+        {
+          "pair": 4,
+          "baseline": 288.2298350427253,
+          "candidate": 284.32290112353843,
+          "workloads_ok": true
+        },
+        {
+          "pair": 5,
+          "baseline": 280.2051937403968,
+          "candidate": 291.73639588233357,
+          "workloads_ok": true
+        }
+      ],
+      "geomean_candidate_over_baseline": 1.0021147270862698,
+      "paired_logratio_t95_interval": [
+        0.965581846306578,
+        1.04002983287689
+      ]
+    },
+    "pure8/chunk_gap_p99_s": {
+      "runs": [
+        {
+          "pair": 1,
+          "baseline": 0.05542817199602723,
+          "candidate": 0.057934132986702025,
+          "workloads_ok": true
+        },
+        {
+          "pair": 2,
+          "baseline": 0.056959284003823996,
+          "candidate": 0.055907536996528506,
+          "workloads_ok": true
+        },
+        {
+          "pair": 3,
+          "baseline": 0.05680900497827679,
+          "candidate": 0.05639305501244962,
+          "workloads_ok": true
+        },
+        {
+          "pair": 4,
+          "baseline": 0.060468445997685194,
+          "candidate": 0.06255002098623663,
+          "workloads_ok": true
+        },
+        {
+          "pair": 5,
+          "baseline": 0.05602050601737574,
+          "candidate": 0.058775865007191896,
+          "workloads_ok": true
+        }
+      ],
+      "geomean_candidate_over_baseline": 1.0202198700098195,
+      "paired_logratio_t95_interval": [
+        0.9818942977708711,
+        1.0600413766795693
+      ]
+    },
+    "pure8/chunk_gap_max_s": {
+      "runs": [
+        {
+          "pair": 1,
+          "baseline": 1.6997522040037438,
+          "candidate": 1.696799680008553,
+          "workloads_ok": true
+        },
+        {
+          "pair": 2,
+          "baseline": 1.7260410489980131,
+          "candidate": 1.6804417570238002,
+          "workloads_ok": true
+        },
+        {
+          "pair": 3,
+          "baseline": 1.2861858800170012,
+          "candidate": 1.711630126053933,
+          "workloads_ok": true
+        },
+        {
+          "pair": 4,
+          "baseline": 1.6992340270080604,
+          "candidate": 1.690232350025326,
+          "workloads_ok": true
+        },
+        {
+          "pair": 5,
+          "baseline": 1.6818086699931882,
+          "candidate": 1.7021767510450445,
+          "workloads_ok": true
+        }
+      ],
+      "geomean_candidate_over_baseline": 1.0542144241673364,
+      "paired_logratio_t95_interval": [
+        0.8959856659588232,
+        1.240385973064823
+      ]
+    },
+    "mixed34k/aggregate_tokens_per_s_including_prefill": {
+      "runs": [
+        {
+          "pair": 1,
+          "baseline": 80.55625668442643,
+          "candidate": 81.31769599977166,
+          "workloads_ok": true
+        },
+        {
+          "pair": 2,
+          "baseline": 81.55582115335154,
+          "candidate": 81.82865821526248,
+          "workloads_ok": true
+        },
+        {
+          "pair": 3,
+          "baseline": 81.88079268432217,
+          "candidate": 80.80880587771865,
+          "workloads_ok": true
+        },
+        {
+          "pair": 4,
+          "baseline": 80.81626681448465,
+          "candidate": 81.67307236746092,
+          "workloads_ok": true
+        },
+        {
+          "pair": 5,
+          "baseline": 81.35107171436987,
+          "candidate": 81.51495174017047,
+          "workloads_ok": true
+        }
+      ],
+      "geomean_candidate_over_baseline": 1.00242849137371,
+      "paired_logratio_t95_interval": [
+        0.9907028543481816,
+        1.014292909228476
+      ]
+    },
+    "mixed34k/chunk_gap_p99_s": {
+      "runs": [
+        {
+          "pair": 1,
+          "baseline": 2.5015068859793246,
+          "candidate": 2.495847148995381,
+          "workloads_ok": true
+        },
+        {
+          "pair": 2,
+          "baseline": 2.477318399993237,
+          "candidate": 2.498670728993602,
+          "workloads_ok": true
+        },
+        {
+          "pair": 3,
+          "baseline": 2.4835982469958253,
+          "candidate": 2.507836114964448,
+          "workloads_ok": true
+        },
+        {
+          "pair": 4,
+          "baseline": 2.4948567770188674,
+          "candidate": 2.5018053959938698,
+          "workloads_ok": true
+        },
+        {
+          "pair": 5,
+          "baseline": 2.514584106975235,
+          "candidate": 2.490069434978068,
+          "workloads_ok": true
+        }
+      ],
+      "geomean_candidate_over_baseline": 1.0018043139576935,
+      "paired_logratio_t95_interval": [
+        0.9918147864327393,
+        1.0118944556916079
+      ]
+    },
+    "mixed34k/chunk_gap_max_s": {
+      "runs": [
+        {
+          "pair": 1,
+          "baseline": 2.582866248965729,
+          "candidate": 2.6183588700369,
+          "workloads_ok": true
+        },
+        {
+          "pair": 2,
+          "baseline": 2.5980661580106243,
+          "candidate": 2.5970239440212026,
+          "workloads_ok": true
+        },
+        {
+          "pair": 3,
+          "baseline": 2.5899688939680345,
+          "candidate": 2.600703371979762,
+          "workloads_ok": true
+        },
+        {
+          "pair": 4,
+          "baseline": 2.60470530600287,
+          "candidate": 2.608843572961632,
+          "workloads_ok": true
+        },
+        {
+          "pair": 5,
+          "baseline": 2.606425948033575,
+          "candidate": 2.586959502019454,
+          "workloads_ok": true
+        }
+      ],
+      "geomean_candidate_over_baseline": 1.0022973717568109,
+      "paired_logratio_t95_interval": [
+        0.9927849605918089,
+        1.011900926492439
+      ]
+    }
+  },
+  "within_variant_repeatability": {
+    "baseline": [
+      {
+        "reference_run": 1,
+        "other_run": 2,
+        "quality": {
+          "chats": {
+            "чат0": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            },
+            "чат1": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            },
+            "чат2": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            }
+          },
+          "clef": {
+            "answers_equal": true,
+            "max_numeric_delta": 0.0,
+            "baseline_repeat_equal": true,
+            "candidate_repeat_equal": true
+          },
+          "semantics": {
+            "arithmetic": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 4,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": true,
+              "candidate_expected": true
+            },
+            "reasoning": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 85,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": true,
+              "candidate_expected": true
+            },
+            "code": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 84,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": null,
+              "candidate_expected": null
+            },
+            "russian": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 58,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": null,
+              "candidate_expected": null
+            }
+          },
+          "seed": {
+            "baseline_repeat_equal": true,
+            "candidate_repeat_equal": true,
+            "cross_variant_messages_equal": true
+          },
+          "tools": {
+            "baseline": true,
+            "candidate": true
+          }
+        }
+      },
+      {
+        "reference_run": 1,
+        "other_run": 3,
+        "quality": {
+          "chats": {
+            "чат0": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            },
+            "чат1": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            },
+            "чат2": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            }
+          },
+          "clef": {
+            "answers_equal": true,
+            "max_numeric_delta": 0.0,
+            "baseline_repeat_equal": true,
+            "candidate_repeat_equal": true
+          },
+          "semantics": {
+            "arithmetic": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 4,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": true,
+              "candidate_expected": true
+            },
+            "reasoning": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 85,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": true,
+              "candidate_expected": true
+            },
+            "code": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 84,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": null,
+              "candidate_expected": null
+            },
+            "russian": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 58,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": null,
+              "candidate_expected": null
+            }
+          },
+          "seed": {
+            "baseline_repeat_equal": true,
+            "candidate_repeat_equal": true,
+            "cross_variant_messages_equal": true
+          },
+          "tools": {
+            "baseline": true,
+            "candidate": true
+          }
+        }
+      },
+      {
+        "reference_run": 1,
+        "other_run": 4,
+        "quality": {
+          "chats": {
+            "чат0": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            },
+            "чат1": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            },
+            "чат2": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            }
+          },
+          "clef": {
+            "answers_equal": true,
+            "max_numeric_delta": 0.0,
+            "baseline_repeat_equal": true,
+            "candidate_repeat_equal": true
+          },
+          "semantics": {
+            "arithmetic": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 4,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": true,
+              "candidate_expected": true
+            },
+            "reasoning": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 85,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": true,
+              "candidate_expected": true
+            },
+            "code": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 84,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": null,
+              "candidate_expected": null
+            },
+            "russian": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 58,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": null,
+              "candidate_expected": null
+            }
+          },
+          "seed": {
+            "baseline_repeat_equal": true,
+            "candidate_repeat_equal": true,
+            "cross_variant_messages_equal": true
+          },
+          "tools": {
+            "baseline": true,
+            "candidate": true
+          }
+        }
+      },
+      {
+        "reference_run": 1,
+        "other_run": 5,
+        "quality": {
+          "chats": {
+            "чат0": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            },
+            "чат1": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            },
+            "чат2": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            }
+          },
+          "clef": {
+            "answers_equal": true,
+            "max_numeric_delta": 0.0,
+            "baseline_repeat_equal": true,
+            "candidate_repeat_equal": true
+          },
+          "semantics": {
+            "arithmetic": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 4,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": true,
+              "candidate_expected": true
+            },
+            "reasoning": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 85,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": true,
+              "candidate_expected": true
+            },
+            "code": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 84,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": null,
+              "candidate_expected": null
+            },
+            "russian": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 58,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": null,
+              "candidate_expected": null
+            }
+          },
+          "seed": {
+            "baseline_repeat_equal": true,
+            "candidate_repeat_equal": true,
+            "cross_variant_messages_equal": true
+          },
+          "tools": {
+            "baseline": true,
+            "candidate": true
+          }
+        }
+      }
+    ],
+    "candidate": [
+      {
+        "reference_run": 1,
+        "other_run": 2,
+        "quality": {
+          "chats": {
+            "чат0": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            },
+            "чат1": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            },
+            "чат2": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            }
+          },
+          "clef": {
+            "answers_equal": true,
+            "max_numeric_delta": 0.0,
+            "baseline_repeat_equal": true,
+            "candidate_repeat_equal": true
+          },
+          "semantics": {
+            "arithmetic": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 4,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": true,
+              "candidate_expected": true
+            },
+            "reasoning": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 85,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": true,
+              "candidate_expected": true
+            },
+            "code": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 84,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": null,
+              "candidate_expected": null
+            },
+            "russian": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 58,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": null,
+              "candidate_expected": null
+            }
+          },
+          "seed": {
+            "baseline_repeat_equal": true,
+            "candidate_repeat_equal": true,
+            "cross_variant_messages_equal": true
+          },
+          "tools": {
+            "baseline": true,
+            "candidate": true
+          }
+        }
+      },
+      {
+        "reference_run": 1,
+        "other_run": 3,
+        "quality": {
+          "chats": {
+            "чат0": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            },
+            "чат1": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            },
+            "чат2": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            }
+          },
+          "clef": {
+            "answers_equal": true,
+            "max_numeric_delta": 0.0,
+            "baseline_repeat_equal": true,
+            "candidate_repeat_equal": true
+          },
+          "semantics": {
+            "arithmetic": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 4,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": true,
+              "candidate_expected": true
+            },
+            "reasoning": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 85,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": true,
+              "candidate_expected": true
+            },
+            "code": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 84,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": null,
+              "candidate_expected": null
+            },
+            "russian": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 58,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": null,
+              "candidate_expected": null
+            }
+          },
+          "seed": {
+            "baseline_repeat_equal": true,
+            "candidate_repeat_equal": true,
+            "cross_variant_messages_equal": true
+          },
+          "tools": {
+            "baseline": true,
+            "candidate": true
+          }
+        }
+      },
+      {
+        "reference_run": 1,
+        "other_run": 4,
+        "quality": {
+          "chats": {
+            "чат0": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            },
+            "чат1": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            },
+            "чат2": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            }
+          },
+          "clef": {
+            "answers_equal": true,
+            "max_numeric_delta": 0.0,
+            "baseline_repeat_equal": true,
+            "candidate_repeat_equal": true
+          },
+          "semantics": {
+            "arithmetic": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 4,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": true,
+              "candidate_expected": true
+            },
+            "reasoning": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 85,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": true,
+              "candidate_expected": true
+            },
+            "code": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 84,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": null,
+              "candidate_expected": null
+            },
+            "russian": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 58,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": null,
+              "candidate_expected": null
+            }
+          },
+          "seed": {
+            "baseline_repeat_equal": true,
+            "candidate_repeat_equal": true,
+            "cross_variant_messages_equal": true
+          },
+          "tools": {
+            "baseline": true,
+            "candidate": true
+          }
+        }
+      },
+      {
+        "reference_run": 1,
+        "other_run": 5,
+        "quality": {
+          "chats": {
+            "чат0": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            },
+            "чат1": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            },
+            "чат2": {
+              "text_equal": true,
+              "logprobs_equal": true,
+              "max_logprob_delta_if_same_text": 0.0
+            }
+          },
+          "clef": {
+            "answers_equal": true,
+            "max_numeric_delta": 0.0,
+            "baseline_repeat_equal": true,
+            "candidate_repeat_equal": true
+          },
+          "semantics": {
+            "arithmetic": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 4,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": true,
+              "candidate_expected": true
+            },
+            "reasoning": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 85,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": true,
+              "candidate_expected": true
+            },
+            "code": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 84,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": null,
+              "candidate_expected": null
+            },
+            "russian": {
+              "message_equal": true,
+              "logprobs_equal": true,
+              "common_input_prefix_positions": 58,
+              "all_aligned_top20_equal": true,
+              "max_aligned_entropy_bound_delta": 0.0,
+              "baseline_expected": null,
+              "candidate_expected": null
+            }
+          },
+          "seed": {
+            "baseline_repeat_equal": true,
+            "candidate_repeat_equal": true,
+            "cross_variant_messages_equal": true
+          },
+          "tools": {
+            "baseline": true,
+            "candidate": true
+          }
+        }
+      }
+    ]
+  },
+  "notes": [
+    "Five paired samples; t intervals assume independent approximately normal log ratios.",
+    "Baseline-first order and shared host/training load can cause drift. No release pass inferred automatically.",
+    "Concurrent clients use a start barrier, not a recorded scheduler trace; request arrival and batch slot order may differ.",
+    "Clef numeric values are rounded by the API. Top-20 entropy bounds are not full entropy."
+  ]
+}
