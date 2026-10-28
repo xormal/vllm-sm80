@@ -44,6 +44,9 @@ def main():
                     client("semantics", "acceptance_semantics.py", output / "semantics")
                     client("warmup", "acceptance_streams.py", output / "warmup", "--cases", "pure1,pure8,mixed34k", "--tokens", "512")
                     client("measure", "acceptance_streams.py", output / "measure", "--cases", "pure1,pure8,mixed34k", "--tokens", "512")
+                    if pair == 1:
+                        client("state", "acceptance_state.py", output / "state")
+                        client("recall", "acceptance_recall_distinct.py", output / "recall-distinct")
                     entry.update(phase="done", finished=time.time())
                 except Exception as exc:
                     entry.update(phase="failed", finished=time.time(), error=repr(exc)); save()
