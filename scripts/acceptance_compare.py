@@ -51,7 +51,15 @@ def compare_quality(baseline, candidate):
                           "all_aligned_top20_equal": all(x["same_top20"] for x in aligned) if aligned else None,
                           "max_aligned_entropy_bound_delta": max((max(abs(x["H_lower_delta"]),abs(x["H_upper_delta"])) for x in aligned), default=None),
                           "baseline_expected": b["expected_present"], "candidate_expected": c["expected_present"]}
-    return {"chats": chats, "clef": clef, "semantics": semantic}
+    summaries = {name: read(p / "semantics/summary.json")
+                 for name, p in (("baseline", baseline), ("candidate", candidate))}
+    bs, cs = (read(p / "semantics/seed.json") for p in (baseline, candidate))
+    return {"chats": chats, "clef": clef, "semantics": semantic,
+            "seed": {"baseline_repeat_equal": summaries["baseline"]["same_seed_messages"],
+                     "candidate_repeat_equal": summaries["candidate"]["same_seed_messages"],
+                     "cross_variant_messages_equal": all(x["choices"][0]["message"] == y["choices"][0]["message"]
+                                                         for x,y in zip(bs,cs))},
+            "tools": {name: value["tool_ok"] for name,value in summaries.items()}}
 
 
 def compare_extra(baseline, candidate):
@@ -76,7 +84,9 @@ def compare_extra(baseline, candidate):
         for i in range(16):
             b,c = (read(p/"recall-distinct"/f"request-{i}.json") for p in (baseline,candidate))
             if "response" in b and "response" in c:
-                out["recall"]["requests"].append({"index":i,"same_message":b["response"]["choices"][0]["message"]==c["response"]["choices"][0]["message"],"baseline_words":b["words"],"candidate_words":c["words"]})
+                out["recall"]["requests"].append({"index":i,"same_message":b["response"]["choices"][0]["message"]==c["response"]["choices"][0]["message"],"baseline_words":b["words"],"candidate_words":c["words"],
+                    "baseline_repeated_tail_12grams":b["repeated_tail_12grams"],
+                    "candidate_repeated_tail_12grams":c["repeated_tail_12grams"]})
     if all((p / "preemption/results.json").exists() for p in (baseline,candidate)):
         out["preemption"] = {"baseline":read(baseline/"preemption/results.json"),"candidate":read(candidate/"preemption/results.json"),"requests":[]}
         for i in range(8):
@@ -112,7 +122,18 @@ def main():
             half = 2.776445105 * statistics.stdev(ratios) / math.sqrt(5)
             entry["paired_logratio_t95_interval"] = [math.exp(statistics.mean(ratios)+s*half) for s in (-1,1)]
         performance[key]=entry
+    repeatability = {}
+    for variant in ("baseline", "candidate"):
+        first = STATE / f"ab-{variant}-1"
+        comparisons = []
+        for pair in range(2,6):
+            other = STATE / f"ab-{variant}-{pair}"
+            if (other / "semantics/summary.json").exists():
+                comparisons.append({"reference_run":1,"other_run":pair,
+                                    "quality":compare_quality(first,other)})
+        repeatability[variant] = comparisons
     result = {"completed_pairs":len(pairs), "required_pairs":5, "pairs":pairs, "performance":performance,
+              "within_variant_repeatability":repeatability,
               "notes":["Five paired samples; t intervals assume independent approximately normal log ratios.",
                        "Baseline-first order and shared host/training load can cause drift. No release pass inferred automatically.",
                        "Clef numeric values are rounded by the API. Top-20 entropy bounds are not full entropy."]}
