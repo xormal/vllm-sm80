@@ -52,6 +52,8 @@ def main():
                  str(REPO/'scripts'/script),str(root/phase),*args]
         with (STATE/('final-'+phase+'.log')).open('w') as log:
             subprocess.run(command,cwd=REPO,stdout=log,stderr=subprocess.STDOUT,check=True)
+    client('context-limit','acceptance_streams.py','--cases','pure1','--prompt-tokens','262140','--tokens','4')
+    client('context-max1','acceptance_streams.py','--cases','pure1','--prompt-tokens','262143','--tokens','1')
     client('decode32k','acceptance_streams.py','--cases','pure1','--prompt-tokens','49147','--tokens','32768')
     client('large-valid-chat40','acceptance_large_http.py','--route','chat-padded','--concurrency','40')
     client('large-clef','acceptance_large_http.py','--route','clef','--concurrency','1')
