@@ -208,6 +208,7 @@ _ГРАН_КОНВ = __import__("os").environ.get("FA2SM70_GRAN_CONV","0")=="1"
 # против пола 0.60 -- граница становится прозрачной. Здесь строится ТОЛЬКО пара,
 # без подстановки SSM-столбца и клона истории (их безусловность стоила ~10 % декода).
 _ГРАН_КОНВ_ВСЕГДА = __import__("os").environ.get("FA2SM70_GRAN_CONV_ALL","0")=="1"
+_CONV_META_FUSED = __import__("os").environ.get("FA2SM80_CONV_META_FUSED", "0") == "1"
 # Прибор и фальсификатор к разбору падения 06.09 (Xid 13 на боевом): считать выходы за
 # границу и уметь СНЯТЬ зажим, чтобы доказать, что падение шло именно оттуда.
 _ГРАН_КОНВ_ДИАГ = __import__("os").environ.get("FA2SM70_GRAN_CONV_DIAG","0")=="1"
@@ -1287,52 +1288,69 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
                     _nк = min(int(spec_state_indices_tensor.shape[0]), int(_ctxк.shape[0]),
                               int(self._conv_чт_буф.shape[0]))
                     if _nк > 0:
-                        _шир_сп = int(spec_state_indices_tensor.shape[1])
-                        # ОДНА лесенка вместо двух: те же пять операций на СКЛЕЙКЕ двух
-                        # рядов вместо пяти на каждый ряд (минус пять запусков ядер).
-                        _об = torch.stack((_ctxк[:_nк], _seqк[:_nк])).to(torch.int64)
-                        _об = ((_об - 1) // _Bк).clamp(min=0)
-                        _ст_ctx, _ст_seq = _об[0], _об[1]
-                        _зап_отн = (_ст_seq - _ст_ctx).clamp(min=0, max=_шир_сп - 1)
-                        # Копии сюда НЕ пишем: ниже обе строки переписываются ещё раз
-                        # (после зажима по ширине таблицы и сверки с выравниванием), то есть
-                        # эта пара была мёртвой работой. Буфер чтения нулевой по построению.
-                        # ОТКАТ 06.09: редакция «таблица на блок назад + поиск по номеру
-                        # блока» давала цену перехода -0.01 нат, приёмку 3.13 и 80 ток/с --
-                        # и РАЗРУШАЛА ответ: каждая генерация вырождалась в «!!!» после
-                        # первого токена. Высокая приёмка была следствием вырождения, а не
-                        # заслугой: черновику легко угадывать повтор одного токена. Закон
-                        # «скорость без гейта качества -- ложь» сработал ровно здесь.
-                        # Возвращена редакция §150: таблица выровнена ПО КОНТЕКСТУ,
-                        # чтение -- колонка 0, запись -- сдвиг 0/1 со сверкой у движка.
-                        _таб_к = mamba_get_block_table_tensor(
-                            m.block_table_tensor, context_lens_tensor,
-                            self.kv_cache_spec, "align")
-                        if (spec_sequence_masks is not None
-                                and int(num_spec_decodes) != int(m.num_reqs)):
-                            _таб_к = _таб_к[spec_sequence_masks[: _таб_к.shape[0]]]
-                        _вш_к = min(_шир_сп, int(_таб_к.shape[1]),
-                                    int(self._conv_блоки_буф.shape[1]))
-                        if _вш_к <= 0 or int(_таб_к.shape[0]) < _nк:
-                            raise ValueError("узкая таблица свёртки")
-                        self._conv_блоки_буф[:_nк, :_вш_к].copy_(_таб_к[:_nк, :_вш_к])
-                        _падк = (spec_state_indices_tensor[:_nк, 0] == PAD_SLOT_ID)
-                        self._conv_блоки_буф[:_nк][_падк] = PAD_SLOT_ID
-                        if _nк < int(self._conv_блоки_буф.shape[0]):
-                            self._conv_блоки_буф[_nк:] = PAD_SLOT_ID
-                            self._conv_зап_буф[_nк:] = 0    # буфер чтения нулевой всегда
-                        _зап_отн = _зап_отн.clamp(min=0, max=_вш_к - 1)
-                        if aligned_block_table is not None:
-                            _свер = aligned_block_table
+                        _fused_width = None
+                        if (_CONV_META_FUSED and aligned_block_table is not None
+                                and int(num_spec_decodes) == int(m.num_reqs)
+                                and spec_state_indices_tensor.shape[1]
+                                    == 1 + self.kv_cache_spec.num_speculative_blocks):
+                            from vllm.v1.attention.backends.conv_metadata import (
+                                fill_uniform_conv_metadata,
+                            )
+                            _fused_width = fill_uniform_conv_metadata(
+                                m.block_table_tensor, _ctxк, _seqк,
+                                aligned_block_table, spec_state_indices_tensor,
+                                self._conv_блоки_буф, self._conv_зап_буф,
+                                num_rows=_nк, block_size=_Bк, pad_slot=PAD_SLOT_ID,
+                            )
+                        if _fused_width is not None:
+                            _вш_к = _fused_width
+                        else:
+                            _шир_сп = int(spec_state_indices_tensor.shape[1])
+                            # ОДНА лесенка вместо двух: те же пять операций на СКЛЕЙКЕ двух
+                            # рядов вместо пяти на каждый ряд (минус пять запусков ядер).
+                            _об = torch.stack((_ctxк[:_nк], _seqк[:_nк])).to(torch.int64)
+                            _об = ((_об - 1) // _Bк).clamp(min=0)
+                            _ст_ctx, _ст_seq = _об[0], _об[1]
+                            _зап_отн = (_ст_seq - _ст_ctx).clamp(min=0, max=_шир_сп - 1)
+                            # Копии сюда НЕ пишем: ниже обе строки переписываются ещё раз
+                            # (после зажима по ширине таблицы и сверки с выравниванием), то есть
+                            # эта пара была мёртвой работой. Буфер чтения нулевой по построению.
+                            # ОТКАТ 06.09: редакция «таблица на блок назад + поиск по номеру
+                            # блока» давала цену перехода -0.01 нат, приёмку 3.13 и 80 ток/с --
+                            # и РАЗРУШАЛА ответ: каждая генерация вырождалась в «!!!» после
+                            # первого токена. Высокая приёмка была следствием вырождения, а не
+                            # заслугой: черновику легко угадывать повтор одного токена. Закон
+                            # «скорость без гейта качества -- ложь» сработал ровно здесь.
+                            # Возвращена редакция §150: таблица выровнена ПО КОНТЕКСТУ,
+                            # чтение -- колонка 0, запись -- сдвиг 0/1 со сверкой у движка.
+                            _таб_к = mamba_get_block_table_tensor(
+                                m.block_table_tensor, context_lens_tensor,
+                                self.kv_cache_spec, "align")
                             if (spec_sequence_masks is not None
                                     and int(num_spec_decodes) != int(m.num_reqs)):
-                                _свер = _свер[spec_sequence_masks[: _свер.shape[0]]]
-                            if int(_свер.shape[0]) >= _nк and int(_свер.shape[1]) > 0:
-                                _цель = _таб_к[:_nк].gather(1, _зап_отн.unsqueeze(1)).squeeze(1)
-                                _ок = (_цель == _свер[:_nк, 0])
-                                _зап_отн = torch.where(_ок, _зап_отн,
-                                                       torch.zeros_like(_зап_отн))
-                        self._conv_зап_буф[:_nк].copy_(_зап_отн.to(torch.int32))
+                                _таб_к = _таб_к[spec_sequence_masks[: _таб_к.shape[0]]]
+                            _вш_к = min(_шир_сп, int(_таб_к.shape[1]),
+                                        int(self._conv_блоки_буф.shape[1]))
+                            if _вш_к <= 0 or int(_таб_к.shape[0]) < _nк:
+                                raise ValueError("узкая таблица свёртки")
+                            self._conv_блоки_буф[:_nк, :_вш_к].copy_(_таб_к[:_nк, :_вш_к])
+                            _падк = (spec_state_indices_tensor[:_nк, 0] == PAD_SLOT_ID)
+                            self._conv_блоки_буф[:_nк][_падк] = PAD_SLOT_ID
+                            if _nк < int(self._conv_блоки_буф.shape[0]):
+                                self._conv_блоки_буф[_nк:] = PAD_SLOT_ID
+                                self._conv_зап_буф[_nк:] = 0    # буфер чтения нулевой всегда
+                            _зап_отн = _зап_отн.clamp(min=0, max=_вш_к - 1)
+                            if aligned_block_table is not None:
+                                _свер = aligned_block_table
+                                if (spec_sequence_masks is not None
+                                        and int(num_spec_decodes) != int(m.num_reqs)):
+                                    _свер = _свер[spec_sequence_masks[: _свер.shape[0]]]
+                                if int(_свер.shape[0]) >= _nк and int(_свер.shape[1]) > 0:
+                                    _цель = _таб_к[:_nк].gather(1, _зап_отн.unsqueeze(1)).squeeze(1)
+                                    _ок = (_цель == _свер[:_nк, 0])
+                                    _зап_отн = torch.where(_ок, _зап_отн,
+                                                           torch.zeros_like(_зап_отн))
+                            self._conv_зап_буф[:_nк].copy_(_зап_отн.to(torch.int32))
                         _спец_conv_блоки = self._conv_блоки_буф[:_nк, :_вш_к]
                         _спец_conv_чт = self._conv_чт_буф[:_nк]
                         _спец_conv_зап = self._conv_зап_буф[:_nк]
