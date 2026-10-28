@@ -1,0 +1,682 @@
+{
+  "profile": {
+    "variant": "candidate",
+    "fallback_rows": 0,
+    "unit": "kandidat-acceptance-conv-meta-final-torch-1.service",
+    "epoch": 1793225277.646987,
+    "command": [
+      "systemd-run",
+      "--user",
+      "--unit=kandidat-acceptance-conv-meta-final-torch-1.service",
+      "--property=Type=exec",
+      "--property=Slice=sm80.slice",
+      "--property=Restart=no",
+      "--property=MemoryHigh=20G",
+      "--property=MemoryMax=21G",
+      "--property=MemorySwapMax=0",
+      "--property=CPUQuota=1600%",
+      "--property=TasksMax=4096",
+      "--property=OOMPolicy=kill",
+      "--property=OOMScoreAdjust=900",
+      "--property=TimeoutStopSec=45",
+      "--property=KillMode=control-group",
+      "--property=WorkingDirectory=/home/alex/devpack_sm70_20261022/кандидат/vllm-sm70",
+      "--property=StandardOutput=append:/home/alex/devpack_sm70_20261022/кандидат/state/acceptance/conv-meta-final-torch-1/server.log",
+      "--property=StandardError=inherit",
+      "--setenv=CANDIDATE_VARIANT=candidate",
+      "--setenv=FA2SM80_BLOCKPIPE_FALLBACK_ROWS=0",
+      "--setenv=FA2SM80_RESUME_ADMISSION=1",
+      "--setenv=FA2SM70_GRAN_CONV_ALL=1",
+      "--setenv=FA2SM80_CONV_META_FUSED=0",
+      "--setenv=OMP_NUM_THREADS=1",
+      "--setenv=OPENBLAS_NUM_THREADS=1",
+      "--setenv=TORCHINDUCTOR_COMPILE_THREADS=1",
+      "/home/alex/devpack_sm70_20261022/кандидат/vllm-sm70/scripts/serve_acceptance_variant.sh"
+    ],
+    "reference_overlay": {
+      "fa2sm70_exch_i12.py": {
+        "baseline_commit": "351e4c74b",
+        "sha256": "85f76c42ce90e766d0a2a0491293ec3a68896eae406a32b329da8bf4852ffded"
+      },
+      "fa2sm80_blockpipe.py": {
+        "baseline_commit": "351e4c74b",
+        "sha256": "d77d029c8a3a2295d705c2bde180eab3b746043fe4f75e36616ededa68f9f9e2"
+      },
+      "fa2sm70_clef.py": {
+        "baseline_commit": "351e4c74b",
+        "sha256": "b21ced4825d397f78dbd730f1e7ba7a3b72a44952bd2f8fefb5beb55539157af"
+      },
+      "fa2sm70_clef_hook.py": {
+        "baseline_commit": "351e4c74b",
+        "sha256": "98db04697e1f9c9d97c292b11b74211f6463e902af9c2a38ef35abb9c422600b"
+      },
+      "clef/clef_golova.py": {
+        "baseline_commit": "351e4c74b",
+        "sha256": "903221aa6c616f03297159edf7ace844a34fa7d022cc83afbcd14d39b4db0a23"
+      },
+      "clef/clef_sborka.py": {
+        "baseline_commit": "351e4c74b",
+        "sha256": "230ba1545b4d577310202dcaeff216fa0e845b38a962ec06ba5a3765f103704e"
+      }
+    },
+    "scheduler_trace": false,
+    "resume_admission": 1,
+    "gran_conv_all": 1,
+    "conv_meta_fused": 0,
+    "repository_head": "74e1c901123aeb3e73f3f3af9f8fca7112948a38"
+  },
+  "stress": {
+    "context-limit": [
+      {
+        "case": "pure1",
+        "repeat": 0,
+        "seconds": 92.76546192500973,
+        "distinct_clef": false,
+        "stream_read_timeout_s": 600,
+        "start_gate_met": true,
+        "start_gate_requests": 1,
+        "seen_at_gate": 1,
+        "chat_requests": 1,
+        "prompt_tokens_each": 262140,
+        "clef_requests": 0,
+        "max_engine_waiting": 0.0,
+        "clef_started_before_any_chat_finished": true,
+        "ok": true,
+        "total_tokens": 4,
+        "aggregate_tokens_per_s_including_prefill": 0.04311949638361681,
+        "requested_output_tokens": 4,
+        "observed_stream_tokens": 4,
+        "failed_chat_requests": [],
+        "ttft_s": [
+          92.3103388909949
+        ],
+        "chunk_gap_p50_s": 0.4156843050150201,
+        "chunk_gap_p95_s": 0.4156843050150201,
+        "chunk_gap_p99_s": 0.4156843050150201,
+        "chunk_gap_max_s": 0.4156843050150201,
+        "max_terminal_silence_s": 0.001345375960227102,
+        "max_gap_or_terminal_silence_s": 0.4156843050150201,
+        "clef_latency_s": []
+      }
+    ],
+    "context-max1": [
+      {
+        "case": "pure1",
+        "repeat": 0,
+        "seconds": 9.685758148960304,
+        "distinct_clef": false,
+        "stream_read_timeout_s": 600,
+        "start_gate_met": true,
+        "start_gate_requests": 1,
+        "seen_at_gate": 1,
+        "chat_requests": 1,
+        "prompt_tokens_each": 262143,
+        "clef_requests": 0,
+        "max_engine_waiting": 0.0,
+        "clef_started_before_any_chat_finished": true,
+        "ok": true,
+        "total_tokens": 1,
+        "aggregate_tokens_per_s_including_prefill": 0.10324437020011105,
+        "requested_output_tokens": 1,
+        "observed_stream_tokens": 1,
+        "failed_chat_requests": [],
+        "ttft_s": [
+          9.648006314993836
+        ],
+        "chunk_gap_p50_s": null,
+        "chunk_gap_p95_s": null,
+        "chunk_gap_p99_s": null,
+        "chunk_gap_max_s": null,
+        "max_terminal_silence_s": 0.001084043993614614,
+        "max_gap_or_terminal_silence_s": 0.001084043993614614,
+        "clef_latency_s": []
+      }
+    ],
+    "decode32k": [
+      {
+        "case": "pure1",
+        "repeat": 0,
+        "seconds": 182.58058582199737,
+        "distinct_clef": false,
+        "stream_read_timeout_s": 600,
+        "start_gate_met": true,
+        "start_gate_requests": 1,
+        "seen_at_gate": 1,
+        "chat_requests": 1,
+        "prompt_tokens_each": 49147,
+        "clef_requests": 0,
+        "max_engine_waiting": 0.0,
+        "clef_started_before_any_chat_finished": true,
+        "ok": true,
+        "total_tokens": 32768,
+        "aggregate_tokens_per_s_including_prefill": 179.47143642066297,
+        "requested_output_tokens": 32768,
+        "observed_stream_tokens": 32768,
+        "failed_chat_requests": [],
+        "ttft_s": [
+          4.371313023031689
+        ],
+        "chunk_gap_p50_s": 0.02447737701004371,
+        "chunk_gap_p95_s": 0.026254792988765985,
+        "chunk_gap_p99_s": 0.027591116027906537,
+        "chunk_gap_max_s": 0.0473269599606283,
+        "max_terminal_silence_s": 0.0007806280045770109,
+        "max_gap_or_terminal_silence_s": 0.0473269599606283,
+        "clef_latency_s": []
+      }
+    ]
+  },
+  "large_http": {
+    "large-valid-chat40": {
+      "ok": true,
+      "wire_bytes_per_request": 67109098,
+      "concurrency": 40,
+      "json_whitespace_padding_bytes": 67108864,
+      "statuses": [
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200
+      ],
+      "max_seconds": 31.835772247985005,
+      "answers": [
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437",
+        "437"
+      ],
+      "usage": [
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        },
+        {
+          "prompt_tokens": 296,
+          "total_tokens": 300,
+          "completion_tokens": 4,
+          "prompt_tokens_details": null
+        }
+      ]
+    },
+    "large-clef": {
+      "ok": true,
+      "wire_bytes_per_request": 67992118,
+      "concurrency": 1,
+      "json_whitespace_padding_bytes": 0,
+      "statuses": [
+        200
+      ],
+      "max_seconds": 8.199638178979512,
+      "answers": [
+        null
+      ],
+      "usage": [
+        {
+          "input_tokens": 34816,
+          "output_tokens": 0
+        }
+      ]
+    },
+    "large-chat-rejected": {
+      "ok": true,
+      "wire_bytes_per_request": 67991985,
+      "concurrency": 1,
+      "json_whitespace_padding_bytes": 0,
+      "statuses": [
+        400
+      ],
+      "max_seconds": 9.752633885014802,
+      "answers": [
+        null
+      ],
+      "usage": [
+        null
+      ],
+      "error": {
+        "error": {
+          "message": "You passed 15011477 input tokens and requested 1 output tokens. However, the model's context length is only 262144, resulting in a maximum input length of 262143. Please reduce the length of the input messages. (parameter=input_tokens, value=15011477)",
+          "type": "BadRequestError",
+          "param": "input_tokens",
+          "code": 400
+        }
+      }
+    }
+  },
+  "resources": {
+    "samples": 2056,
+    "first_epoch": 1793225278.1346836,
+    "max_memory_current": 21474705408,
+    "max_memory_peak": 21477040128,
+    "min_system_available": 20425523200,
+    "memory_events_max": {
+      "low": 0,
+      "high": 9381,
+      "max": 0,
+      "oom": 0,
+      "oom_kill": 0,
+      "oom_group_kill": 0
+    },
+    "watcher_actions": [],
+    "gpu_peak_MiB": {
+      "0": 32300,
+      "1": 32292
+    },
+    "last_epoch": 1793226321.6079926
+  },
+  "isolation": {
+    "recorded_utc": "2026-10-28T22:18:08.027392+00:00",
+    "production_files_unchanged": {
+      "/home/alex/devpack_sm70_20261022/sm80_work/bin/serve_prod_sm80.sh": true,
+      "/home/alex/.config/systemd/user/sm80-vllm.service": true,
+      "/home/alex/devpack_sm70_20261022/vllm-sm70/.venv/lib/python3.12/site-packages/vllm_sm80_src.pth": true,
+      "/home/alex/devpack_sm70_20261022/vllm-sm70/configs/qwen38-27b-int8-sm80.env": true,
+      "/home/alex/devpack_sm70_20261022/vllm-sm70/configs/qwen38-27b-int8-clef.env": true
+    },
+    "production_git_status": "",
+    "production_head": "351e4c74bb61abfb122233f2b03d98af65eb9265",
+    "production_service": "ExecStart={ path=/home/alex/devpack_sm70_20261022/sm80_work/bin/serve_prod_sm80.sh ; argv[]=/home/alex/devpack_sm70_20261022/sm80_work/bin/serve_prod_sm80.sh ; ignore_errors=no ; start_time=[Wed 2026-10-28 18:54:21 +04] ; stop_time=[Wed 2026-10-28 20:07:14 +04] ; pid=3593538 ; code=killed ; status=9/KILL }\nActiveState=failed\nUnitFileState=enabled",
+    "candidate_unit": "kandidat-acceptance-conv-meta-final-torch-1.service",
+    "candidate_service": {
+      "MainPID": "3461793",
+      "CPUQuotaPerSecUSec": "16s",
+      "MemoryMax": "22548578304",
+      "MemorySwapMax": "0",
+      "ActiveState": "active"
+    },
+    "candidate_selected_environment": {
+      "FA2SM70_GRAN_CONV_ALL": "1",
+      "FA2SM80_CONV_META_FUSED": "0",
+      "FA2SM80_BLOCKPIPE_FALLBACK_ROWS": "0",
+      "CUDA_VISIBLE_DEVICES": "0,1",
+      "CANDIDATE_VARIANT": "candidate",
+      "FA2SM80_RESUME_ADMISSION": "1"
+    },
+    "listeners": "LISTEN 0      2048   127.0.0.1:8086 0.0.0.0:*"
+  },
+  "multimodal": {
+    "chat_images": 8,
+    "chat_images_ok": 8,
+    "concurrent_clef": 2,
+    "concurrent_clef_ok": 2,
+    "clef_image_cases": 16,
+    "clef_image_cases_ok": 16,
+    "clef_image_repeat_equal": true,
+    "log": "START kartinki 1793225863.9054136\nКАРТИНКИ: 8/8 за 14.0 с (токены [1800, 1800], ответы ['Первая: зелёно-чёрная. Вторая: красно-жё', 'Первая: зелёно-чёрная. Вторая: красно-жё']), clef 2/2\nDONE kartinki 1793225877.9478846\nSTART clefkart 1793225877.9479897\nзапись 0: 380 ток, 0.28 с: color: red p=0.993 ВЕРНО\nзапись 1: 380 ток, 0.26 с: color: green p=0.993 ВЕРНО\nзапись 2: 380 ток, 0.27 с: color: blue p=0.992 ВЕРНО\nзапись 3: 380 ток, 0.26 с: color: yellow p=0.992 ВЕРНО\nзапись 4: 375 ток, 0.26 с: digit: 2 p=0.995 ВЕРНО\nзапись 5: 375 ток, 0.26 с: digit: 4 p=0.993 ВЕРНО\nзапись 6: 375 ток, 0.26 с: digit: 7 p=0.995 ВЕРНО\nзапись 7: 375 ток, 0.26 с: digit: 9 p=0.993 ВЕРНО\nзапись 8: 348 ток, 0.26 с: shape: circle p=0.992 ВЕРНО\nзапись 9: 348 ток, 0.26 с: shape: square p=0.991 ВЕРНО\nзапись 10: 348 ток, 0.26 с: shape: triangle p=0.993 ВЕРНО\nзапись 11: 347 ток, 0.26 с: stop: noul=0.987 ВЕРНО\nзапись 12: 347 ток, 0.26 с: stop: noul=0.005 ВЕРНО\nзапись 13: 577 ток, 0.33 с: second: blue p=0.992 ВЕРНО\nзапись 14: 11289 ток, 2.65 с: digit: 7 p=0.992 ВЕРНО; kernels: noul=0.987 ВЕРНО\nИТОГ картинки: 16/16 верно; повтор побайтово True; отказы {'видео': 400, 'плохой URL': 400, 'не список': 400}\nDONE clefkart 1793225884.8035083\n"
+  },
+  "notes": [
+    "Long decode uses ignore_eos=True: structural stability, not a long-form semantic quality score.",
+    "GPU memory sampled at 1 s, host at 0.5 s; memory.peak includes file cache.",
+    "Optional MLP chunks and fused metadata are disabled in the selected final profile.",
+    "Startup upstream FA2 probe errors also appear in baseline: MM encoder selects TORCH_SDPA, text uses FA2_SM70. No CUDA OOM/illegal-access/fatal runtime trace found in final log.",
+    "Earlier total-used headroom estimates were incorrect because NVML driver-reserved memory was omitted. Use the direct free series in after_images; it is still distinct from reusable PyTorch allocator cache."
+  ],
+  "after_images": {
+    "nvml": {
+      "0": {
+        "samples": 430,
+        "min_free_MiB": 9,
+        "max_used_MiB": 32296,
+        "reserved_MiB": [
+          465
+        ]
+      },
+      "1": {
+        "samples": 430,
+        "min_free_MiB": 5,
+        "max_used_MiB": 32300,
+        "reserved_MiB": [
+          465
+        ]
+      }
+    },
+    "workload": [
+      {
+        "case": "mixed34k",
+        "repeat": 0,
+        "seconds": 50.20272180397296,
+        "distinct_clef": false,
+        "stream_read_timeout_s": 600,
+        "start_gate_met": true,
+        "start_gate_requests": 8,
+        "seen_at_gate": 8,
+        "chat_requests": 8,
+        "prompt_tokens_each": 2048,
+        "clef_requests": 4,
+        "max_engine_waiting": 3.0,
+        "clef_started_before_any_chat_finished": true,
+        "ok": true,
+        "total_tokens": 4096,
+        "aggregate_tokens_per_s_including_prefill": 81.58920179654181,
+        "requested_output_tokens": 4096,
+        "observed_stream_tokens": 4096,
+        "failed_chat_requests": [],
+        "ttft_s": [
+          3.5603321910020895,
+          3.5605766469961964,
+          2.649617885996122,
+          2.6500506509910338,
+          2.6493224940495566,
+          0.9297810579882935,
+          3.5593967100139707,
+          0.9288346749963239
+        ],
+        "chunk_gap_p50_s": 0.05410895496606827,
+        "chunk_gap_p95_s": 2.0849693689960986,
+        "chunk_gap_p99_s": 2.4849180260207504,
+        "chunk_gap_max_s": 2.583619343000464,
+        "max_terminal_silence_s": 0.00212547997944057,
+        "max_gap_or_terminal_silence_s": 2.583619343000464,
+        "clef_latency_s": [
+          10.833527698996477,
+          19.696292879991233,
+          37.593512170016766,
+          28.48729221697431
+        ]
+      }
+    ],
+    "note": "Direct NVML free/reserved sampled every200ms, including idle immediately after images and then C8+4Clef34816. Not allocator free/fragmentation statistics."
+  },
+  "final_health_status": 200
+}

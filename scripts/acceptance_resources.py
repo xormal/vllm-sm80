@@ -45,6 +45,7 @@ def main():
                     unit["gpu_peak_MiB"][index] = max(unit["gpu_peak_MiB"].get(index,0),int(memory.split()[0]))
     result = {"units":units,"notes":["Host sampled at 0.5 s; GPU at 1 s. Not allocator peaks.",
               "GPU samples are attributed by host-watch unit windows; the switch boundary can include startup/stop overlap.",
+              "NVML used alone does not determine free memory: driver-reserved memory must also be accounted for. Measure memory.free directly.",
               "memory.peak includes startup and charged file cache; it is not process RSS."]}
     (STATE / "resource-summary.json").write_text(json.dumps(result,indent=2))
     print(json.dumps(result,indent=2))

@@ -45,3 +45,8 @@
 Standalone GPU0 тест завершился:48/48 точных совпадений, replay с новыми context/seq values при прежних адресах прошёл. Wall-time200 вызовов: Torch324/315мкс против fused38/33мкс дляN1/N8. Измерение включает host launch, выполнено под build cgroup6GiB/CPU400%; это не throughput модели. [Артефакт](full-validation/conv-metadata-micro.json).
 
 Сырые Prometheus counters подтверждают, что C1 в вариантеMLP1024 имеет другую приёмку MTP:2,587 accepted/draft против1,753 у conv1 и1,667 у предыдущего conv0. Это объясняет, почему нельзя приписывать весь выигрыш133,9token/s собственно ускорению ядер. Приёмка не является измерением энтропии целевой сети. [Дельты счётчиков](full-validation/metadata-mtp-acceptance.json).
+
+
+## Решение после matched benchmark
+
+Функциональный fused gate завершён:8/8 длинных кодов,16/16 recall,все state tokens/logprobs равны Torch,обе очереди и243K needle прошли. Но три matching-input пары дают fused/Torch0,9717(C1),0,9973(C8),1,0027(mixed);порядок процессов и сгенерированные токены не полностью идентичны. Подтверждения сквозного выигрыша нет,поэтому default fused0. В финальном кандидате оставлен обычный Torch расчёт с исправленной парой convolution read/write. [Сравнение](full-validation/conv-metadata-matched-comparison.json),[полный итог](VALIDATION_RESULT.md).

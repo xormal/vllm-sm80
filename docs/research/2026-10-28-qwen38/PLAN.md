@@ -12,10 +12,10 @@
 | Lifetime и lazy workspace | Реализованы, CPU/GPU capture тесты и5 A/B-пар; отсутствие всех возможных OOM не доказано |
 | MLP chunks1024 | Проверены; выключены из-за различий текста, Clef и состояния; не принимать как бесплатную экономию |
 | Scheduler recovery | Исправлен admission с отдельным rolling demand GDN;8/8 вместо7/8 с timeout; настройки контекста/KV/потоков сохранены |
-| GDN convolution | Раздельные read/write адреса дают8/8 кодов вместо1/8 на длинной границе; metadata fusion проходит отдельный gate |
+| GDN convolution | Раздельные read/write адреса дают8/8 кодов вместо1/8 на длинной границе; metadata fusion проверено и оставлено выключенным:сквозной выигрыш не подтвердился |
 | Очередь и большие тела |40chat и20chat+10Clef завершены;40×67MB valid JSON завершены;60MB+ semantic bodies проверены отдельно |
 | Общий mixed graph | Не реализован; требуется StepContext, device Clef row map, lifetime головы и bounded step latency |
-| Дальнейший выпуск | Повторные speed/quality gates последних правок, allocator reserve,6h/24h soak; из одного successful workload не выводить zero-OOM guarantee |
+| Дальнейший выпуск | Allocator reserve (прямой driver free доходил до5MiB),6h/24h soak; из одного successful workload не выводить zero-OOM guarantee |
 
 ## Уточнение по устройству ядер
 

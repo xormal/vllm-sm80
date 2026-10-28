@@ -1,0 +1,66 @@
+{
+  "nvml": {
+    "0": {
+      "samples": 430,
+      "min_free_MiB": 9,
+      "max_used_MiB": 32296,
+      "reserved_MiB": [
+        465
+      ]
+    },
+    "1": {
+      "samples": 430,
+      "min_free_MiB": 5,
+      "max_used_MiB": 32300,
+      "reserved_MiB": [
+        465
+      ]
+    }
+  },
+  "workload": [
+    {
+      "case": "mixed34k",
+      "repeat": 0,
+      "seconds": 50.20272180397296,
+      "distinct_clef": false,
+      "stream_read_timeout_s": 600,
+      "start_gate_met": true,
+      "start_gate_requests": 8,
+      "seen_at_gate": 8,
+      "chat_requests": 8,
+      "prompt_tokens_each": 2048,
+      "clef_requests": 4,
+      "max_engine_waiting": 3.0,
+      "clef_started_before_any_chat_finished": true,
+      "ok": true,
+      "total_tokens": 4096,
+      "aggregate_tokens_per_s_including_prefill": 81.58920179654181,
+      "requested_output_tokens": 4096,
+      "observed_stream_tokens": 4096,
+      "failed_chat_requests": [],
+      "ttft_s": [
+        3.5603321910020895,
+        3.5605766469961964,
+        2.649617885996122,
+        2.6500506509910338,
+        2.6493224940495566,
+        0.9297810579882935,
+        3.5593967100139707,
+        0.9288346749963239
+      ],
+      "chunk_gap_p50_s": 0.05410895496606827,
+      "chunk_gap_p95_s": 2.0849693689960986,
+      "chunk_gap_p99_s": 2.4849180260207504,
+      "chunk_gap_max_s": 2.583619343000464,
+      "max_terminal_silence_s": 0.00212547997944057,
+      "max_gap_or_terminal_silence_s": 2.583619343000464,
+      "clef_latency_s": [
+        10.833527698996477,
+        19.696292879991233,
+        37.593512170016766,
+        28.48729221697431
+      ]
+    }
+  ],
+  "note": "Direct NVML free/reserved sampled every200ms, including idle immediately after images and then C8+4Clef34816. Not allocator free/fragmentation statistics."
+}
