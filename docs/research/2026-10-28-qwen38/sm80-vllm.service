@@ -1,0 +1,27 @@
+[Unit]
+Description=SM80 port: vLLM Qwen3.8-27B GPTQ-int8 + Clef (GPU0-1, 0.0.0.0:8085) -- боевой сервер
+After=sm80-memguard.service
+
+[Service]
+Type=simple
+Slice=sm80.slice
+# при загрузке: дать системе осесть и дождаться драйвера и обеих наших карт (GPU2-3 чужие, не трогаем)
+ExecStartPre=/bin/sleep 20
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 60); do nvidia-smi --query-gpu=index --format=csv,noheader -i 0,1 >/dev/null 2>&1 && exit 0; sleep 5; done; exit 1'
+ExecStart=/home/alex/devpack_sm70_20261022/sm80_work/bin/serve_prod_sm80.sh
+StandardOutput=append:/home/alex/devpack_sm70_20261022/sm80_work/logs/server_prod_sm80.log
+StandardError=inherit
+Restart=always
+RestartSec=30
+TimeoutStartSec=900
+TimeoutStopSec=90
+KillMode=control-group
+# 27.10: 14G -> 21G (было только set-property --runtime, терялось при перезагрузке). Рабочий вес ~13-15G
+# (воркеры по ~4.3G, EngineCore ~1.7G, API ~1.4-2.3G) + огромные /tokenize бота (API до ~5.1G на пике).
+MemoryHigh=21G
+MemoryMax=21G
+MemorySwapMax=0
+OOMScoreAdjust=900
+
+[Install]
+WantedBy=default.target

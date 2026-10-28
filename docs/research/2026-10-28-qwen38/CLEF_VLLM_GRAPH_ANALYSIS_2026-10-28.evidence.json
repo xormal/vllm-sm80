@@ -1,0 +1,44 @@
+{
+  "captured_at": "2026-10-28T15:28:44.457650+04:00",
+  "sources": {
+    "vllm-sm70/sm70/integrations/vllm_sm70/fa2sm70_clef.py": "b21ced4825d397f78dbd730f1e7ba7a3b72a44952bd2f8fefb5beb55539157af",
+    "vllm-sm70/sm70/fa2_sm70/csrc/clef.cu": "de1a7e415ddac9a373e752946bb1344a7d5cc6973949cc358dae65aebc53077f",
+    "vllm-sm70/sm70/integrations/vllm_sm70/clef/clef_sborka.py": "230ba1545b4d577310202dcaeff216fa0e845b38a962ec06ba5a3765f103704e",
+    "vllm-sm70/sm70/integrations/vllm_sm70/clef/clef_golova.py": "903221aa6c616f03297159edf7ace844a34fa7d022cc83afbcd14d39b4db0a23",
+    "vllm-sm70/vllm/v1/cudagraph_dispatcher.py": "6459a4a9301fa4cb638b8b255170fbdbb071b99cd83576ec976ba36bada95f02",
+    "vllm-sm70/vllm/v1/core/sched/scheduler.py": "3a24bd0acbd8a14213b77414e006c29a2c8641df128ee30da17a5553dc26bd01",
+    "vllm-sm70/vllm/v1/spec_decode/eagle.py": "62934b68ea6bb9d3e7f58f23015b07931d4f19d45b3ac7b6cbeb049422b71b2d",
+    "vllm-sm70/vllm/v1/worker/gpu_model_runner.py": "549e1ba78c06b2ffc635a538c6c5d4a0b11f37baaae1d701d77e77d4cb20f96f",
+    "sm80_work/bench/e2e_batch.py": "f6ca14241c0a008919d9562bf48bda556d7a8c6208cec6cddc39ba6567901957"
+  },
+  "selected_runtime_log": [
+    {
+      "line": 477316,
+      "text": "(Worker_TP1 pid=2223711) [fa2_sm70 CLEF] ранг 1/2: поправка на 190 модулях 62 слоёв, голова=False, память карты 16.36 ГиБ занято торчем, след Clef 841 МиБ, порог подрезки 400 -> 64 МиБ, 1.9 с; stats {'active': 0, 'copy': 0, 'delta': 0, 'err': 0, 'gemm': 0, 'head': 0, 'keymiss': 0, 'keys': 190, 'layers': 62, 'nslot': 1, 'slot_bytes': 0, 'steps': 0, 'streamed': 0, 'tap': 0}"
+    },
+    {
+      "line": 477317,
+      "text": "(Worker_TP0 pid=2223710) [fa2_sm70 CLEF] ранг 0/2: поправка на 190 модулях 62 слоёв, голова=True, память карты 16.75 ГиБ занято торчем, след Clef 1248 МиБ, порог подрезки 400 -> 64 МиБ, 2.5 с; stats {'active': 0, 'copy': 0, 'delta': 0, 'err': 0, 'gemm': 0, 'head': 0, 'keymiss': 0, 'keys': 190, 'layers': 62, 'nslot': 1, 'slot_bytes': 0, 'steps': 0, 'streamed': 0, 'tap': 0}"
+    },
+    {
+      "line": 477407,
+      "text": "(Worker_TP0 pid=2223710) INFO 10-28 14:47:32 [gpu_model_runner.py:6555] Graph capturing finished in 4 secs, took 0.60 GiB"
+    }
+  ],
+  "head_weights_from_safetensors_header": {
+    "path": "/home/alex/devpack_sm70_20261022/model/Qwen3.8-27B-ABLITERATED-GPTQ-Int8-Clef/clef/joint_head_fp16.safetensors",
+    "stage_MiB": [
+      30.0,
+      24.029296875,
+      24.029296875,
+      20.009765625,
+      32.037109375,
+      32.037109375,
+      32.037109375,
+      32.037109375,
+      8.011962890625
+    ],
+    "total_MiB": 234.228759765625,
+    "extra_over_current_stage_buffer_MiB": 202.191650390625
+  }
+}

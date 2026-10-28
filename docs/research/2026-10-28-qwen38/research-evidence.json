@@ -1,0 +1,31 @@
+{
+  "timestamp": "2026-10-28T12:01:07.908751+00:00",
+  "checkpoint": "cbe00eb0c53591232adfdc60b5ec979602fe6881",
+  "snapshot_files": {
+    "CLEF_VLLM_GRAPH_ANALYSIS_2026-10-28.md": "101d52b59aa6a674d0a32632d8f91611754fcb0762684c48d4a7317e324696a3",
+    "CLEF_VLLM_GRAPH_ANALYSIS_2026-10-28.evidence.json": "2f4ea1ca97a36dc44c40f8764c1c8375b468f32206b7c23c7f93c432e11fafb8",
+    "VLLM_MEMORY_AUDIT_2026-10-28.md": "ce3f8a4bad799700e0747a3e32a5cae42ec81041907fb99fc572ca11f422e25a",
+    "VLLM_MEMORY_AUDIT_2026-10-28.evidence.json": "79556d36da3c40bc336a1eb71749d32ae90512916bb143c828e6400c673ffe8e",
+    "sm80_work/bin/serve_prod_sm80.sh": "7569dd4dc15ff0d418fe8b851e3ed1ebd6191e83d5fff5fa37057b461a0e2712"
+  },
+  "gpu": "index, name, memory.total [MiB], memory.used [MiB], memory.free [MiB]\n0, NVIDIA DRIVE-PG199-PROD, 32768 MiB, 31876 MiB, 429 MiB\n1, NVIDIA DRIVE-PG199-PROD, 32768 MiB, 32292 MiB, 13 MiB\n2, NVIDIA DRIVE-PG199-PROD, 32768 MiB, 31548 MiB, 757 MiB\n3, NVIDIA DRIVE-PG199-PROD, 32768 MiB, 31548 MiB, 757 MiB\n",
+  "scope": "Read-only runtime inspection. No requests generating model output, profiling, GPU imports, builds or restart.",
+  "api_pid": 2219760,
+  "cmdline": ".venv/bin/python -m vllm.entrypoints.openai.api_server --model /home/alex/devpack_sm70_20261022/model/Qwen3.8-27B-ABLITERATED-GPTQ-Int8-Clef --served-model-name huihui-qwen3.5-35b-a3b-abliterated-q8_0 gpt-4-0125-preview Qwen3.6-27B-AWQ Qwen3.8-27B-ABLITERATED --trust-remote-code --quantization gptq --dtype float16 --tensor-parallel-size 2 --gpu-memory-utilization 0.96 --kv-cache-memory-bytes 11295047936 --kv-cache-dtype int8_per_token_head --enable-prefix-caching --max-model-len 262144 --max-num-seqs 16 --max-num-batched-tokens 8192 --mm-processor-cache-gb 1 --limit-mm-per-prompt {\"image\":20,\"video\":2} --chat-template-content-format openai --default-chat-template-kwargs {\"enable_thinking\": false} --enable-auto-tool-choice --tool-call-parser qwen3_coder --reasoning-parser qwen3 --compilation-config {\"cudagraph_mode\":\"full_and_piecewise\",\"cudagraph_capture_sizes\":[1,2,4,8,12,16,20,24,28,32,36,40]} --host 0.0.0.0 --port 8085 --mamba-cache-mode all --speculative-config {\"method\":\"mtp\",\"model\":\"/home/alex/devpack_sm70_20261022/model/Qwen3.8-27B-ABLITERATED-GPTQ-Int8-Clef\",\"num_speculative_tokens\":4,\"use_local_argmax_reduction\":true} --disable-custom-all-reduce ",
+  "runtime_environment": {
+    "CUDA_VISIBLE_DEVICES": "0,1",
+    "FA2SM70_KV_BYTES": "11295047936",
+    "FA2SM70_SEQS": "16",
+    "FA2SM70_MAXBATCH": "8192",
+    "FA2SM70_CLEF_R": "4",
+    "FA2SM80_GDN_BLOCKS": "49",
+    "MTP_K": "4",
+    "FA2SM80_CG_SIZES": "1,2,4,8,12,16,20,24,28,32,36,40",
+    "FA2SM80_MTP_LOOP_GRAPH": "1",
+    "FA2SM70_MTP_GRAPH": "1",
+    "FA2SM70_EXCH12": "1",
+    "FA2SM70_UNIFORM_PREFILL_FIX": "1",
+    "FA2SM70_NO_SPEC_BLOCKS_MAXTOK1": "1",
+    "FA2SM70_BUILD_DIR": "/home/alex/devpack_sm70_20261022/sm80_work/build_sm80"
+  }
+}

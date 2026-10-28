@@ -1,0 +1,172 @@
+{
+  "captured_at": "2026-10-28T15:23:55.354869+04:00",
+  "scope": "Read-only local source audit; no production code/configuration changes or load tests",
+  "git_head": "963896f7387f354a00cbeda853a56e1bf7388ede",
+  "working_tree_has_local_changes": true,
+  "source_files": {
+    "vllm-sm70/sm70/integrations/vllm_sm70/fa2sm80_blockpipe.py": {
+      "sha256": "d77d029c8a3a2295d705c2bde180eab3b746043fe4f75e36616ededa68f9f9e2",
+      "bytes": 30685
+    },
+    "vllm-sm70/sm70/integrations/vllm_sm70/fa2sm80_rowpipe.py": {
+      "sha256": "5a5f3c87947538ec2b3c78e6da88448bcfe8a2700b1988dfab99b7959092e0cd",
+      "bytes": 9852
+    },
+    "vllm-sm70/sm70/integrations/vllm_sm70/fa2sm70_exch_i12.py": {
+      "sha256": "85f76c42ce90e766d0a2a0491293ec3a68896eae406a32b329da8bf4852ffded",
+      "bytes": 16354
+    },
+    "vllm-sm70/sm70/integrations/vllm_sm70/fa2sm80_w8.py": {
+      "sha256": "3554299c890e5d7d94615ca3efcfab292055dfcf1e4d395da1de17154a7ae36d",
+      "bytes": 29117
+    },
+    "vllm-sm70/sm70/integrations/vllm_sm70/fa2sm70_ar2.py": {
+      "sha256": "77ef02edcb9857ba29d084a7bd1cc7f585c8e647d4a656e94ef946fb65303720",
+      "bytes": 37252
+    },
+    "vllm-sm70/sm70/integrations/vllm_sm70/fa2sm70_clef.py": {
+      "sha256": "b21ced4825d397f78dbd730f1e7ba7a3b72a44952bd2f8fefb5beb55539157af",
+      "bytes": 49200
+    },
+    "vllm-sm70/sm70/fa2_sm70/csrc/exch_i12.cu": {
+      "sha256": "e54fffa32567ce9b8d5dafa052bd3fd539fbdcede2e8c058f9245eb0f1d48f13",
+      "bytes": 54609
+    },
+    "vllm-sm70/vllm/v1/spec_decode/eagle.py": {
+      "sha256": "62934b68ea6bb9d3e7f58f23015b07931d4f19d45b3ac7b6cbeb049422b71b2d",
+      "bytes": 127975
+    },
+    "vllm-sm70/vllm/v1/worker/gpu_worker.py": {
+      "sha256": "93c929c52155471059c067021dcd43f26cbcf84492c08bfc4439bae13b71fe67",
+      "bytes": 41520
+    },
+    "vllm-sm70/vllm/v1/worker/gpu_model_runner.py": {
+      "sha256": "549e1ba78c06b2ffc635a538c6c5d4a0b11f37baaae1d701d77e77d4cb20f96f",
+      "bytes": 391498
+    },
+    "vllm-sm70/vllm/v1/core/encoder_cache_manager.py": {
+      "sha256": "100f6d808e55cfdf67348489d5f577b84019ed13af177ea0cd07244b1d0a0a10",
+      "bytes": 15918
+    },
+    "vllm-sm70/configs/qwen38-27b-int8-sm80.env": {
+      "sha256": "1db8a532b884e476dd8841132f7971b49d8b16dbe5d59a4818ff35c276c9e43c",
+      "bytes": 10679
+    },
+    "vllm-sm70/scripts/serve_qwen38_sm80.sh": {
+      "sha256": "9bdceb631d078dd604ee32f68d489e642e17e0ed44a0f89d9205d5b83ce04d81",
+      "bytes": 12848
+    },
+    "sm80_work/bin/serve_prod_sm80.sh": {
+      "sha256": "7569dd4dc15ff0d418fe8b851e3ed1ebd6191e83d5fff5fa37057b461a0e2712",
+      "bytes": 1216
+    },
+    "model/Qwen3.8-27B-ABLITERATED-GPTQ-Int8-Clef/config.json": {
+      "sha256": "982294effb6ddb42433dbb486d98efc4f26acb5d24fc002f91cddd720b634040",
+      "bytes": 3915
+    }
+  },
+  "log_path": "/home/alex/devpack_sm70_20261022/sm80_work/logs/server_prod_sm80.log",
+  "cuda_oom_timestamps": [
+    "10-27 19:44:18",
+    "10-27 22:31:16",
+    "10-28 00:22:15",
+    "10-28 03:08:38",
+    "10-28 10:45:16",
+    "10-28 14:44:37"
+  ],
+  "last_failure_errors": [
+    {
+      "line": 474013,
+      "text": "(Worker_TP0 pid=242607) ERROR 10-28 14:44:37 [multiproc_executor.py:852] torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 80.00 MiB. GPU 0 has a total capacity of 31.55 GiB of which 80.25 MiB is free. Including non-PyTorch memory, this process has 31.45 GiB memory in use. Of the allocated memory 29.62 GiB is allocated by PyTorch, with 431.02 MiB allocated in private pools (e.g., CUDA Graphs), and 604.05 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)"
+    },
+    {
+      "line": 474166,
+      "text": "(Worker_TP0 pid=242607) ERROR 10-28 14:44:37 [multiproc_executor.py:852] torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 80.00 MiB. GPU 0 has a total capacity of 31.55 GiB of which 80.25 MiB is free. Including non-PyTorch memory, this process has 31.45 GiB memory in use. Of the allocated memory 29.62 GiB is allocated by PyTorch, with 431.02 MiB allocated in private pools (e.g., CUDA Graphs), and 604.05 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)"
+    },
+    {
+      "line": 475671,
+      "text": "(Worker_TP0 pid=242607) ERROR 10-28 14:44:37 [multiproc_executor.py:852] torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 80.00 MiB. GPU 0 has a total capacity of 31.55 GiB of which 60.25 MiB is free. Including non-PyTorch memory, this process has 31.47 GiB memory in use. Of the allocated memory 29.62 GiB is allocated by PyTorch, with 431.02 MiB allocated in private pools (e.g., CUDA Graphs), and 624.05 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)"
+    },
+    {
+      "line": 475824,
+      "text": "(Worker_TP0 pid=242607) ERROR 10-28 14:44:37 [multiproc_executor.py:852] torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 80.00 MiB. GPU 0 has a total capacity of 31.55 GiB of which 60.25 MiB is free. Including non-PyTorch memory, this process has 31.47 GiB memory in use. Of the allocated memory 29.62 GiB is allocated by PyTorch, with 431.02 MiB allocated in private pools (e.g., CUDA Graphs), and 624.05 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)"
+    }
+  ],
+  "crashed_tp0_pid": 242607,
+  "unique_successful_cycle_graph_keys": 67,
+  "cycle_graph_keys": [
+    "(1, 5, 3, 0, (3, 1), (1, 5120))",
+    "(1, 5, 3, 1, (3, 1), (1, 5120))",
+    "(1, 5, 3, 10, (3, 1), (1, 5120))",
+    "(1, 5, 3, 2, (3, 1), (1, 5120))",
+    "(1, 5, 3, 3, (3, 1), (1, 5120))",
+    "(1, 5, 3, 4, (3, 1), (1, 5120))",
+    "(1, 5, 3, 5, (3, 1), (1, 5120))",
+    "(1, 5, 3, 6, (3, 1), (1, 5120))",
+    "(1, 5, 3, 7, (3, 1), (1, 5120))",
+    "(1, 5, 3, 8, (3, 1), (1, 5120))",
+    "(1, 5, 3, 9, (3, 1), (1, 5120))",
+    "(2, 5, 3, 0, (3, 2), (2, 5120))",
+    "(2, 5, 3, 1, (3, 2), (2, 5120))",
+    "(2, 5, 3, 10, (3, 2), (2, 5120))",
+    "(2, 5, 3, 11, (3, 2), (2, 5120))",
+    "(2, 5, 3, 2, (3, 2), (2, 5120))",
+    "(2, 5, 3, 3, (3, 2), (2, 5120))",
+    "(2, 5, 3, 4, (3, 2), (2, 5120))",
+    "(2, 5, 3, 5, (3, 2), (2, 5120))",
+    "(2, 5, 3, 6, (3, 2), (2, 5120))",
+    "(2, 5, 3, 7, (3, 2), (2, 5120))",
+    "(2, 5, 3, 8, (3, 2), (2, 5120))",
+    "(2, 5, 3, 9, (3, 2), (2, 5120))",
+    "(3, 5, 3, 0, (3, 3), (3, 5120))",
+    "(3, 5, 3, 1, (3, 3), (3, 5120))",
+    "(3, 5, 3, 10, (3, 3), (3, 5120))",
+    "(3, 5, 3, 11, (3, 3), (3, 5120))",
+    "(3, 5, 3, 2, (3, 3), (3, 5120))",
+    "(3, 5, 3, 3, (3, 3), (3, 5120))",
+    "(3, 5, 3, 4, (3, 3), (3, 5120))",
+    "(3, 5, 3, 5, (3, 3), (3, 5120))",
+    "(3, 5, 3, 6, (3, 3), (3, 5120))",
+    "(3, 5, 3, 7, (3, 3), (3, 5120))",
+    "(3, 5, 3, 8, (3, 3), (3, 5120))",
+    "(3, 5, 3, 9, (3, 3), (3, 5120))",
+    "(4, 5, 3, 0, (3, 4), (4, 5120))",
+    "(4, 5, 3, 1, (3, 4), (4, 5120))",
+    "(4, 5, 3, 11, (3, 4), (4, 5120))",
+    "(4, 5, 3, 2, (3, 4), (4, 5120))",
+    "(4, 5, 3, 3, (3, 4), (4, 5120))",
+    "(4, 5, 3, 4, (3, 4), (4, 5120))",
+    "(4, 5, 3, 5, (3, 4), (4, 5120))",
+    "(4, 5, 3, 6, (3, 4), (4, 5120))",
+    "(4, 5, 3, 7, (3, 4), (4, 5120))",
+    "(4, 5, 3, 8, (3, 4), (4, 5120))",
+    "(5, 5, 3, 0, (3, 5), (5, 5120))",
+    "(5, 5, 3, 1, (3, 5), (5, 5120))",
+    "(5, 5, 3, 2, (3, 5), (5, 5120))",
+    "(5, 5, 3, 3, (3, 5), (5, 5120))",
+    "(5, 5, 3, 4, (3, 5), (5, 5120))",
+    "(5, 5, 3, 5, (3, 5), (5, 5120))",
+    "(5, 5, 3, 6, (3, 5), (5, 5120))",
+    "(5, 5, 3, 7, (3, 5), (5, 5120))",
+    "(5, 5, 3, 8, (3, 5), (5, 5120))",
+    "(6, 10, 3, 0, (3, 6), (6, 5120))",
+    "(6, 10, 3, 1, (3, 6), (6, 5120))",
+    "(6, 10, 3, 2, (3, 6), (6, 5120))",
+    "(6, 10, 3, 3, (3, 6), (6, 5120))",
+    "(6, 10, 3, 4, (3, 6), (6, 5120))",
+    "(6, 10, 3, 5, (3, 6), (6, 5120))",
+    "(6, 10, 3, 6, (3, 6), (6, 5120))",
+    "(6, 10, 3, 7, (3, 6), (6, 5120))",
+    "(7, 10, 3, 2, (3, 7), (7, 5120))",
+    "(7, 10, 3, 3, (3, 7), (7, 5120))",
+    "(7, 10, 3, 4, (3, 7), (7, 5120))",
+    "(8, 10, 3, 3, (3, 8), (8, 5120))",
+    "(8, 10, 3, 5, (3, 8), (8, 5120))"
+  ],
+  "calculations_MiB": {
+    "fp16_hidden_8192x5120": 80.0,
+    "packed_exchange": 60.625,
+    "unused_all_gather_TP2": 121.25,
+    "CE_receive": 144
+  }
+}
