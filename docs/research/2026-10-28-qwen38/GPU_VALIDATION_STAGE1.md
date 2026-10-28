@@ -35,6 +35,8 @@
 
 Из sampled NVML с шагом 500 мс максимум занятой памяти: GPU0=32302 МиБ, GPU1=32298 МиБ из 32768. Это наблюдавшийся максимум, не allocator peak; быстрые пики могли быть пропущены. Остаток около 466–470 МиБ **не доказывает достаточный запас** для mixed C8+R4 и не достигает предварительного ориентира резерва 512 МиБ. Монитор после серии остановлен; сервер оставлен работать.
 
+В журнале старта есть два ERROR о недоступном штатном `_vllm_fa2_C` (по одному на ранг): те же сообщения были у production в 18:55. Vision encoder выбрал TORCH_SDPA, текстовый target — FA2_SM70. Это не новый отказ кандидата; пользовательские multimodal-запросы в этой серии не проверялись. После фактического запуска API traceback и CUDA OOM не зарегистрированы.
+
 ## Что ещё не принято
 
 - A/B с исходным runtime, logits/Clef probabilities, длинные генерации и entropy-sensitive quality.
@@ -47,6 +49,6 @@
 
 ## Артефакты и управление
 
-[Сводка и контроль неизменности production](gpu-validation/summary.json), [basic](gpu-validation/basic.json), [границы](gpu-validation/boundaries.json), [параллельные запросы](gpu-validation/concurrent.json), [Clef](gpu-validation/clef.json), [длинные входы](gpu-validation/long.json), [CUDA-test](gpu-validation/workspace-cuda.log). Полные server.log и gpu-memory.csv: `кандидат/state/gpu-validation/`.
+[Сводка и контроль неизменности production](gpu-validation/summary.json), [basic](gpu-validation/basic.json), [границы](gpu-validation/boundaries.json), [параллельные запросы](gpu-validation/concurrent.json), [Clef](gpu-validation/clef.json), [длинные входы](gpu-validation/long.json), [CUDA-test](gpu-validation/workspace-cuda.txt). Полные server.log и gpu-memory.csv: `кандидат/state/gpu-validation/`.
 
 Остановка только кандидата: `systemctl --user stop kandidat-validation.service`. Возврат production после освобождения GPU0–1: `systemctl --user start sm80-vllm.service` — это откроет 8085 ожидающим агентам. Команды новой проверки приведены в CANDIDATE.md.

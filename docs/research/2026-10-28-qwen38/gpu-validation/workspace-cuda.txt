@@ -1,0 +1,7 @@
+test_capture_survives_growth_and_replays_original_storage (__main__.WorkspaceCudaTest.test_capture_survives_growth_and_replays_original_storage) ... workspace capture/growth/replay: CUDA0 passed
+ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.380s
+
+OK
