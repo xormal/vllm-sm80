@@ -1,0 +1,56 @@
+{
+  "series": [
+    {
+      "requests": 1,
+      "ok": true,
+      "wire_bytes_per_request": 67109098,
+      "json_whitespace_padding_bytes": 67108864,
+      "all_status_200": true,
+      "all_answers_437": true,
+      "max_seconds": 0.4843145440099761,
+      "prompt_tokens_each": [
+        296
+      ],
+      "output_tokens_total": 4,
+      "sampled_server_memory_current_max_bytes": 21371092992,
+      "sampled_system_memory_available_min_bytes": 19387920384,
+      "memory_events_max_in_window": {
+        "low": 0,
+        "high": 9954,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0
+      },
+      "sampled_gpu_peak_MiB": {}
+    },
+    {
+      "requests": 40,
+      "ok": true,
+      "wire_bytes_per_request": 67109098,
+      "json_whitespace_padding_bytes": 67108864,
+      "all_status_200": true,
+      "all_answers_437": true,
+      "max_seconds": 35.623045545013156,
+      "prompt_tokens_each": [
+        296
+      ],
+      "output_tokens_total": 160,
+      "sampled_server_memory_current_max_bytes": 21340569600,
+      "sampled_system_memory_available_min_bytes": 18933583872,
+      "memory_events_max_in_window": {
+        "low": 0,
+        "high": 9983,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0
+      },
+      "sampled_gpu_peak_MiB": {
+        "0": 30630,
+        "1": 30284
+      }
+    }
+  ],
+  "note": "Large wire bodies use legal JSON whitespace; semantic prompt is small. Not inference over 64 MiB of text. Memory samples can miss transients; memory.events counters include earlier unit lifetime."
+}
