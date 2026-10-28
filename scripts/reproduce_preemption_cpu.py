@@ -27,6 +27,8 @@ def main():
                         help="CPU-only experimental admission check, not a runtime fix")
     parser.add_argument("--runtime", action="store_true", help="Test the actual candidate admission fix")
     parser.add_argument("--expect-recovery", action="store_true")
+    parser.add_argument("--attention-block-size", type=int, choices=(8192,16384), default=16384,
+                        help="CPU-only page fragmentation probe at fixed total token storage")
     args = parser.parse_args()
     if not 1 <= args.steps <= 10000:
         raise ValueError("CPU reproduction is bounded to 1..10000 scheduler steps")
@@ -40,7 +42,8 @@ def main():
             "vocab_size":100,"max_position_embeddings":262144,
             "bos_token_id":0,"eos_token_id":99,"word_embed_proj_dim":8}))
         scheduler = create_scheduler(model=temporary, max_num_seqs=16,
-            max_num_batched_tokens=8192, num_blocks=32, block_size=16384,
+            max_num_batched_tokens=8192, num_blocks=32*16384//args.attention_block_size,
+            block_size=args.attention_block_size,
             max_model_len=262144, skip_tokenizer_init=True, async_scheduling=False)
         scheduler.num_lookahead_tokens = args.lookahead
         if args.admission_probe:
@@ -60,7 +63,7 @@ def main():
                         return None
                 return allocate(request,num_new_tokens,**kwargs)
             scheduler.kv_cache_manager.allocate_slots = probe
-        requests = create_requests(8, num_tokens=49147, max_tokens=2048, block_size=16384)
+        requests = create_requests(8, num_tokens=49147, max_tokens=2048, block_size=args.attention_block_size)
         for request in requests:
             scheduler.add_request(request)
         recompute_tokens = 0
@@ -88,6 +91,8 @@ def main():
                 break
         result = {"steps":step+1,"admission_probe":args.admission_probe,
             "runtime_admission":args.runtime,
+            "attention_block_size":args.attention_block_size,
+            "total_page_token_slots_including_null":32*16384,
             "allocation_lookahead":args.lookahead,
             "all_finished":all(r.is_finished() for r in requests),
             "scheduler_preemptions":preemptions,
