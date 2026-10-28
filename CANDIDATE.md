@@ -2,7 +2,7 @@
 
 Создан 2026-10-28 от `351e4c74b` (исходный runtime checkpoint — `cbe00eb0c`). Ветка `kandidat`. Рабочий каталог: `/home/alex/devpack_sm70_20261022/кандидат/vllm-sm70`.
 
-Текущее состояние GPU-проверок: [FULL_VALIDATION_PROGRESS.md](docs/research/2026-10-28-qwen38/FULL_VALIDATION_PROGRESS.md). Начальные build/smoke-проверки ниже — история этапов. Полная приёмка ещё не пройдена: при заполнении KV обнаружен 600-секундный простой запроса, воспроизведённый и на reference. Исследование причины и CPU-repro: [PREEMPTION_FOLLOWUP.md](docs/research/2026-10-28-qwen38/PREEMPTION_FOLLOWUP.md). Активный временный service A/B указан в `../state/acceptance/active-unit`; это уже не обязательно первоначальный `kandidat-validation.service`.
+Текущее состояние GPU-проверок: [FULL_VALIDATION_PROGRESS.md](docs/research/2026-10-28-qwen38/FULL_VALIDATION_PROGRESS.md). Начальные build/smoke-проверки ниже — история этапов. Полная приёмка ещё выполняется. Исправлен обнаруженный и на reference цикл preemption/recompute: GPU-регрессия завершилась8/8×2048 токенов за166,25с с одним вытеснением; проверка качества/очередей после исправления продолжается. Диагностика и CPU/GPU-регрессия: [PREEMPTION_FOLLOWUP.md](docs/research/2026-10-28-qwen38/PREEMPTION_FOLLOWUP.md). Активный временный service указан в `../state/acceptance/active-unit`; это уже не обязательно первоначальный `kandidat-validation.service`.
 
 ## Изоляция
 
