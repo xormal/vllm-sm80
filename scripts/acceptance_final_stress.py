@@ -13,11 +13,14 @@ STATE=REPO.parent/'state/acceptance'
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--fused',action='store_true',help='Require completed fused metadata gate')
+    parser.add_argument('--matched-control',action='store_true',help='Wait for the matched control and final fused restart')
     args=parser.parse_args()
-    gate='conv-fused' if args.fused else 'fallback'
-    controller=('kandidat-conv-fused-gate-controller.service' if args.fused
+    if args.matched_control and not args.fused:raise ValueError('--matched-control requires --fused')
+    gate='conv-control' if args.matched_control else 'conv-fused' if args.fused else 'fallback'
+    controller=('kandidat-conv-control-controller.service' if args.matched_control else
+                'kandidat-conv-fused-gate-controller.service' if args.fused
                 else 'kandidat-fallback-gate-v2-controller.service')
-    label='conv-meta-fast-1' if args.fused else 'validated-candidate'
+    label='conv-meta-final-1' if args.matched_control else 'conv-meta-fast-1' if args.fused else 'validated-candidate'
     progress={}
     def save(phase):
         progress.update(phase=phase,epoch=time.time())
