@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read-only audit of preserved production files and the active local candidate."""
 from datetime import datetime, timezone
+import argparse
 import hashlib
 import json
 from pathlib import Path
@@ -16,6 +17,9 @@ def output(*args):
 
 
 def main():
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--live',action='store_true',help='Audit explicitly authorized 8085 trial')
+    args=parser.parse_args()
     baseline = json.loads((REPO / "docs/research/2026-10-28-qwen38/candidate-setup/BASELINE.json").read_text())
     checks = {p: hashlib.sha256(Path(p).read_bytes()).hexdigest() == digest
               for p,digest in baseline["production_files"].items()}
@@ -42,12 +46,19 @@ def main():
                                           "-p","ActiveState","-p","UnitFileState","-p","ExecStart"),
               "candidate_unit":unit,"candidate_service":fields,"candidate_selected_environment":selected,
               "listeners":ports}
-    (STATE / "isolation-current.json").write_text(json.dumps(result,ensure_ascii=False,indent=2))
+    (STATE / ("isolation-live.json" if args.live else "isolation-current.json")).write_text(json.dumps(result,ensure_ascii=False,indent=2))
     print(json.dumps(result,ensure_ascii=False,indent=2))
     assert all(checks.values()) and not status
     assert result["production_head"] == baseline["baseline_commit"]
-    assert not any(row.split()[3].endswith(":8085") for row in ports.splitlines())
-    assert all(row.split()[3] == "127.0.0.1:8086" for row in ports.splitlines())
+    expected="0.0.0.0:8085" if args.live else "127.0.0.1:8086"
+    assert all(row.split()[3] == expected for row in ports.splitlines())
+    if args.live:
+        assert ports and unit == "kandidat-acceptance-live-20261029.service"
+        assert fields["ActiveState"] == "active"
+        assert selected.get("FA2SM70_GRAN_CONV_ALL") == "1"
+        assert selected.get("FA2SM80_RESUME_ADMISSION") == "1"
+        assert selected.get("FA2SM80_BLOCKPIPE_FALLBACK_ROWS") == "0"
+        assert selected.get("FA2SM80_CONV_META_FUSED") == "0"
     if selected:
         assert selected.get("CUDA_VISIBLE_DEVICES") == "0,1"
 
