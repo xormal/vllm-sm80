@@ -67,7 +67,12 @@ def main():
         if time.monotonic() > deadline:
             raise RuntimeError(f"Refusing to interrupt {inflight} validation requests")
         time.sleep(.5)
-    run("systemctl", "--user", "stop", old)
+    # A stopped transient unit can be collected during a standalone GPU test.
+    # The idle/dead check above still applies; only skip an already absent unit.
+    load_state = run("systemctl", "--user", "show", old, "-p", "LoadState",
+                     "--value", capture_output=True).stdout.strip()
+    if load_state != "not-found":
+        run("systemctl", "--user", "stop", old)
     output = STATE / args.label
     output.mkdir(exist_ok=True)
     unit = f"kandidat-acceptance-{args.label}.service"
