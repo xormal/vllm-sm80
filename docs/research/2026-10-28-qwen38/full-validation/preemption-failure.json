@@ -1,0 +1,40 @@
+{
+  "case": "pure8",
+  "repeat": 0,
+  "seconds": 727.4931307710358,
+  "distinct_clef": false,
+  "start_gate_met": true,
+  "start_gate_requests": 8,
+  "seen_at_gate": 8,
+  "chat_requests": 8,
+  "prompt_tokens_each": 49147,
+  "clef_requests": 0,
+  "max_engine_waiting": 7.0,
+  "clef_started_before_any_chat_finished": true,
+  "ok": false,
+  "total_tokens": 14336,
+  "aggregate_tokens_per_s_including_prefill": 19.706027993427163,
+  "ttft_s": [
+    52.781325730029494,
+    11.93104122299701,
+    65.99269379698671,
+    92.44669374800287,
+    39.71856431098422,
+    104.276835792989,
+    26.633231921005063,
+    79.2209819079726
+  ],
+  "chunk_gap_p50_s": 0.07149083499098197,
+  "chunk_gap_p95_s": 2.5559791710111313,
+  "chunk_gap_p99_s": 2.5716597069986165,
+  "chunk_gap_max_s": 5.340947265038267,
+  "clef_latency_s": [],
+  "observed_stream_tokens": 14338,
+  "max_terminal_silence_s": 600.0006727139698,
+  "failed_chat_requests": [
+    5
+  ],
+  "requested_output_tokens": 16384,
+  "preemptions": 2,
+  "note": "Retrospective summary; original results.json and per-request evidence preserved unchanged."
+}
