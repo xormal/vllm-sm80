@@ -39,6 +39,7 @@ def main():
     parser.add_argument("--prompt-tokens", type=int, default=2048)
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--distinct-clef", action="store_true")
+    parser.add_argument("--clef-requests", type=int, choices=(1,4,10))
     args = parser.parse_args()
     if not 128 <= args.prompt_tokens < 262144 or args.prompt_tokens + args.tokens > 262144:
         raise ValueError("Prompt and generation must fit the unchanged context limit")
@@ -55,7 +56,7 @@ def main():
             if case not in ("pure1", "pure3", "pure8", "pure16", "pure40", "mixed2k", "mixed8k", "mixed34k", "mixedqueue34k"):
                 raise ValueError(case)
             count = {"pure1": 1, "pure3": 3, "pure16": 16, "pure40": 40, "mixedqueue34k": 20}.get(case, 8)
-            clef_count = 10 if case == "mixedqueue34k" else 4
+            clef_count = args.clef_requests or (10 if case == "mixedqueue34k" else 4)
             ready_count = min(count, 8)
             clef_length = {"mixed2k": 2048, "mixed8k": 8192, "mixed34k": 34816, "mixedqueue34k": 34816}.get(case)
             path = args.output / f"{case}-{repeat}"
@@ -138,7 +139,7 @@ def main():
                     sample = {"t": time.monotonic() - started}
                     try:
                         text = get_metrics()
-                        for key in ("num_requests_running", "num_requests_waiting", "num_preemptions_total"):
+                        for key in ("num_requests_running", "num_requests_waiting", "num_preemptions_total", "kv_cache_usage_perc"):
                             sample[key] = sum(float(value) for value in re.findall(
                                 rf'^vllm:{key}(?:\{{[^}}]*\}})?\s+([0-9.eE+-]+)', text, re.M))
                     except Exception as exc: sample["error"] = repr(exc)
@@ -149,7 +150,7 @@ def main():
             with cf.ThreadPoolExecutor(count + clef_count) as pool:
                 chats = [pool.submit(stream, i) for i in range(count)]
                 clefs = []
-                coverage = ready.wait(timeout=600 if args.prompt_tokens > 32768 else 120)
+                coverage = ready.wait(timeout=600 if not clef_length or args.prompt_tokens > 32768 else 120)
                 seen_at_gate = len(seen)
                 if clef_length and coverage:
                     clefs = [pool.submit(clef, i) for i in range(clef_count)]
