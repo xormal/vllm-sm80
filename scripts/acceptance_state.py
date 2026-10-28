@@ -36,9 +36,10 @@ def main():
         head = post("/tokenize", {"model": MODEL, "prompt": f"State test {length}. Continue this document.\n",
                                  "add_special_tokens": False})["tokens"]
         return head + (corpus * (length // len(corpus) + 1))[:length - len(head)]
-    def call(ids, count=32):
+    def call(ids, count=32, salt=None):
         return post("/v1/completions", {"model": MODEL, "prompt": ids, "max_tokens": count,
-                    "temperature": 0, "seed": 17, "ignore_eos": True, "logprobs": 5})
+                    "temperature": 0, "seed": 17, "ignore_eos": True, "logprobs": 5,
+                    **({"cache_salt": salt} if salt else {})})
     def tokens(response):
         return response["choices"][0]["logprobs"]["tokens"]
     def stream(ids, ready, cancel=False):
@@ -78,13 +79,16 @@ def main():
     print("prefix reuse", results["prefix_max_tokens_1"]["hits"], "same first", results["prefix_max_tokens_1"]["same_first_token"], flush=True)
     for length in (8196, 8197, 8198, 16389):
         ids = prompt(length)
-        solo = call(ids)
+        # Different cache domains force real prefill in both trials, while
+        # preserving identical token inputs. Otherwise the solo trial warms
+        # the prefix and the mixed trial barely exercises the intended tail.
+        solo = call(ids, salt=f"tail-{length}-solo-{time.time_ns()}")
         ready = threading.Event()
         with cf.ThreadPoolExecutor(1) as pool:
             future = pool.submit(stream, prompt(1024), ready)
             if not ready.wait(60): raise RuntimeError("Decode neighbour failed to start")
             started = time.monotonic()
-            mixed = call(ids)
+            mixed = call(ids, salt=f"tail-{length}-mixed-{time.time_ns()}")
             neighbour = future.result()
         item = {"solo": solo, "mixed": mixed, "neighbour": neighbour, "mixed_started": started,
                 "overlap": started < neighbour["finished"], "same_tokens": tokens(solo) == tokens(mixed)}
