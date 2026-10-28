@@ -26,6 +26,8 @@ import os
 import sys
 
 _ВКЛ = os.environ.get("FA2SM80_BLOCKPIPE", "0") == "1"
+_SILU = os.environ.get("FA2SM80_SILU", "0") == "1"
+_SILU_СВЕРКА = [int(os.environ.get("FA2SM80_SILU_CHECK", "0"))]
 # Через границу слоя (FA2SM80_BLOCKPIPE_X=1): операция слоя L отдаёт ГОТОВЫЕ входные проекции слоя L+1 (его
 # input_layernorm + in_proj по кускам, как только сведено down куска) -- хвост сведений прячется за in_proj.
 _ВКЛ_X = os.environ.get("FA2SM80_BLOCKPIPE_X", "0") == "1"
@@ -62,6 +64,12 @@ _ДЕКВАНТ_ПОТОК = {}
 # сведения out_proj перед нормой (профиль 8K: простой 127 -> 197 мс). Оставлено переключаемым.
 _ВПЕРЁД = int(os.environ.get("FA2SM80_BLOCKPIPE_AHEAD", "99"))
 _ПРИОР_ДКВ = int(os.environ.get("FA2SM80_BLOCKPIPE_DQ_PRIO", "0"))      # приоритет потока распаковки (-1 -- высокий)
+# [25.10] РАСПАКОВКА ВПЕРЁД (FA2SM80_BLOCKPIPE_DQ_AHEAD=1): в конце операции слоя L, после последнего down-GEMM, на
+# потоке распаковки ставятся down и out_proj слоя L+1 в их же буферы (C и B) -- распаковка ложится на хвост сведений
+# down слоя L и на смеситель слоя L+1 (скан GDN латентен, SM свободны), а не конкурирует с out_proj/MLP. Запас годен
+# ТОЛЬКО следующему по счёту вызову и только своему слою (иначе -- обычная распаковка); веса те же -> побитово.
+_DQ_ВПЕРЁД = os.environ.get("FA2SM80_BLOCKPIPE_DQ_AHEAD", "0") == "1"
+_ЗАПАС = {}           # dev.index -> (номер вызова, ключ слоя, Wo, Wd, событие)
 _С = {"конвейер": 0, "прямо": 0, "clef": 0}
 
 
@@ -150,7 +158,17 @@ def установить():
         _норма()(y, residual, n.weight.data, n.variance_epsilon, h, ro)
         gu = L.mlp.gate_up_proj(h)[0]
         a = torch.empty((M, gu.shape[1] // 2), dtype=gu.dtype, device=gu.device)
-        torch.ops._C.silu_and_mul(a, gu)
+        if _SILU and M <= 64 and gu.is_contiguous():
+            # [25.10] широкая сетка вместо M блоков vLLM; побитно (сверка FA2SM80_SILU_CHECK)
+            import fa2sm80_cg as CG
+            CG._расш().silu_mul_f16(gu, a)
+            if _SILU_СВЕРКА[0] > 0 and not torch.cuda.is_current_stream_capturing():
+                _SILU_СВЕРКА[0] -= 1
+                a0 = torch.empty_like(a)
+                torch.ops._C.silu_and_mul(a0, gu)
+                _лог(f"SILU сверка M={M} d={a.shape[1]}: различий {int((a.view(torch.int16) != a0.view(torch.int16)).sum())}")
+        else:
+            torch.ops._C.silu_and_mul(a, gu)
         d = L.mlp.down_proj(a)[0]
         return d, ro
 
@@ -224,15 +242,26 @@ def установить():
         дкв = _ДЕКВАНТ_ПОТОК.get(dev.index)
         if дкв is None:
             дкв = _ДЕКВАНТ_ПОТОК[dev.index] = torch.cuda.Stream(device=dev, priority=_ПРИОР_ДКВ)
+        _С["вызов"] = _С.get("вызов", 0) + 1
+        зп = _ЗАПАС.pop(dev.index, None)
+        if зп is not None and not (зп[0] == _С["вызов"] - 1 and зп[1] == key and not след_куски):
+            зп = None
         дкв.wait_stream(осн)
         with torch.cuda.stream(дкв):
             Wg = _деквант(gup, W8._буфер_для(dev, Kg * Ng))
-            Wd = _деквант(dnp, _буфер_c(dev, Kd * Nd))
+            Wd = зп[3] if зп is not None else _деквант(dnp, _буфер_c(dev, Kd * Nd))
             ev_w = torch.cuda.Event()
             ev_w.record(дкв)
         # буфер B -- сразу под наибольшее (out_proj, затем вход W8 следующего слоя): без перевыделения под живым тензором
         кнB = [Ko * No] + [p.fa2sm80_kn[0] * p.fa2sm80_kn[1] for p in прос if след_куски and getattr(p, "fa2sm80_kn", None)]
-        Wo = _деквант(proj, _буфер_b(dev, max(кнB)))
+        if зп is not None:
+            осн.wait_event(зп[4])
+            Wo = зп[2]
+            _С["запас"] = _С.get("запас", 0) + 1
+            if _С["запас"] in (1, 1000):
+                _лог(f"распаковка вперёд работает: {key} (вызовов с запасом {_С['запас']})")
+        else:
+            Wo = _деквант(proj, _буфер_b(dev, max(кнB)))
         поб.wait_stream(осн)
         сведённые, готово = {}, {}
 
@@ -323,6 +352,21 @@ def установить():
             if след_куски:
                 dr.record_stream(осн)
                 сведённые_d[i] = (dr, evd)
+        N3 = _РЕЕСТР.get(getattr(L, "_fa2_bp_next", ""))
+        if _DQ_ВПЕРЁД and not след_куски and N3 is not None:
+            proj3 = N3.linear_attn.out_proj if N3.layer_type == "linear_attention" else N3.self_attn.o_proj
+            dnp3 = N3.mlp.down_proj
+            if (_w8(proj3) and _w8(dnp3) and proj3.fa2sm80_kn == proj.fa2sm80_kn
+                    and dnp3.fa2sm80_kn == dnp.fa2sm80_kn):
+                ev_k = torch.cuda.Event()
+                ev_k.record(осн)                 # после последнего down-GEMM и всех out_proj: буферы B и C свободны
+                дкв.wait_event(ev_k)
+                with torch.cuda.stream(дкв):
+                    Wo3 = _деквант(proj3, _буфер_b(dev, max(кнB)))
+                    Wd3 = _деквант(dnp3, _буфер_c(dev, Kd * Nd))
+                    ev3 = torch.cuda.Event()
+                    ev3.record(дкв)
+                _ЗАПАС[dev.index] = (_С["вызов"], N3._fa2_bp_key, Wo3, Wd3, ev3)
         if след_куски:
             # куски следующего слоя -- после всего MLP, по порядку: сведения down шли, пока считался MLP остальных,
             # хвост (последние сведения) -- за входными проекциями предыдущих кусков

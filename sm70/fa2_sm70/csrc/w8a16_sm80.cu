@@ -1374,6 +1374,42 @@ torch::Tensor w8a16_sm80_mm_impl(torch::Tensor x, torch::Tensor wf, torch::Tenso
 }
 
 
+#include "w8a16_sw_sm80.cuh"
+
+// Перестановка A/B (w8a16_sw_sm80.cuh): M <= 8, раздел K между warps варпами как у w8a16_sm80_mm при splits=1.
+torch::Tensor w8a16_sm80_sw(torch::Tensor x, torch::Tensor wf, torch::Tensor meta, int64_t N, int64_t nw,
+                            int64_t warps, int64_t jw, int64_t d) {
+  TORCH_CHECK(x.is_cuda() && x.dtype() == torch::kFloat16);
+  const c10::cuda::CUDAGuard guard(x.device());
+  auto xc = x.contiguous();
+  const int K = (int)xc.size(-1), M = (int)(xc.numel() / K);
+  TORCH_CHECK(M >= 1 && M <= 8, "w8a16_sm80_sw: M <= 8");
+  TORCH_CHECK(K % 64 == 0 && N % (8 * nw) == 0);
+  TORCH_CHECK(wf.numel() == (long)N * K / 4 && meta.numel() == (long)(K / 128) * N);
+  auto y = torch::empty({M, N}, xc.options());
+  auto st = at::cuda::getCurrentCUDAStream();
+  auto xp = reinterpret_cast<const __half*>(xc.data_ptr<at::Half>());
+  auto wp = reinterpret_cast<const uint4*>(wf.data_ptr<int>());
+  auto mp = reinterpret_cast<const uint32_t*>(meta.data_ptr<int>());
+  auto yp = reinterpret_cast<__half*>(y.data_ptr<at::Half>());
+  const int Ni = (int)N;
+  const dim3 grid(Ni / (8 * (int)nw));
+#define SW_GO(NW_, WA_, JW_, D_) \
+  w8s80::w8a16_sw_kernel<NW_, D_, WA_, JW_><<<grid, WA_ * (NW_ / JW_) * 32, 0, st>>>(xp, wp, mp, yp, M, Ni, K)
+  if (nw == 4 && warps == 4 && jw == 4 && d == 4) SW_GO(4, 4, 4, 4);
+  else if (nw == 4 && warps == 4 && jw == 2 && d == 2) SW_GO(4, 4, 2, 2);
+  else if (nw == 4 && warps == 4 && jw == 2 && d == 4) SW_GO(4, 4, 2, 4);
+  else if (nw == 4 && warps == 8 && jw == 4 && d == 2) SW_GO(4, 8, 4, 2);
+  else if (nw == 4 && warps == 8 && jw == 4 && d == 3) SW_GO(4, 8, 4, 3);
+  else if (nw == 4 && warps == 8 && jw == 2 && d == 2) SW_GO(4, 8, 2, 2);
+  else if (nw == 2 && warps == 4 && jw == 2 && d == 4) SW_GO(2, 4, 2, 4);
+  else if (nw == 2 && warps == 4 && jw == 2 && d == 3) SW_GO(2, 4, 2, 3);
+  else TORCH_CHECK(false, "w8a16_sm80_sw: нет инстанса nw=", nw, " warps=", warps, " jw=", jw, " d=", d);
+#undef SW_GO
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  return y;
+}
+
 torch::Tensor w8a16_sm80_mm(torch::Tensor x, torch::Tensor wf, torch::Tensor meta, int64_t N, int64_t splits,
                             int64_t nw, int64_t warps, int64_t stages, int64_t ktu,
                             c10::optional<torch::Tensor> blk) {
@@ -1705,6 +1741,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("w8a16_sm80_candmax", &w8a16_sm80_candmax, "пара (значение, номер) по точным значениям кандидатов",
         py::arg("ys"), py::arg("blk"), py::arg("B"), py::arg("BN"), py::arg("nvalid"), py::arg("vstart"));
   m.def("lin_small_f16", &lin_small_f16, "малая плотная fp16-проекция при M<=8 (варп на столбец)");
+  m.def("w8a16_sm80_sw", &w8a16_sm80_sw, "W8A16 sm_80 декод M<=8: перестановка A/B, вес прямо в регистры",
+        py::arg("x"), py::arg("wf"), py::arg("meta"), py::arg("N"), py::arg("nw"), py::arg("warps"),
+        py::arg("jw"), py::arg("d"));
   m.def("w8a16_sm80_mm", &w8a16_sm80_mm, "W8A16 sm_80: cp.async-конвейер варпа + m16n8k16, M<=64",
         py::arg("x"), py::arg("wf"), py::arg("meta"), py::arg("N"), py::arg("splits") = 0,
         py::arg("nw") = 4, py::arg("warps") = 4, py::arg("stages") = 4, py::arg("ktu") = 0,

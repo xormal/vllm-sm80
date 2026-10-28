@@ -66,6 +66,11 @@ def установить() -> None:
     _AR1H = _AR1 in ("1", "host")
     _AR1P = _AR1 == "p2p"
     _ШИР = max(1, _УЧАСТОК // 4096) if (_AR1H or _AR1P) else 1
+    # AR1LL (25.10, ar1ll.cuh): данные с номером в одной 16 Б записи, без fence и отдельного флага -- стенд M=5: ~13
+    # против ~22 мкс у AR1H, 3М сведений без единой ошибки. Отдельный сегмент хоста (ячейки LL никогда не видят чужих
+    # данных), свои счётчики блоков. Крупнее участка ячеек -- AR1H.
+    _LL = _AR1H and os.environ.get("FA2SM80_AR_LL", "0") == "1"
+    _LLB = int(os.environ.get("FA2SM80_AR_LL_KB", "128")) * 1024
     # СЧЁТЧИК МЕСТ -- СВОЙ НА КОММУНИКАТОР. Общий на всех давал порчу: в проходе работает не
     # только группа TP (черновик и иные двухранговые группы зовут тот же метод), их вызовы
     # делили один счётчик, и комплекты «приёмник+флаг+счётчик» у рангов разъезжались.
@@ -130,6 +135,28 @@ def установить() -> None:
         мой, чуж = база + сам.rank * на_ранг, база + (1 - сам.rank) * на_ранг
         флаги = 2 * _УЧАСТОК * _МЕСТ
         seq_all = torch.zeros(_МЕСТ * _ШИР, dtype=torch.int32, device=dev)
+        ll = {}
+        if _LL:
+            на_ранг_ll = _МЕСТ * 2 * _LLB
+            имя_ll = [имя[0] + "_ll" if сам.rank == 0 else None]
+            if сам.rank == 0:
+                shm_ll = shared_memory.SharedMemory(name=имя_ll[0], create=True, size=2 * на_ранг_ll)
+                shm_ll.buf[:] = bytes(2 * на_ранг_ll)
+            dist.broadcast_object_list(имя_ll, src=гр[0], group=сам.cpu_group)
+            if сам.rank != 0:
+                shm_ll = shared_memory.SharedMemory(name=имя_ll[0], create=False)
+            dist.barrier(group=сам.cpu_group)
+            if сам.rank == 0:
+                shm_ll.unlink()
+            база_ll = e.host_register(ctypes.addressof(ctypes.c_char.from_buffer(shm_ll.buf)), 2 * на_ранг_ll)
+            мой_ll, чуж_ll = база_ll + сам.rank * на_ранг_ll, база_ll + (1 - сам.rank) * на_ранг_ll
+            seq_ll = torch.zeros(_МЕСТ * _ШИР, dtype=torch.int32, device=dev)
+            ll = {"shm_ll": shm_ll, "ll_cells": _LLB // 16,
+                  "ll_my": [мой_ll + k * 2 * _LLB for k in range(_МЕСТ)],
+                  "ll_peer": [чуж_ll + k * 2 * _LLB for k in range(_МЕСТ)],
+                  "ll_seq": [seq_ll[k * _ШИР:(k + 1) * _ШИР] for k in range(_МЕСТ)]}
+            print(f"[fa2_sm70 AR2] AR1LL: сегмент ячеек {2 * на_ранг_ll >> 20} МиБ, до {_LLB // 16 * 6} элементов",
+                  file=sys.stderr, flush=True)
         print(f"[fa2_sm70 AR2] своё сведение готово: мест {_МЕСТ} по {_УЧАСТОК >> 10} КиБ "
               f"(AR1H: одно ядро через память хоста, сегмент {2 * на_ранг >> 20} МиБ)",
               file=sys.stderr, flush=True)
@@ -139,7 +166,7 @@ def установить() -> None:
                 "my_flag": [мой + флаги + 4 * _ШИР * k for k in range(_МЕСТ)],
                 "peer_flag": [чуж + флаги + 4 * _ШИР * k for k in range(_МЕСТ)],
                 "seq": [seq_all[k * _ШИР:(k + 1) * _ШИР] for k in range(_МЕСТ)],
-                "срыв": torch.zeros(2, dtype=torch.int32, device=dev)}
+                "срыв": torch.zeros(2, dtype=torch.int32, device=dev), **ll}
 
     def _подготовить(сам):
         """Один раз на группу: буферы вне графового пула + обмен ручками через gloo."""
@@ -193,6 +220,7 @@ def установить() -> None:
     # Лечение -- объявить операцию со схемой и `mutates_args`, как сделано у остальных наших тел.
     _оп = None
     _оп_h = None
+    _оп_ll = [None]
     try:
         from vllm.utils.torch_utils import direct_register_custom_op
     except Exception:  # noqa: BLE001
@@ -236,6 +264,21 @@ def установить() -> None:
                           slot_elems: int) -> None:
             return
 
+        def _тело_ll(y: torch.Tensor, out: torch.Tensor, my_cells: int, peer_cells: int,
+                     seq: torch.Tensor, fail: torch.Tensor, slot_cells: int) -> None:
+            _расширение().ar1ll_all_reduce_out(y, out, my_cells, peer_cells, seq, fail, slot_cells)
+
+        def _тело_ll_пусто(y: torch.Tensor, out: torch.Tensor, my_cells: int, peer_cells: int,
+                           seq: torch.Tensor, fail: torch.Tensor, slot_cells: int) -> None:
+            return
+
+        if _LL:
+            try:
+                direct_register_custom_op("fa2sm80_ar1ll_all_reduce", _тело_ll,
+                                          mutates_args=["out", "seq", "fail"], fake_impl=_тело_ll_пусто)
+                _оп_ll[0] = torch.ops.vllm.fa2sm80_ar1ll_all_reduce
+            except Exception as ex:  # noqa: BLE001
+                print(f"[fa2_sm70 AR2] объявить AR1LL не вышло: {ex}", file=sys.stderr, flush=True)
         try:
             direct_register_custom_op("fa2sm80_ar1h_all_reduce", _тело_h,
                                       mutates_args=["out", "seq", "fail"], fake_impl=_тело_h_пусто)
@@ -333,7 +376,13 @@ def установить() -> None:
             # Выключатель на всякий случай: FA2SM70_AR2_INPLACE=1 вернёт прежнее поведение.
             # БЕЗ КЛОНА: вход уезжает соседу как есть, сумма пишется в СВЕЖИЙ выход.
             цель_т = input_ if _НА_МЕСТЕ else torch.empty_like(input_)
-            if с.get("h"):
+            _яч = (input_.numel() // 2 + 2) // 3
+            if (с.get("h") and с.get("ll_my") is not None and _яч <= с["ll_cells"]
+                    and (_яч + 255) // 256 <= _ШИР
+                    and (input_.data_ptr() | цель_т.data_ptr()) & 3 == 0):
+                (_оп_ll[0] or (lambda *a: с["e"].ar1ll_all_reduce_out(*a)))(
+                    input_, цель_т, с["ll_my"][k], с["ll_peer"][k], с["ll_seq"][k], с["срыв"], с["ll_cells"])
+            elif с.get("h"):
                 (_оп_h or (lambda *a: с["e"].ar1h_all_reduce_out(*a)))(
                     input_, цель_т, с["my_slot"][k], с["peer_slot"][k], с["my_flag"][k],
                     с["peer_flag"][k], с["seq"][k], с["срыв"], с["N"])
@@ -379,17 +428,29 @@ def установить() -> None:
             # СРЫВ ОЖИДАНИЯ ЧИТАЕТСЯ НА КАЖДОМ ПРОХОДЕ. Спин имеет потолок по тактам, и при
             # срыве тело берёт УСТАРЕВШИЕ байты молча -- ровно та тихая порча, ради которой
             # ставился гейт. Без этой проверки срыв неотличим от верного обмена.
+            # [25.10] БЕЗ СИНХРОНИЗАЦИИ: `.item()` на каждом проходе сливал очередь карты прямо перед
+            # запуском графа цели (трасса: ~1.2 мс простоя на шаг, пока хозяин запускает граф). Флаг
+            # копируется в закреплённую память хозяина без ожидания и читается на СЛЕДУЮЩЕМ проходе --
+            # срыв виден с опозданием на один проход, но виден.
+            _захват = torch.cuda.is_current_stream_capturing()
             for _к, _с in _сост.items():
                 if _с is False:
                     continue
                 try:
-                    _в = int(_с["срыв"][0].item())
+                    _хост = _с.get("срыв_хост")
+                    if _хост is None:
+                        _хост = _с["срыв_хост"] = torch.zeros(1, dtype=_с["срыв"].dtype, pin_memory=True)
+                    _в = int(_хост[0])
+                    if _в:
+                        print(f"[fa2_sm70 AR2] СРЫВ ОЖИДАНИЯ ({_в}) -- байты соседа не дошли за "
+                              f"потолок, значения УСТАРЕЛИ", file=sys.stderr, flush=True)
+                        _хост.zero_()
+                        if not _захват:
+                            _с["срыв"][0].zero_()
+                    if not _захват:
+                        _хост.copy_(_с["срыв"][0:1], non_blocking=True)
                 except Exception:  # noqa: BLE001
                     continue
-                if _в:
-                    print(f"[fa2_sm70 AR2] СРЫВ ОЖИДАНИЯ ({_в}) -- байты соседа не дошли за "
-                          f"потолок, значения УСТАРЕЛИ", file=sys.stderr, flush=True)
-                    _с["срыв"][0].zero_()
             if _СЧЁТ_ВЫЗОВОВ is not None:
                 # СЧЁТЧИК ЯДРА, а не питона: он растёт и при повторе графа.
                 _СЧЁТ_ВЫЗОВОВ[0] += 1

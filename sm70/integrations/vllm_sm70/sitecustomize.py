@@ -174,6 +174,15 @@ if os.environ.get("FA2SM80_W8", "0") == "1":
         import traceback
         traceback.print_exc()
 
+if os.environ.get("FA2SM80_MEMTRACE", "0") not in ("", "0"):
+    # Прибор памяти хоста (fa2sm80_memtrace.py): RSS по классам отображений, tracemalloc/gc по рычагам.
+    try:
+        import fa2sm80_memtrace
+        fa2sm80_memtrace.запустить()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+
 if os.environ.get("FA2SM80_ROWPIPE", "0") == "1":
     # Префилл: конвейер «умножение -> сведение» в строко-параллельных слоях (fa2sm80_rowpipe.py).
     try:

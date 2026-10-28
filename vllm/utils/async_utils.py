@@ -20,6 +20,150 @@ from typing_extensions import ParamSpec
 P = ParamSpec("P")
 T = TypeVar("T")
 
+# [ПАМЯТЬ 27.10] КУСОЧНАЯ ТОКЕНИЗАЦИЯ БОЛЬШИХ СТРОК (FA2SM80_TOK_CHUNK_CHARS, 0 -- выкл.). Токенизатор HF держит на
+# каждый токен служебные структуры (смещения и т. п.): ~485 Б/токен в пике, ~200 МБ на 1 МБ текста. Один /tokenize
+# (или чат) на десятки МБ раздувал API-сервер боевого sm80 на 7-9 ГБ (cgroup 14 ГБ -> oom-kill воркера по кругу,
+# 26.10). Здесь строка длиннее порога режется ТОЛЬКО после "\n" перед непробельным символом -- это всегда граница
+# предразбиения Qwen ("\s*[\r\n]+" -- отдельная часть), BPE её не пересекает, спецтокены переводов строк не
+# содержат -> номера ПОБИТОВО те же (сверка на 8 МБ корпуса с трудными случаями: 0 расхождений); номера копятся в
+# array('i') (4 Б/токен). 16 МБ текста: пик +2.8 ГБ -> ~0, 23.5 -> 17.4 с. Усечение и незнакомые параметры --
+# прежним цельным путём.
+import json as _json
+import os as _os
+import re as _re
+from array import array as _array
+
+_КУСОК_ПОРОГ = int(_os.environ.get("FA2SM80_TOK_CHUNK_CHARS", "262144"))
+_КУСОК = 1 << 20
+_РАЗРЕЗ = _re.compile(r"\n(?=\S)")
+_КУСОК_МОЖНО = {"add_special_tokens", "return_attention_mask", "return_token_type_ids"}
+
+# [ПАМЯТЬ 27.10] ЗАПАСНОЙ РАЗРЕЗ -- ПЕРЕД ПРОБЕЛОМ ПОСЛЕ БУКВЫ/ЦИФРЫ (строки без "\n" или с очень длинными строками;
+# раньше такой текст шёл цельным путём: ~200 МБ на 1 МБ текста). По регулярке предразбиения Qwen ни одна часть не
+# продолжается через пробел после непробельного символа (пробел бывает только ПЕРВЫМ символом части), начало части
+# от предыдущего текста не зависит (просмотра назад нет), NFC через пробел не склеивает -> граница, номера те же.
+# Только если у токенизатора ровно эта регулярка, NFC (или нет нормализатора) и нет lstrip/rstrip у добавленных токенов.
+_РАЗРЕЗ_ВПЕРЁД = _re.compile(r"\n(?=\S)|(?<=\w)(?= )")
+_РАЗРЕЗ_ПРОБЕЛ = _re.compile(r"(?<=\w)(?= )")
+_QWEN_ПРЕДРАЗБИЕНИЕ = {"type": "Sequence", "pretokenizers": [
+    {"type": "Split", "behavior": "Isolated", "invert": False, "pattern": {"Regex": (
+        r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*"
+        r"|\s*[\r\n]+|\s+(?!\S)|\s+")}},
+    {"type": "ByteLevel", "add_prefix_space": False, "trim_offsets": False, "use_regex": False}]}
+_ПРОБЕЛ_МОЖНО = {}
+
+
+def _пробел_можно(tokenizer):
+    ключ = id(tokenizer)
+    if ключ not in _ПРОБЕЛ_МОЖНО:
+        try:
+            b = tokenizer.backend_tokenizer
+            норм = _json.loads(b.normalizer.__getstate__()) if b.normalizer is not None else None
+            _ПРОБЕЛ_МОЖНО[ключ] = (
+                _json.loads(b.pre_tokenizer.__getstate__()) == _QWEN_ПРЕДРАЗБИЕНИЕ
+                and норм in (None, {"type": "NFC"})
+                and not any(a.lstrip or a.rstrip for a in tokenizer.added_tokens_decoder.values()))
+        except Exception:  # noqa: BLE001
+            _ПРОБЕЛ_МОЖНО[ключ] = False
+    return _ПРОБЕЛ_МОЖНО[ключ]
+
+
+def _кусочные_id(tokenizer, text, kw, порог=None, пачка=1, стоп=None, кусок=None):
+    """Номера токенов большой строки кусками по границам строк -> array('i'); None -- кусками нельзя.
+    Куски (~`кусок` символов) подаются пачками по `пачка` (токенизатор Rust раскладывает пачку по ядрам; пик памяти
+    ~ пачка*кусок символов в работе). `стоп` (threading.Event): выставлен -- бросить работу (клиент ушёл), вернуть None."""
+    порог = _КУСОК_ПОРОГ if порог is None else порог
+    кусок = _КУСОК if кусок is None else кусок
+    # [ПАМЯТЬ 27.10] truncation=False и max_length=None -- пустые параметры, но их ВСЕГДА шлёт рендерер
+    # (TokenizeParams.get_encode_kwargs): с ними кусочный путь не включался ни разу, большие чаты шли цельным
+    # (~485 Б/токен; чат 394.6 МБ -> oom-kill 27.10 13:20). Убираем только пустые значения.
+    kw = {k: v for k, v in kw.items()
+          if not ((k == "truncation" and v is False) or (k == "max_length" and v is None))}
+    if (not порог or not isinstance(text, str) or len(text) <= порог
+            or not set(kw) <= _КУСОК_МОЖНО):
+        return None
+    пробел = _пробел_можно(tokenizer)
+    if not пробел and "\n" not in text:
+        return None
+    обр = tokenizer("a\nb", **kw)          # ключи и служебные токены -- как у цельного вызова
+    if list(обр.keys()) and any(k not in ("input_ids", "attention_mask", "token_type_ids") for k in обр.keys()):
+        return None
+    if kw.get("add_special_tokens", True) and tokenizer("a\nb", add_special_tokens=False)["input_ids"] != list(
+            обр["input_ids"]):
+        return None                          # токенизатор добавляет служебные токены -- кусками не склеить
+    ids = _array("i")
+    pos, n = 0, len(text)
+    куски = []
+    while pos < n:
+        end = min(n, pos + кусок)
+        if end < n:
+            m = None
+            for m in _РАЗРЕЗ.finditer(text, pos + кусок // 2, end):
+                pass
+            if m is None and пробел:
+                for m in _РАЗРЕЗ_ПРОБЕЛ.finditer(text, pos + кусок // 2, end):
+                    pass
+            if m is None:
+                m = (_РАЗРЕЗ_ВПЕРЁД if пробел else _РАЗРЕЗ).search(text, end)
+            end = m.end() if m is not None else n
+        куски.append(text[pos:end])
+        pos = end
+        if len(куски) >= пачка or pos >= n:
+            if стоп is not None and стоп.is_set():
+                return None
+            if len(куски) == 1:
+                ids.extend(tokenizer(куски[0], **kw)["input_ids"])
+            else:
+                for r in tokenizer(куски, **kw)["input_ids"]:
+                    ids.extend(r)
+            куски = []
+    return ids, обр
+
+
+# [ПАМЯТЬ 27.10] ОГРОМНЫЕ ТЕКСТЫ (> FA2SM80_TOK_STREAM_CHARS символов) -- в ОДНОМ отдельном потоке: общий поток
+# токенизатора не стоит минуту, две огромные токенизации не идут разом (память). Им пользуются потоковый /tokenize
+# (api_router) и проверка длины огромного промпта (renderers/protocol.py).
+_БОЛЬШОЙ_ПОРОГ = int(_os.environ.get("FA2SM80_TOK_STREAM_CHARS", str(4 * 2**20)))
+_БОЛЬШОЙ_ИСП = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fa2-tok-big")
+
+
+async def большой_текст_ids(tokenizer, text, kw, порог=None):
+    """array('i') номеров огромного текста (кусками, в отдельном потоке); None -- текст не длиннее `порог`
+    (по умолчанию FA2SM80_TOK_STREAM_CHARS) или кусками нельзя. Куски по 128К символов пачками по 8: 30 МБ текста
+    за 8.5 с, пик +0.5 ГБ (по 1М пачками по 4: 14 с, +1.2 ГБ). Отмена (клиент ушёл) останавливает токенизацию."""
+    import threading
+
+    порог = _БОЛЬШОЙ_ПОРОГ if порог is None else порог
+    if not порог or not isinstance(text, str) or len(text) <= порог:
+        return None
+    стоп = threading.Event()
+    try:
+        r = await asyncio.get_running_loop().run_in_executor(
+            _БОЛЬШОЙ_ИСП, lambda: _кусочные_id(tokenizer, text, kw, порог=1, пачка=8, стоп=стоп, кусок=1 << 17))
+    except asyncio.CancelledError:
+        стоп.set()
+        raise
+    return None if r is None else r[0]
+
+
+def _tok_кусками(tokenizer, text, kw):
+    """Токенизация большой строки кусками по границам строк; None -- кусками нельзя (идти цельным путём)."""
+    r = _кусочные_id(tokenizer, text, kw)
+    if r is None:
+        return None
+    ids, обр = r
+    out = {"input_ids": ids.tolist()}
+    if "attention_mask" in обр:
+        out["attention_mask"] = [1] * len(ids)
+    if "token_type_ids" in обр:
+        out["token_type_ids"] = [0] * len(ids)
+    return BatchEncoding(out)
+
+
+def _tok(tokenizer, text, kw):
+    r = _tok_кусками(tokenizer, text, kw)
+    return r if r is not None else tokenizer(text, **kw)
+
 
 class AsyncMicrobatchTokenizer:
     """Asynchronous tokenizer with micro-batching.
@@ -112,7 +256,9 @@ class AsyncMicrobatchTokenizer:
             try:
                 # If every request uses identical kwargs we can run a single
                 # batched tokenizer call for a big speed-up.
-                if can_batch and len(prompts) > 1:
+                if can_batch and len(prompts) > 1 and not (
+                    _КУСОК_ПОРОГ and any(isinstance(p, str) and len(p) > _КУСОК_ПОРОГ for p in prompts)
+                ):
                     batch_encode_fn = partial(self.tokenizer, prompts, **kwargs)
                     results = await self._loop.run_in_executor(
                         self._executor, batch_encode_fn
@@ -123,8 +269,10 @@ class AsyncMicrobatchTokenizer:
                             data = {k: v[i] for k, v in results.items()}
                             fut.set_result(BatchEncoding(data))
                 else:
+                    if can_batch:   # одни и те же kwargs у всех (в kwargs_list лежит только первый)
+                        kwargs_list = [kwargs] * len(prompts)
                     encode_fn = lambda prompts=prompts, kwargs=kwargs_list: [
-                        self.tokenizer(p, **kw) for p, kw in zip(prompts, kwargs)
+                        _tok(self.tokenizer, p, kw) for p, kw in zip(prompts, kwargs)
                     ]
                     results = await self._loop.run_in_executor(
                         self._executor, encode_fn

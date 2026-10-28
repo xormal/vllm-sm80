@@ -46,6 +46,7 @@
 
 #include "volta_gdn_kkt.cuh"
 #include "volta_gdn_rec.cuh"
+#include "gdn_rec_v5.cuh"
 #include "volta_gdn_tril.cuh"
 #include "volta_gdn_wu.cuh"
 #include "volta_gdn_h.cuh"
@@ -742,6 +743,23 @@ torch::Tensor gdn_rec_gating_out(torch::Tensor A_log, torch::Tensor a, torch::Te
             has_idx_out ? (const IdxT*)sio.data_ptr() : nullptr, p_scl, idx_w, (int)branch_at,
             tq, tk, tv, ta, tb);
       };
+      // [A100 25.10] v5 (gdn_rec_v5.cuh, побитово то же): только когда на последовательность гарантированно
+      // <= FA2_REC_TMAX токенов -- спекуляция с рядом слотов <= 8 либо всего токенов <= 8; ветвления дерева нет.
+      static const bool v5_on = [] { const char* e = std::getenv("FA2SM80_GDN_V5"); return e && e[0] == '1'; }();
+      if (FA2_SM80 && v5_on && branch_at == 0 && hpool.size(0) > 0 &&
+          ((spec && has_idx && idx_w <= FA2_REC_TMAX) || T <= FA2_REC_TMAX)) {
+        fa2_sm70::gdn::gdn_rec_v5<DK, DK, BV, L2N, SPEC, TI, IdxT, 2><<<grid, 256, 0, st>>>(
+            (const TI*)q.data_ptr(), (const TI*)k.data_ptr(), (const TI*)v.data_ptr(),
+            (const TI*)b.data_ptr(), (TI*)o.data_ptr(), (short*)hpool.data_ptr(),
+            has_idx ? (const IdxT*)si.data_ptr() : nullptr,
+            spec ? n_acc.value().data_ptr<int>() : nullptr,
+            varlen ? (const IdxT*)cu.data_ptr() : nullptr,
+            stride_idx, stride_slot, (float)scale, T, H, HV,
+            (const TI*)a.data_ptr(), A_log.data_ptr<float>(), dt_bias.data_ptr<float>(),
+            has_idx_out ? (const IdxT*)sio.data_ptr() : nullptr, p_scl, idx_w,
+            tq, tk, tv, ta, tb);
+        return;
+      }
       const int sp = rec_split((long)grid.x * grid.y * grid.z);
       if (sp == 4) launch_i(std::integral_constant<int, 4>{});
       else if (sp == 2) launch_i(std::integral_constant<int, 2>{});

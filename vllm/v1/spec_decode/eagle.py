@@ -97,6 +97,19 @@ _ГР_ЧЕРН_ФАЙЛ = __import__("os").environ.get("FA2SM70_MTP_GRAPH_FILE",
 # Длина контекста входит в ключ ВЕДРОМ: выбор пути внутри бэкенда зависит от max_seq_len,
 # и запекать его без ведра значило бы переиграть чужой путь на выросшем контексте.
 _ГР_ЧЕРН_ВЕДРО = int(__import__("os").environ.get("FA2SM70_MTP_GRAPH_BUCKET", "16384"))
+# [FA2/SM80 25.10] ВЕСЬ ЦИКЛ ЧЕРНОВИКА ОДНИМ CUDA-ГРАФОМ (FA2SM80_MTP_LOOP_GRAPH=1): k-1 проходов вместе с обвязкой
+# (позиции, seq_lens, slot_mapping, метаданные, копии во входные буферы) и выбором по словарю. Граф тела головы
+# (FA2SM70_MTP_GRAPH) прячет только тело; обвязка шла мелкими ядрами с питоном между ними -- профиль декода k=4:
+# ~127 обычных запусков на шаг, щели 14-157 мкс между ядрами по 2-4 мкс. Выход не меняется ПО ПОСТРОЕНИЮ: цель
+# сверяет каждый черновой токен; ошибка черновика может лишь понизить приёмку.
+_ГР_ЦИКЛ = __import__("os").environ.get("FA2SM80_MTP_LOOP_GRAPH", "0") == "1"
+# [25.10] Граф цикла -- только до этой пачки (умолчание 1: одиночный поток). При C>1 составы пачки меняются, новые
+# ключи захватывались на ходу, и вместе с асинхронным планированием при C=8 (ожидающие запросы) ловилось
+# illegal memory access; без графа цикла или без асинхронного -- нет. Пачки идут прежним путём.
+_ГР_ЦИКЛ_МАКСБ = int(__import__("os").environ.get("FA2SM80_MTP_LOOP_GRAPH_MAXB", "1"))
+# A/B графа цикла в ОДНОМ процессе: P шагов с графом, P без (по счётчику вызовов -- одинаков у рангов TP, их
+# последовательности сведений не расходятся); период шага (вызов -> вызов) копится по режиму, печать раз в 400.
+_ГР_АБ = int(__import__("os").environ.get("FA2SM80_LG_AB_PERIOD", "0"))
 # Подняты из тела `_i4_argmax`: там они выполнялись на КАЖДОМ вызове (три за шаг).
 from vllm.distributed import (
     get_tensor_model_parallel_world_size as _tp_size,
@@ -535,10 +548,15 @@ class SpecDecodeBaseProposer:
         Буферы постоянные: иначе граф запёк бы адреса разовых тензоров.
         """
         import dataclasses as _dc
-        б = getattr(self, "_доп_буф", None)
-        if б is None or б["всего"] != всего or б["блоков"] != cad.block_table_tensor.shape[1]:
+        # [25.10] БУФЕРЫ -- НА КАЖДУЮ ФОРМУ, НАВСЕГДА. Прежде один набор пересоздавался при смене `всего`, и графы,
+        # захваченные под прежнюю форму (граф цикла черновика, графы тела), ссылались на ОСВОБОЖДЁННУЮ память: после
+        # C=6 -> C=1 повтор графа пачки 1 писал seq/slot в чужие тензоры -> illegal memory access (C=8, асинхронное).
+        _все = self.__dict__.setdefault("_доп_буф_все", {})
+        _кл = (всего, cad.block_table_tensor.shape[1])
+        б = _все.get(_кл)
+        if б is None:
             _у = cad.seq_lens.device
-            б = self._доп_буф = {
+            б = _все[_кл] = {
                 "всего": всего,
                 "блоков": cad.block_table_tensor.shape[1],
                 "qsl": torch.arange(всего + 1, device=_у, dtype=torch.int32),
@@ -681,7 +699,8 @@ class SpecDecodeBaseProposer:
         return з["выход"]
 
     def _карта(self, имя: str):
-        if not _ФАЗА_ДЕВ:
+        # внутри захвата CUDA-графа (весь цикл черновика) окна фазомера НЕ пишутся: Event.record ломает захват
+        if not _ФАЗА_ДЕВ or torch.cuda.is_current_stream_capturing():
             import contextlib
             return contextlib.nullcontext()
         р = getattr(self, "runner", None)
@@ -736,7 +755,22 @@ class SpecDecodeBaseProposer:
         tp = _tp_size()
         if tp == 1:
             return глоб.to(torch.int64)
-        соб = tensor_model_parallel_all_gather(пара, dim=-1).view(M, tp, 2)
+        # [FA2/SM80 25.10] сбор пар по TP -- прямым ncclAllGather (pynccl) на ТЕКУЩЕМ потоке: путь torch.distributed
+        # пишет события (Event.record) и ломает захват всего цикла черновика в CUDA-граф (cudaErrorStreamCapture-
+        # Invalidated). Порядок тот же, что у all_gather(dim=-1).view(M, tp, 2): строка m -- пары рангов подряд.
+        соб = None
+        try:
+            from vllm.distributed.parallel_state import get_tp_group as _gtg
+            _pn = getattr(_gtg().device_communicator, "pynccl_comm", None)
+            if _pn is not None and not _pn.disabled:
+                _п = пара.contiguous()
+                _в = torch.empty((tp,) + tuple(_п.shape), dtype=_п.dtype, device=_п.device)
+                _pn.all_gather(_в.view(-1), _п.view(-1))
+                соб = _в.permute(1, 0, 2)                                    # [M, tp, 2]
+        except Exception:  # noqa: BLE001
+            соб = None
+        if соб is None:
+            соб = tensor_model_parallel_all_gather(пара, dim=-1).view(M, tp, 2)
         лучш = соб[:, :, 0].argmax(dim=-1, keepdim=True)
         return соб[:, :, 1].gather(dim=-1, index=лучш).squeeze(-1).to(torch.int64)
 
@@ -1073,6 +1107,37 @@ class SpecDecodeBaseProposer:
             common_attn_metadata._seq_lens_cpu = None
             common_attn_metadata._num_computed_tokens_cpu = None
 
+        _рез = None
+        _лг = True
+        if _ГР_АБ:
+            _лг = self._аб_шаг()
+        if _ГР_ЦИКЛ and _лг and batch_size <= _ГР_ЦИКЛ_МАКСБ:   # mrope и эмбеддинги входа -- внутри цикла, форма позиций -- в ключе
+            _рез = self._цикл_графом(draft_token_ids, positions, hidden_states, common_attn_metadata,
+                                     attn_metadata_builder, per_layer_attn_metadata, batch_size,
+                                     input_batch_size, batch_size_across_dp, cudagraph_runtime_mode)
+        if _рез is not None:
+            draft_token_ids_list += _рез
+        else:
+            draft_token_ids_list += self._цикл_черновика(
+                draft_token_ids, positions, hidden_states, common_attn_metadata, attn_metadata_builder,
+                per_layer_attn_metadata, batch_size, input_batch_size, batch_size_across_dp,
+                cudagraph_runtime_mode, True)
+
+        # [batch_size, num_speculative_tokens]
+        draft_token_ids = torch.stack(draft_token_ids_list, dim=1)
+        if _ГЕЙТ_ДАМП:
+            _снять_gejt(target_hidden_states, input_ids if "input_ids" in dir() else None,
+                        draft_token_ids)
+        return draft_token_ids
+
+    def _цикл_черновика(self, draft_token_ids, positions, hidden_states, common_attn_metadata,
+                        attn_metadata_builder, per_layer_attn_metadata, batch_size, input_batch_size,
+                        batch_size_across_dp, cudagraph_runtime_mode, граф_тела=True):
+        """k-1 проходов черновика после первого (тело прежнего цикла propose). Возвращает список токенов.
+        граф_тела=False -- внутри захвата всего цикла: тело вызывается напрямую, режим графов движка -- NONE."""
+        draft_token_ids_list = [draft_token_ids]
+        if not граф_тела:
+            cudagraph_runtime_mode = CUDAGraphMode.NONE
         for token_index in range(self.num_speculative_tokens - 1):
             _т_вход = _t_eagle.perf_counter()
             # Update the inputs.
@@ -1208,7 +1273,7 @@ class SpecDecodeBaseProposer:
                     # 4 -- и замок бэкенда справедливо отказал в захвате («однородный путь НЕ
                     # взят»). СВОЕМУ графу чужие размеры захвата не нужны: берём настоящие.
                     ret_hidden_states = None
-                    if _ГР_ЧЕРН:            # ветвь мертва по умолчанию -- ни одной операции
+                    if _ГР_ЧЕРН and граф_тела:   # внутри захвата всего цикла -- тело напрямую
                         # Форма НЕ меняется (тело запечено под неё) -- меняется только мета.
                         ret_hidden_states = self._тело_графом(
                             attn_metadata, input_batch_size, _cad,
@@ -1228,12 +1293,150 @@ class SpecDecodeBaseProposer:
             draft_token_ids_list.append(draft_token_ids)
             _хф(getattr(self, "runner", None), "словарь+argmax", _т_выб)
 
-        # [batch_size, num_speculative_tokens]
-        draft_token_ids = torch.stack(draft_token_ids_list, dim=1)
-        if _ГЕЙТ_ДАМП:
-            _снять_gejt(target_hidden_states, input_ids if "input_ids" in dir() else None,
-                        draft_token_ids)
-        return draft_token_ids
+        return draft_token_ids_list[1:]
+
+    def _аб_шаг(self):
+        """Режим графа цикла на этом шаге при A/B (FA2SM80_LG_AB_PERIOD) и учёт периода прошлого шага."""
+        import time as _tm
+        н = getattr(self, "_аб_н", 0) + 1
+        self._аб_н = н
+        режим = (н // _ГР_АБ) % 2 == 0
+        т = _tm.perf_counter()
+        прош = getattr(self, "_аб_т", None)
+        self._аб_т = т
+        стат = getattr(self, "_аб_стат", None)
+        if стат is None:
+            стат = self._аб_стат = {True: [0.0, 0], False: [0.0, 0]}
+        if прош is not None and т - прош < 0.2:          # подряд идущие шаги (не простой между запросами)
+            ст = стат[self._аб_пред]
+            ст[0] += т - прош
+            ст[1] += 1
+        self._аб_пред = режим
+        if н % 400 == 0:
+            а, б = стат[True], стат[False]
+            print(f"[AB граф цикла] с графом {1e3 * а[0] / max(а[1], 1):.2f} мс/шаг ({а[1]}), без "
+                  f"{1e3 * б[0] / max(б[1], 1):.2f} мс/шаг ({б[1]})", file=__import__("sys").stderr, flush=True)
+        return режим
+
+    def _побочные_цикла(self, cm, з, k1):
+        """Побочные эффекты прежнего цикла на метаданных вызывающего -- как после k1 проходов обычным путём:
+        seq_lens (+k1 с отсечкой по max_model_len -- итог из буфера графа), max_seq_len, тени на хосте, slot_mapping."""
+        ст = з["вх_мета"].get("seq_lens")
+        if ст is not None and isinstance(cm.seq_lens, torch.Tensor):
+            cm.seq_lens.copy_(ст, non_blocking=True)
+        cm.max_seq_len = min(cm.max_seq_len + k1, self.max_model_len)
+        if getattr(cm, "_seq_lens_cpu", None) is not None:
+            cm._seq_lens_cpu += k1
+        if getattr(cm, "_num_computed_tokens_cpu", None) is not None:
+            cm._num_computed_tokens_cpu += k1
+        cm.slot_mapping = з["см"].slot_mapping
+
+    def _цикл_графом(self, draft_token_ids, positions, hidden_states, common_attn_metadata,
+                     attn_metadata_builder, per_layer_attn_metadata, batch_size, input_batch_size,
+                     batch_size_across_dp, cudagraph_runtime_mode):
+        """Весь цикл черновика одним CUDA-графом; None -- «иди обычным путём». Ключ -- размеры и корзина
+        max_seq_len с запасом на рост внутри цикла (ядро внимания головы запечено под корзину)."""
+        k1 = self.num_speculative_tokens - 1
+        _мсл = int(getattr(common_attn_metadata, "max_seq_len", 0) or 0) + k1 + 1
+        ключ = (int(batch_size), int(input_batch_size), int(k1), _мсл // max(_ГР_ЧЕРН_ВЕДРО, 1),
+                tuple(positions.shape), tuple(hidden_states.shape))
+        гц = getattr(self, "_гр_циклов", None)
+        if гц is None:
+            гц = self._гр_циклов = {}
+        з = гц.setdefault(ключ, {"счёт": 0, "мёртв": False})
+        self._гр_вызовов = getattr(self, "_гр_вызовов", 0) + 1
+        if з["мёртв"]:
+            return None
+        if "граф" in з:
+            # [25.10] ВСЕ ВХОДЫ -- В ПОСТОЯННЫЕ БУФЕРЫ ГРАФА. Тело цикла правит метаданные на месте (seq_lens += 1,
+            # slot_mapping из block_table): в графе это записано по адресам ВРЕМЕНИ ЗАХВАТА. При ровном C=1 аллокатор
+            # отдавал те же адреса, а при смене состава пачки (C=8 -> 1, асинхронное планирование) граф писал +1 в
+            # чужую память и читал чужие seq_lens/block_table -> illegal memory access.
+            вх = з["вх_мета"]
+            for имя, ст in вх.items():
+                тек = getattr(common_attn_metadata, имя, None)
+                if not isinstance(тек, torch.Tensor) or тек.shape != ст.shape:
+                    return None
+            for имя, ст in вх.items():
+                ст.copy_(getattr(common_attn_metadata, имя), non_blocking=True)
+            з["d0"].copy_(draft_token_ids, non_blocking=True)
+            з["pos"].copy_(positions, non_blocking=True)
+            з["hid"].copy_(hidden_states, non_blocking=True)
+            з["граф"].replay()
+            self._побочные_цикла(common_attn_metadata, з, k1)
+            return з["выход"]
+        з["счёт"] += 1
+        if з["счёт"] < 4:                     # прогрев обычным путём (компиляция/формы)
+            return None
+        try:
+            # СВОЙ пул: неудачный захват цикла не должен оставлять пул графов тела «в записи»
+            if getattr(self, "_гр_пул_цикла", None) is None:
+                self._гр_пул_цикла = torch.cuda.graph_pool_handle()
+            з["d0"] = draft_token_ids.clone()
+            з["pos"] = positions.clone()
+            з["hid"] = hidden_states.clone()
+            # своя копия метаданных: тензорные поля -- постоянные клоны (входы графа), захват правит только её
+            import copy as _copy
+            import dataclasses as _dc
+            см = _copy.copy(common_attn_metadata)
+            вх = {}
+            for _f in _dc.fields(common_attn_metadata):
+                _v = getattr(common_attn_metadata, _f.name)
+                if isinstance(_v, torch.Tensor):
+                    _кл = _v.clone()
+                    setattr(см, _f.name, _кл)
+                    if _v.is_cuda:
+                        вх[_f.name] = _кл
+            з["вх_мета"] = вх
+            з["см"] = см
+            г = torch.cuda.CUDAGraph()
+            _дамп = __import__("os").environ.get("FA2SM80_LG_DUMP", "")
+            if _дамп:
+                г.enable_debug_mode()
+            # как у графов цели (gpu_model_runner): захват внутри graph_capture -- коммуникаторы (сбор словаря
+            # черновика по TP) переходят в режим, пригодный для захвата; свой поток захвата.
+            from vllm.distributed.parallel_state import graph_capture as _graph_capture
+            # синхронизирующая операция внутри захвата (.item(), .cpu(), копия из страничной памяти) ломает его
+            # МОЛЧА, а падает потом чужое ядро -- режим «error» бросает исключение ДО операции, с точной строкой
+            _реж = torch.cuda.get_sync_debug_mode()
+            torch.cuda.set_sync_debug_mode("error")
+            try:
+                with _graph_capture(device=hidden_states.device) as _гк:
+                    with torch.cuda.graph(г, pool=self._гр_пул_цикла, stream=_гк.stream):
+                        вых = self._цикл_черновика(з["d0"], з["pos"], з["hid"], см,
+                                                   attn_metadata_builder, dict(per_layer_attn_metadata), batch_size,
+                                                   input_batch_size, batch_size_across_dp,
+                                                   cudagraph_runtime_mode, False)
+            finally:
+                torch.cuda.set_sync_debug_mode(_реж)
+            з.update(граф=г, выход=вых)
+            if __import__("os").environ.get("FA2SM80_LG_LOG", "0") == "1":
+                # [25.10] прибор детерминизма: что зашито в граф цикла при захвате (решения ядер по хозяйским числам)
+                _нв = getattr(self, "_гр_вызовов", 0)
+                print(f"[MTP ГРАФ ЦИКЛА] захват ключ={ключ} вызов_ключа={з['счёт']} всего_вызовов={_нв} "
+                      f"max_seq_len={int(common_attn_metadata.max_seq_len)}", file=__import__("sys").stderr, flush=True)
+            if _дамп:
+                try:
+                    г.debug_dump(f"{_дамп}_{__import__('os').getpid()}_{ключ[0]}_{ключ[1]}.dot")
+                except Exception as _ed:  # noqa: BLE001
+                    print(f"[MTP ГРАФ ЦИКЛА] дамп не вышел: {_ed}", file=__import__('sys').stderr, flush=True)
+            # захват ядра не исполнял: входы -- снова текущие (позиции и seq_lens правились «на месте»)
+            for имя, ст in вх.items():
+                ст.copy_(getattr(common_attn_metadata, имя))
+            з["d0"].copy_(draft_token_ids)
+            з["pos"].copy_(positions)
+            з["hid"].copy_(hidden_states)
+            г.replay()
+            self._побочные_цикла(common_attn_metadata, з, k1)
+            print(f"[MTP ГРАФ ЦИКЛА] захвачен: ключ={ключ}", file=__import__("sys").stderr, flush=True)
+            return вых
+        except Exception as _e:               # noqa: BLE001
+            з["мёртв"] = True
+            import traceback as _tb
+            print(f"[MTP ГРАФ ЦИКЛА] отказ захвата ({type(_e).__name__}: {str(_e)[:300]}) -- прежним путём "
+                  f"для ключа {ключ}\n" + "".join(_tb.format_exception(_e)),
+                  file=__import__("sys").stderr, flush=True)
+            return None
 
     def set_inputs_first_pass(
         self,

@@ -122,6 +122,11 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:T
 export PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
+# [25.10] FA2SM80_INDUCTOR_NOAT=1: ядра Inductor без автотюна по таймингу (редукции -- одна эвристическая конфигурация):
+# иначе процесс со СВЕЖЕЙ компиляцией графа выбирает конфигурации редукций по замеру и считает декод иначе, чем
+# процессы, загрузившие граф из кэша (очередь 45 против остальных).
+IND_CFG=""
+if [ -n "${FA2SM80_INDUCTOR_NOAT:-}" ]; then IND_CFG=',"inductor_compile_config":{"triton.autotune_pointwise":false}'; fi
 ARGS=(
   -m vllm.entrypoints.openai.api_server
   --model "$MODEL_DIR"
@@ -144,7 +149,7 @@ ARGS=(
   --enable-auto-tool-choice
   --tool-call-parser qwen3_coder
   --reasoning-parser qwen3
-  --compilation-config "{\"cudagraph_mode\":\"full_and_piecewise\",\"cudagraph_capture_sizes\":[${FA2SM80_CG_SIZES:-1,2,4,8}]}"
+  --compilation-config "{\"cudagraph_mode\":\"full_and_piecewise\",\"cudagraph_capture_sizes\":[${FA2SM80_CG_SIZES:-1,2,4,8}]${IND_CFG}}"
   --host "$HOST"
   --port "$PORT"
   --mamba-cache-mode all
@@ -158,6 +163,10 @@ if [ "${FA2SM70_KV_OFFLOAD:-0}" = "1" ]; then
         --no-disable-hybrid-kv-cache-manager)
   say "KV offload to host RAM: ${FA2SM70_KV_OFFLOAD_GB:-16} GiB for the server"
 fi
+
+# Тип хранения состояния GDN/mamba: FA2SM70_SSM_DT=float32 -- эталон точности (с FA2SM70_GDN_I16=0); по умолчанию
+# int16 с масштабом (FA2SM70_GDN_I16=1, fa2sm70_gdn_i16.py).
+if [ -n "${FA2SM70_SSM_DT:-}" ]; then ARGS+=(--mamba-ssm-cache-dtype "$FA2SM70_SSM_DT"); fi
 
 # Штатный custom all-reduce vLLM (P2P по PCIe) вместо NCCL LL: CUSTOM_AR=1. По умолчанию -- как в бою (выкл).
 if [ "${CUSTOM_AR:-0}" != "1" ]; then ARGS+=(--disable-custom-all-reduce); fi

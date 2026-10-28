@@ -202,6 +202,35 @@ def chunk_gated_delta_rule(
     # Откат ТОЛЬКО по форме; нехватка памяти отдаётся движку (запасной Triton-путь ТЯЖЕЛЕЕ
     # основного и включается ровно когда памяти нет -- урок 11.08).
     import os as _os
+    # [A100 25.10] ГИБРИД НА sm80 (FA2SM80_GDN_HYB=1): вольтовские kkt и solve_tril (fa2_sm70/gdn_scan.cu; tril 57 мкс
+    # против 274 у merge_16x16 из Triton) + тритоновские recompute_w_u / fwd_h / fwd_o (вольтовские h/wu/o и сшитое
+    # h+o+wu на A100 медленнее Triton). Без обёртки autograd. Кусок 8192 x 24 головы: 1.97 -> 1.04 мс на вызов,
+    # выход против чистого FLA relL2 1.5e-4, состояние 1e-4 (уровень fp16).
+    if (_os.environ.get("FA2SM80_GDN_HYB", "0") == "1" and not head_first and cu_seqlens is not None
+            and q.is_cuda and torch.cuda.get_device_capability(q.device)[0] == 8
+            and q.dtype == torch.float16 and v.dtype == torch.float16 and beta.dtype == torch.float16):
+        try:
+            from fa2_sm70 import gdn as _fa2_gdn
+            from .wy_fast import recompute_w_u_fwd
+            _scale = k.shape[-1] ** -0.5 if scale is None else scale
+            _qn, _kn = (l2norm_fwd(q), l2norm_fwd(k)) if use_qk_l2norm_in_kernel else (q, k)
+            _gg = chunk_local_cumsum(g, chunk_size=64, cu_seqlens=cu_seqlens)
+            _cu32, _ci, _co, _nt = _fa2_gdn._chunk_meta(cu_seqlens)
+            _ext = _fa2_gdn.gdn_ext()
+            _A = _ext.gdn_kkt(_kn.contiguous(), beta.contiguous(), _gg, _cu32, _ci, v.shape[-2])
+            _A = _ext.gdn_solve_tril(_A, _cu32, _ci).to(_kn.dtype)
+            _w, _u = recompute_w_u_fwd(k=_kn, v=v, beta=beta, A=_A, g_cumsum=_gg, cu_seqlens=cu_seqlens)
+            _h, _vn, _ht = chunk_gated_delta_rule_fwd_h(
+                k=_kn, w=_w, u=_u, g=_gg, initial_state=initial_state,
+                output_final_state=output_final_state, cu_seqlens=cu_seqlens)
+            _o = chunk_fwd_o(q=_qn, k=_kn, v=_vn, h=_h, g=_gg, scale=_scale, cu_seqlens=cu_seqlens)
+            return _o.to(q.dtype), _ht
+        except torch.OutOfMemoryError:
+            raise
+        except Exception as _e:  # noqa: BLE001
+            import sys as _sys
+            print(f"[fa2_sm80 gdn] гибрид отказал ({type(_e).__name__}: {_e}) -- иду Triton", file=_sys.stderr,
+                  flush=True)
     if _os.environ.get("FA2SM70_GDN", "0") == "1" and not head_first:
         try:
             from fa2_sm70 import gdn as _fa2_gdn

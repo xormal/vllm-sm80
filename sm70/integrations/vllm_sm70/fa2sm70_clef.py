@@ -63,6 +63,11 @@ _STREAM_FROM = int(os.environ.get("FA2SM70_CLEF_STREAM_FROM", "40"))
 _R = int(os.environ.get("FA2SM70_CLEF_R", "2"))
 _OUT = os.environ.get("FA2SM70_CLEF_OUT", "/dev/shm/fa2sm70_clef")
 _NMAX = int(os.environ.get("FA2SM70_CLEF_NMAX", "16384"))
+# [26.10] СЧЁТЧИК ВХОДЯЩИХ ТОКЕНОВ Clef (раздельно с моделью): записи и токены, отданные движку, нарастающим итогом с
+# пуска; строка в лог не чаще раза в FA2SM70_CLEF_TOKLOG секунд (по приходу записи). Токены модели (чаты и прочее) =
+# vllm:prompt_tokens_total - эти. Стоимость -- два сложения на запрос.
+_ТОК = {"записей": 0, "вход": 0, "t": 0.0}
+_ТОК_ПЕРИОД = int(os.environ.get("FA2SM70_CLEF_TOKLOG", "600"))
 _MEDIA = os.environ.get("FA2SM70_CLEF_MEDIA", "0") == "1"
 # [18.10, фаззинг 14.10 clefvb A1] Вытеснение посреди префилла: кусок не продолжает сложенное ->
 # ячейку отпустить и принять запрос заново (без этого спаны складывались дважды). Умолчание 0.
@@ -284,11 +289,44 @@ class _ЧтецСловаря:
     def __init__(self, model_dir):
         from safetensors import safe_open
         idx = json.load(open(os.path.join(model_dir, "model.safetensors.index.json")))["weight_map"]
-        self.f = safe_open(os.path.join(model_dir, idx["lm_head.weight"]), "pt")
+        путь = os.path.join(model_dir, idx["lm_head.weight"])
+        self.f = safe_open(путь, "pt")
         self.sl = self.f.get_slice("lm_head.weight")
+        # [ПАМЯТЬ 26.10] ЧТЕНИЕ СТРОК ОДНИМ ИНДЕКСИРОВАНИЕМ. Прежде mean() делал по тензору на КАЖДЫЙ токен спана
+        # (self.sl[t:t+1], 20 КБ) и ещё временный [n, 5120] fp32 под cat -- тысячи мелких выделений на запись Clef
+        # на ранге 0 (голова только там) при ~10 тыс. записей/ч и 198 потоках: дыры в аренах glibc, RSS Worker_TP0
+        # рос ~0.6 ГБ/ч до oom-kill (26.10 02:42), у TP1 роста нет. Здесь -- отображение тензора lm_head из файла
+        # (np.memmap по смещению из заголовка safetensors) и одна выборка строк: 2 выделения вместо n+1. Те же строки
+        # fp16 -> .float() -> .mean(0) над тем же тензором [n, 5120] -> результат ПОБИТОВО прежний.
+        # FA2SM70_CLEF_LEX_MMAP=0 -- прежний путь.
+        self.mm = None
+        if os.environ.get("FA2SM70_CLEF_LEX_MMAP", "1") == "1":
+            try:
+                import struct
+                import numpy as np
+                with open(путь, "rb") as fh:
+                    n = struct.unpack("<Q", fh.read(8))[0]
+                    hdr = json.loads(fh.read(n))
+                t = hdr["lm_head.weight"]
+                # BF16 (так в слепке) numpy не знает: отображаем как uint16 и переинтерпретируем в torch.bfloat16
+                self.mm_dt = {"F16": None, "BF16": "bf16"}.get(t["dtype"], "нет")
+                if self.mm_dt != "нет" and len(t["shape"]) == 2:
+                    a, b = t["data_offsets"]
+                    assert b - a == t["shape"][0] * t["shape"][1] * 2
+                    self.mm = np.memmap(путь, dtype=np.float16 if self.mm_dt is None else np.uint16, mode="r",
+                                        offset=8 + n + a, shape=tuple(t["shape"]))
+            except Exception as ex:  # noqa: BLE001
+                _лог(f"строки словаря: отображение не вышло ({type(ex).__name__}: {ex}) -- прежний путь")
+                self.mm = None
 
     def mean(self, ids):
         import torch
+        if self.mm is not None:
+            import numpy as np
+            rows = torch.from_numpy(np.asarray(self.mm[np.asarray(ids, dtype=np.int64)]))
+            if self.mm_dt == "bf16":
+                rows = rows.view(torch.bfloat16)
+            return rows.float().mean(0)
         rows = [self.sl[t:t + 1].float() for t in ids]
         return torch.cat(rows).mean(0)
 
@@ -298,7 +336,8 @@ def _приём(runner, rid, req, c):
     import torch
     N = int(req.num_prompt_tokens)
     # сверка ДО выдачи ячейки и на ОБОИХ рангах: отказ симметричен, поправка не ляжет ни на одном
-    if "n" in c and (N != int(c["n"]) or _сумма(list(req.prompt_token_ids)) != int(c["h"])):
+    # [ПАМЯТЬ 26.10] без list(): array("i", ...) берёт последовательность как есть -- без полной копии промпта
+    if "n" in c and (N != int(c["n"]) or _сумма(req.prompt_token_ids) != int(c["h"])):
         raise ValueError(f"запись в движке ({N} токенов) не равна записи эндпоинта ({c['n']})")
     if not _С.free:
         return None
@@ -310,7 +349,13 @@ def _приём(runner, rid, req, c):
     Qn, Qo = len(counts), sum(counts)
     if N > _NMAX or Qn > _QNMAX or Qo > _QOMAX or len(spans) != Qn + Qo or max(counts) > 256:
         raise ValueError(f"запрос вне пределов: N={N} Qn={Qn} Qo={Qo}")
-    spanid = torch.full((N,), -1, dtype=torch.int32)
+    # [ПАМЯТЬ 26.10] постоянный буфер вместо torch.full((N,)) на каждую запись (до 136 КБ -- у порога mmap glibc,
+    # источник дыр). req_begin копирует из обычной памяти (cudaMemcpyAsync с pageable забирает данные до возврата),
+    # значит буфер свободен сразу после вызова. Содержимое то же: -1 и номера спанов.
+    if getattr(_С, "spanid_buf", None) is None or _С.spanid_buf.numel() < N:
+        _С.spanid_buf = torch.empty(max(N, _NMAX), dtype=torch.int32)
+    spanid = _С.spanid_buf[:N]
+    spanid.fill_(-1)
     for s, (a, b) in enumerate(spans):
         if not (0 <= a < b <= N):
             raise ValueError(f"спан {s} [{a},{b}) вне [0,{N})")
@@ -318,7 +363,7 @@ def _приём(runner, rid, req, c):
     inv_len = torch.tensor([1.0 / (b - a) for a, b in spans], dtype=torch.float32)
     qidx = torch.tensor(sum(([i] * k for i, k in enumerate(counts)), []), dtype=torch.int32)
     qoff = torch.tensor([0] + list(torch.tensor(counts).cumsum(0).tolist()), dtype=torch.int32)
-    ids = list(req.prompt_token_ids)
+    ids = req.prompt_token_ids   # [ПАМЯТЬ 26.10] без list(): нужны только срезы спанов
     lex = torch.stack([_С.lm_head.mean(ids[a:b]) for a, b in spans[Qn:]]).half()
     _С.ext.req_begin(slot, N, spanid, inv_len, qidx, qoff, torch.tensor(types, dtype=torch.int32), lex)
     return slot
@@ -512,6 +557,29 @@ def _медиа_ид(tok, counts):
     return base, full
 
 
+_РАЗРЕЗ_СТРОКИ = re.compile(r"\n(?=\S)")
+
+
+def _T_префикс(T, text, K):
+    """T(text)[:K] без токенизации всего text. Префикс режется ТОЛЬКО после "\\n" перед непробельным символом --
+    граница предразбиения Qwen, BPE её не пересекает: T(text[:b]) -- ровно начало T(text). Префикс удлиняется вдвое,
+    пока токенов меньше K; нет границы -- целиком, как раньше. Короткий text -- целиком (прежний путь)."""
+    if K <= 0:
+        return []
+    if len(text) <= max(8 * K, 1 << 16):
+        return T(text)[:K]
+    cut = 4 * K
+    while cut < len(text):
+        m = _РАЗРЕЗ_СТРОКИ.search(text, cut)
+        if m is None:
+            break
+        part = T(text[:m.end()])
+        if len(part) >= K:
+            return part[:K]
+        cut = 2 * m.end()
+    return T(text)[:K]
+
+
 def закодировать(tok, record, max_length=16384, media=None):
     """повтор encode_record из релиза Clef; media = _медиа_ид(...) или None.
     Возвращает (запись для спанов, вопросы, запись для движка) -- без картинок обе записи равны."""
@@ -542,12 +610,13 @@ def закодировать(tok, record, max_length=16384, media=None):
         qs.append((str(qid), QUESTION_TYPES[str(q["type"])], qspan, ospans, oids))
     prefix = T(f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n<|im_start|>user\nSTATE:\n")
     suffix = T("\n<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nJOINT SCHEMA DECISIONS:")
-    state = T(_render(record["state"]))
     m_eng, m_full = media if media is not None else ([], [])
     fixed = len(prefix) + len(m_full) + len(schema) + len(suffix)
     if fixed > max_length:
         raise ValueError(f"schema requires {fixed} tokens before state; maximum is {max_length}")
-    state = state[: max_length - fixed]
+    # [ПАМЯТЬ 27.10] только нужный префикс state (было: T(весь state)[:K] -- десятки МБ текста токенизировались
+    # целиком в цикле событий ради <= 34K токенов: всплеск ГБ и стоп API-сервера). Побитово то же, см. _T_префикс.
+    state = _T_префикс(T, _render(record["state"]), max_length - fixed)
     off = len(prefix) + len(m_full) + len(state)
     ids = prefix + m_full + state + schema + suffix
     eng = prefix + m_eng + state + schema + suffix
@@ -589,6 +658,8 @@ def установить_сервер():
 
     _исх = gen.register_generate_api_routers
     _сем = [None]
+    _вход = [None]
+    _ДОПУСК = int(os.environ.get("FA2SM70_CLEF_ADMIT", str(2 * _R)))
     _мед = [None, None]          # загрузчик картинок (как у чата), процессор изображений
 
     def _загрузчик(ec):
@@ -615,8 +686,77 @@ def установить_сервер():
         from fastapi import Request
         from fastapi.responses import JSONResponse
 
+        # [ПАМЯТЬ 27.10] ОХРАНА ОТ ОГРОМНЫХ ТЕЛ (fa2sm80_bigguard): тела >= 16 МБ по одному, проверка памяти до
+        # чтения тела, нехватка -> ожидание, потом 503. Ставится РАНЬШЕ прибора ниже: прибор -- внешний слой (ВХОД
+        # пишется сразу, ВЫХОД -- с итоговым кодом, в т.ч. 503).
+        try:
+            import fa2sm80_bigguard
+
+            fa2sm80_bigguard.поставить(app, _лог)
+        except Exception as e:  # noqa: BLE001
+            _лог(f"охрана огромных тел НЕ поставлена: {type(e).__name__}: {e}")
+
+        # [ПАМЯТЬ 27.10] ПРИБОР ВХОДЯЩИХ ЗАПРОСОВ API-сервера (диагностика, без ограничений для клиентов). API-сервер
+        # раздувается до 9-12 ГБ за минуты после старта (oom-kill по кругу); виновника не видно в журнале доступа
+        # (строка пишется при ответе). Пишем: крупные запросы при поступлении/ответе; и при скачке RSS > 1 ГБ за 10 с --
+        # список запросов в обработке (путь, размер, возраст).
+        import threading as _thr
+        _в_обработке = {}
+        _БОЛЬШОЙ_ВХОД = int(os.environ.get("FA2SM80_REQLOG_KB", "512")) * 1024
+
+        def _rss_мб():
+            try:
+                return int(open("/proc/self/status").read().split("RssAnon:")[1].split()[0]) // 1024
+            except Exception:  # noqa: BLE001
+                return -1
+
+        @app.middleware("http")
+        async def _fa2_вход(request, call_next):
+            cl = int(request.headers.get("content-length") or 0)
+            кл = request.client.host if request.client else "?"
+            ключ = id(request)
+            _в_обработке[ключ] = (request.method, request.url.path, cl, time.time(), кл)
+            большой = cl >= _БОЛЬШОЙ_ВХОД
+            if большой:
+                _лог(f"ВХОД {request.method} {request.url.path} {cl / 2**20:.1f} МБ от {кл}, RSS API {_rss_мб()} МБ")
+            t0 = time.time()
+            try:
+                resp = await call_next(request)
+            finally:
+                _в_обработке.pop(ключ, None)
+            dt = time.time() - t0
+            if большой or dt > 60:
+                _лог(f"ВЫХОД {request.url.path} {cl / 2**20:.1f} МБ: {resp.status_code} за {dt:.1f} с, RSS API {_rss_мб()} МБ")
+            return resp
+
+        def _сторож():
+            прежн = _rss_мб()
+            while True:
+                time.sleep(10)
+                r = _rss_мб()
+                if r - прежн > 1024:
+                    сейчас = time.time()
+                    спис = sorted(_в_обработке.values(), key=lambda v: -v[2])[:12]
+                    _лог(f"СКАЧОК RSS API {прежн} -> {r} МБ за 10 с; в обработке {len(_в_обработке)}: " + "; ".join(
+                        f"{m} {pth} {c / 2**20:.1f}МБ {сейчас - t:.0f}с {k}" for m, pth, c, t, k in спис))
+                прежн = r
+
+        _thr.Thread(target=_сторож, name="fa2-reqwatch", daemon=True).start()
+
+        # [ПАМЯТЬ 26.10] ШЛЮЗ ДОПУСКА. Семафор движка (_сем, FA2SM70_CLEF_R) стоял ПОСЛЕ разбора тела, загрузки картинок
+        # и токенизации: после падения клиент присылал накопленное разом, сотни запросов ждали семафор, держа списки
+        # токенов и раскодированные изображения -- API-сервер 1.3 -> 4.3 ГБ за 10 мин, cgroup 14 ГБ, oom-kill воркера,
+        # и так по кругу (26.10 20:54 -> 23:11, 13 перезапусков). Теперь до шлюза запрос -- лёгкая корутина с НЕпрочитанным
+        # телом; разбор и подготовка -- только у FA2SM70_CLEF_ADMIT допущенных (по умолчанию 2*R: подготовка следующих
+        # идёт, пока считаются текущие). Отказов нет -- поведение для клиента прежнее, меняется только память.
         @app.post("/v1/systemone")
         async def systemone(raw: Request):
+            if _вход[0] is None:
+                _вход[0] = asyncio.Semaphore(_ДОПУСК)
+            async with _вход[0]:
+                return await _systemone(raw)
+
+        async def _systemone(raw):
             from vllm.inputs import TokensPrompt
             from vllm.sampling_params import SamplingParams
             try:
@@ -652,6 +792,11 @@ def установить_сервер():
             except Exception as e:  # noqa: BLE001
                 return JSONResponse({"error": {"message": str(e), "type": "invalid_request_error"}}, status_code=400)
             key = uuid.uuid4().hex
+            _ТОК["записей"] += 1
+            _ТОК["вход"] += len(eng)
+            if time.time() - _ТОК["t"] >= _ТОК_ПЕРИОД:
+                _ТОК["t"] = time.time()
+                _лог(f"итого Clef с пуска: записей {_ТОК['записей']}, входящих токенов {_ТОК['вход']}")
             spans = [list(q[2]) for q in enc] + [list(s) for q in enc for s in q[3]]
             extra = {"fa2sm70_clef": {"key": key, "spans": spans, "counts": [len(q[3]) for q in enc],
                                       "types": [q[1] for q in enc], "n": len(ids), "h": _сумма(ids)}}

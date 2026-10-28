@@ -168,11 +168,27 @@ class BaseRenderer(ABC):
         if "prompt_token_ids" not in prompt and "prompt_embeds" not in prompt:
             prompt = params.apply_pre_tokenization(self.tokenizer, prompt)
 
-            tokenizer = self.get_async_tokenizer()
-            prompt_token_ids = await tokenizer.encode(
-                prompt["prompt"],
-                **params.get_encode_kwargs(),
-            )
+            # [ПАМЯТЬ 27.10] ОГРОМНЫЙ ПРОМПТ ПРИ ПРОВЕРКЕ ДЛИНЫ. Чат на 394.6 МБ (27.10 13:20) заведомо длиннее контекста,
+            # но до проверки длины строился полный список int (~36 Б/токен, ~60 млн токенов) -- API 9 ГБ, oom-kill.
+            # Здесь номера огромного текста копятся кусками в array('i') (4 Б/токен) в отдельном потоке; сверх
+            # лимита -- та же проверка apply_post_tokenization бросает ту же ошибку (то же число токенов), список не
+            # строится. Только когда после токенизации нет ничего, кроме проверки длины (нет набивки и усечения).
+            ids = None
+            if (params.max_input_tokens is not None and params.pad_prompt_tokens is None
+                    and params.truncate_prompt_tokens is None):
+                from vllm.utils.async_utils import большой_текст_ids
+
+                ids = await большой_текст_ids(self.get_tokenizer(), prompt["prompt"], params.get_encode_kwargs())
+                if ids is not None and len(ids) > params.max_input_tokens:
+                    params.apply_post_tokenization(self.tokenizer, TokensPrompt(prompt_token_ids=ids))  # type: ignore[typeddict-item]
+            if ids is not None:
+                prompt_token_ids = ids.tolist()
+            else:
+                tokenizer = self.get_async_tokenizer()
+                prompt_token_ids = await tokenizer.encode(
+                    prompt["prompt"],
+                    **params.get_encode_kwargs(),
+                )
 
             prompt = TokensPrompt(prompt_token_ids=prompt_token_ids, **prompt)
 

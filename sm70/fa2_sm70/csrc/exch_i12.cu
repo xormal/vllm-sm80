@@ -197,6 +197,7 @@ torch::Tensor unpack_add_i12(torch::Tensor base, torch::Tensor pk, torch::Tensor
 #include <cuda.h>
 #include <dlfcn.h>
 #include <string>
+#include "ar1ll.cuh"
 
 // Ручка на СВОЙ буфер -- её отдают соседу один раз при поднятии (через обычный обмен объектами).
 // ТРЕБОВАНИЕ К ВХОДУ: тензор обязан быть ЦЕЛЫМ ВЫДЕЛЕНИЕМ, а не видом внутри чужого блока.
@@ -706,6 +707,26 @@ static void ar1h_all_reduce_out(at::Tensor y, at::Tensor out, int64_t my_slot, i
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+// AR1LL (ar1ll.cuh): my_cells/peer_cells -- адреса устройства ячеек места [2 чётности][slot_cells] в ОТДЕЛЬНОМ
+// сегменте хоста; seq -- окно счётчиков блоков места (своё, не AR1H).
+static void ar1ll_all_reduce_out(at::Tensor y, at::Tensor out, int64_t my_cells, int64_t peer_cells,
+                                 at::Tensor seq, at::Tensor срыв, int64_t slot_cells) {
+  TORCH_CHECK(y.is_cuda() && y.is_contiguous() && y.scalar_type() == at::kHalf, "ar1ll: y -- непрерывный fp16");
+  TORCH_CHECK(out.is_contiguous() && out.numel() == y.numel(), "ar1ll: выход");
+  const long n = y.numel();
+  TORCH_CHECK(n % 2 == 0 && ((reinterpret_cast<uintptr_t>(y.data_ptr()) | reinterpret_cast<uintptr_t>(out.data_ptr())) & 3) == 0,
+              "ar1ll: чётное число и выравнивание 4 Б");
+  const long n2 = n / 2, cells = (n2 + 2) / 3;
+  TORCH_CHECK(cells <= slot_cells, "ar1ll: ячеек места меньше нужного");
+  const int bl = (int)((cells + ar1ll::THR - 1) / ar1ll::THR);
+  TORCH_CHECK(seq.numel() >= bl, "ar1ll: окно счётчиков меньше числа блоков");
+  if (n == 0) return;
+  ar1ll::ar1ll_kernel<<<bl, ar1ll::THR, 0, at::cuda::getCurrentCUDAStream()>>>(
+      (const uint32_t*)y.data_ptr(), (uint32_t*)out.data_ptr(), (uint4*)my_cells, (const uint4*)peer_cells,
+      seq.data_ptr<int>(), срыв.data_ptr<int>(), n2, slot_cells);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 // Закрепить чужое (shm) отображение хоста за CUDA и вернуть адрес устройства.
 static int64_t host_register(int64_t ptr, int64_t nbytes) {
   C10_CUDA_CHECK(cudaHostRegister((void*)ptr, (size_t)nbytes, cudaHostRegisterMapped | cudaHostRegisterPortable));
@@ -743,6 +764,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("poke_peer", &poke_peer, "ЯДРОМ записать свой тензор в память соседа (контроль)");
   m.def("ar1_all_reduce_out", &ar1_all_reduce_out, "сведение двух карт ОДНИМ ядром (окна флагов по кускам)");
   m.def("ar1h_all_reduce_out", &ar1h_all_reduce_out, "сведение двух карт одним ядром ЧЕРЕЗ ПАМЯТЬ ХОСТА");
+  m.def("ar1ll_all_reduce_out", &ar1ll_all_reduce_out, "сведение двух карт: данные с номером в 16 Б записи (хост)");
   m.def("host_register", &host_register, "cudaHostRegister(mapped|portable) -> адрес устройства");
   m.def("ar2_counter_read", &ar2_counter_read,
         "счётчик запусков обмена, переживающий граф; reset=true обнуляет",

@@ -56,15 +56,23 @@ class KVCacheCoordinator(ABC):
         self.split_pools = (
             _os.environ.get("FA2SM70_SPLIT_POOLS", "0") == "1" and _n_groups > 1
         )
-        _mk = lambda: BlockPool(
-            kv_cache_config.num_blocks,
+        _mk = lambda n=kv_cache_config.num_blocks: BlockPool(
+            n,
             enable_caching,
             hash_block_size,
             enable_kv_cache_events,
             metrics_collector,
         )
         if self.split_pools:
-            self.block_pools = [_mk() for _ in range(_n_groups)]
+            # [25.10] У пула GDN может быть своё число блоков (FA2SM80_GDN_BLOCKS).
+            from vllm.v1.core.kv_cache_utils import fa2sm80_gdn_blocks
+            from vllm.v1.kv_cache_interface import MambaSpec
+
+            _гдн = fa2sm80_gdn_blocks()
+            self.block_pools = [
+                _mk(_гдн) if _гдн > 0 and isinstance(g.kv_cache_spec, MambaSpec) else _mk()
+                for g in kv_cache_config.kv_cache_groups
+            ]
         else:
             _one = _mk()
             self.block_pools = [_one] * max(1, _n_groups)

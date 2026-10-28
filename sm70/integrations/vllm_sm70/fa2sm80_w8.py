@@ -47,6 +47,13 @@ _БУФ_МАКС = 96 * 2**20   # элементов: деквант-буфер 
 # (масштаб = max|x| строки / 127), T каналов с наибольшим max|x| в этом вызове остаются fp16 (схема LLM.int8);
 # умножение -- прежним путём (FA2SM80_W8A8_SIM_G -- масштаб по группам K). Ничего не ускоряет: отвечает на вопрос, держит ли такой путь точность Clef, ДО ядра.
 _W8A8_SIM = int(os.environ.get("FA2SM80_W8A8_SIM", "-1"))
+# [25.10] Перестановка A/B для M<=8 (w8a16_sw_sm80.cuh): вес -- операнд A, прямо в регистры. Тот же раздел K между
+# варпами -> побитно тот же выход (стенд bench/sa/w8sw_test). Таблица: (nw, warps) нынешней конфигурации -> (jw, d)
+# лучшего побитного варианта; формы с warps=2 (qkvz, qkv внимания) новым ядром медленнее -- остаются прежним.
+_W8SW = os.environ.get("FA2SM80_W8SW", "0") == "1"
+_W8SW_ТАБЛ = {(4, 4): (2, 2), (4, 8): (2, 2), (2, 4): (2, 4)}   # словарь (N=124160) -- прежним: не быстрее
+_W8SW_СВЕРКА = int(os.environ.get("FA2SM80_W8SW_CHECK", "0"))
+_W8SW_СВЕРЕНО = {}
 
 
 # FA2SM80_W8A8_SIM_G=G: масштаб на строку И группу из G каналов K (G=128 -- группы весов), иначе на строку.
@@ -428,6 +435,20 @@ def установить():
                 return torch.cat([ext.w8a16_sm80_mm(x[i:i + мм], wf, meta, N, sp, т["nw"], wa, st)
                                   for i in range(0, m, мм)], 0)
             wa, st, sp = т["cfg"][_корзина(m)]
+            if _W8SW and m <= 8 and N <= 65536:
+                вар = _W8SW_ТАБЛ.get((т["nw"], wa))
+                if вар is not None:
+                    nbk = N // (8 * т["nw"])
+                    спл = sp if sp > 0 else max(1, min((4 * 96 + nbk - 1) // nbk, (K // 64) // (4 * wa)))
+                    if спл == 1:
+                        y = ext.w8a16_sm80_sw(x, wf, meta, N, т["nw"], wa, вар[0], вар[1])
+                        if _W8SW_СВЕРКА and _W8SW_СВЕРЕНО.get((K, N), 0) < _W8SW_СВЕРКА \
+                                and not torch.cuda.is_current_stream_capturing():
+                            _W8SW_СВЕРЕНО[(K, N)] = _W8SW_СВЕРЕНО.get((K, N), 0) + 1
+                            y0 = ext.w8a16_sm80_mm(x, wf, meta, N, sp, т["nw"], wa, st)
+                            разн = int((y.view(torch.int16) != y0.view(torch.int16)).sum())
+                            _лог(f"W8SW сверка K={K} N={N} M={m}: различий {разн} из {y.numel()}")
+                        return y
             return ext.w8a16_sm80_mm(x, wf, meta, N, sp, т["nw"], wa, st)
         _С["большое"] += 1
         if m <= _ПРЯМОЙ_ММАКС and N % 128 == 0:

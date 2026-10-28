@@ -67,7 +67,51 @@ torch::Tensor cg_mm(torch::Tensor x, torch::Tensor w, c10::optional<torch::Tenso
   return y;
 }
 
+
+// ---- SiLU*mul декода (25.10): как vllm::act_and_mul_kernel<silu, act_first>, но сетка (d/2048, M) вместо M блоков.
+// Побитно: s = half(x / (1 + expf(-x))), out = half(float(s) * float(y)); файл собирается без --use_fast_math.
+__global__ void silu_mul_kernel(const __half* __restrict__ gu, __half* __restrict__ out, int d) {
+  const int row = blockIdx.y;
+  const int i = (blockIdx.x * blockDim.x + threadIdx.x) * 8;
+  if (i >= d) return;
+  const __half* x = gu + (long)row * 2 * d;
+  const __half* y = x + d;
+  __half* o = out + (long)row * d;
+  if (i + 8 <= d) {
+    const uint4 xv = *reinterpret_cast<const uint4*>(x + i), yv = *reinterpret_cast<const uint4*>(y + i);
+    const __half* xh = reinterpret_cast<const __half*>(&xv);
+    const __half* yh = reinterpret_cast<const __half*>(&yv);
+    uint4 ov;
+    __half* oh = reinterpret_cast<__half*>(&ov);
+#pragma unroll
+    for (int j = 0; j < 8; ++j) {
+      const float xf = __half2float(xh[j]);
+      const __half s = __float2half(xf / (1.0f + expf(-xf)));
+      oh[j] = __float2half(__half2float(s) * __half2float(yh[j]));
+    }
+    *reinterpret_cast<uint4*>(o + i) = ov;
+  } else {
+    for (int k = i; k < d; ++k) {
+      const float xf = __half2float(x[k]);
+      const __half s = __float2half(xf / (1.0f + expf(-xf)));
+      o[k] = __float2half(__half2float(s) * __half2float(y[k]));
+    }
+  }
+}
+
+void silu_mul_f16(torch::Tensor gu, torch::Tensor out) {
+  TORCH_CHECK(gu.is_cuda() && gu.dtype() == torch::kFloat16 && gu.is_contiguous() && gu.dim() == 2);
+  const int M = (int)gu.size(0), d = (int)(gu.size(1) / 2);
+  TORCH_CHECK(out.is_contiguous() && out.size(0) == M && out.size(1) == d && d % 8 == 0);
+  if (M == 0) return;
+  const dim3 grid((d + 2047) / 2048, M);
+  silu_mul_kernel<<<grid, 256, 0, at::cuda::getCurrentCUDAStream()>>>(
+      reinterpret_cast<const __half*>(gu.data_ptr<at::Half>()), reinterpret_cast<__half*>(out.data_ptr<at::Half>()), d);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("silu_mul_f16", &silu_mul_f16, "SiLU*mul декода широкой сеткой (побитно как vLLM)");
   m.def("cg_mm", &cg_mm, "fp16 GEMM y = x w^T, инвариантный к пачке (CUTLASS sm80, без slice-K)",
         py::arg("x"), py::arg("w"), py::arg("out") = py::none(), py::arg("cfg") = 0);
   m.attr("NCFG") = 6;

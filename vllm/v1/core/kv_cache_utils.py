@@ -825,6 +825,25 @@ def get_max_concurrency_for_kv_cache_config(
     return max_concurrency
 
 
+def fa2sm80_gdn_blocks() -> int:
+    """[25.10] Блоков в пуле состояний GDN при раздельных пулах (0 -- как у внимания)."""
+    if os.environ.get("FA2SM70_SPLIT_POOLS", "0") != "1":
+        return 0
+    return int(os.environ.get("FA2SM80_GDN_BLOCKS", "0"))
+
+
+def fa2sm80_gdn_layers(kv_cache_groups) -> set[str]:
+    """Имена слоёв групп состояний (MambaSpec)."""
+    from vllm.v1.kv_cache_interface import MambaSpec
+
+    return {
+        n
+        for g in kv_cache_groups
+        if isinstance(g.kv_cache_spec, MambaSpec)
+        for n in g.layer_names
+    }
+
+
 def may_override_num_blocks(vllm_config: VllmConfig, num_blocks: int) -> int:
     """
     Override the number of kv cache blocks if `num_gpu_blocks_override` is set.
@@ -1186,8 +1205,28 @@ def get_kv_cache_config_from_groups(
                 int(available_memory // max(sz for _, sz in _per_layer) // group_size),
                 max(sz for _, sz in _per_layer) / 2**20,
             )
+            # [25.10] СВОЁ ЧИСЛО БЛОКОВ У ПУЛА СОСТОЯНИЙ (FA2SM80_GDN_BLOCKS). Запрос держит в
+            # пуле GDN 1 + k блоков (рабочее состояние + по слоту на черновой токен), а в пуле
+            # внимания при 8K -- один: при равном числе блоков потолок даёт пул GDN (33 рабочих
+            # блока: k=3 -> 8 запросов, k=4 -> 6), а блок внимания стоит в 7 раз дороже блока
+            # GDN. Здесь пул GDN получает заданное число блоков, внимание -- остаток памяти.
+            # num_blocks конфига = блоки внимания; пулы GDN считает fa2sm80_gdn_blocks().
+            _гдн_слои = fa2sm80_gdn_layers(kv_cache_groups)
+            _гдн = fa2sm80_gdn_blocks()
+            _блоков = {}
+            if _гдн > 0 and _гдн_слои:
+                _sum_m = sum(sz for n, sz in _per_layer if n in _гдн_слои)
+                num_blocks = may_override_num_blocks(
+                    vllm_config, int((available_memory - _гдн * _sum_m) // (_sum_page - _sum_m))
+                )
+                _блоков = {n: _гдн for n in _гдн_слои}
+                logger.info(
+                    "[fa2_sm80] ПУЛ GDN %d блоков (%.2f МиБ/блок), пул внимания %d блоков "
+                    "(%.2f МиБ/блок)", _гдн, _sum_m / 2**20, num_blocks,
+                    (_sum_page - _sum_m) / 2**20,
+                )
             kv_cache_tensors = [
-                KVCacheTensor(size=sz * num_blocks, shared_by=[name])
+                KVCacheTensor(size=sz * _блоков.get(name, num_blocks), shared_by=[name])
                 for name, sz in _per_layer
             ]
             return KVCacheConfig(
@@ -1753,9 +1792,16 @@ def get_kv_cache_configs(
     for kv_cache_config in kv_cache_configs:
         num_blocks_old = kv_cache_config.num_blocks
         kv_cache_config.num_blocks = min_num_blocks
+        # [25.10] Буферы пула GDN при FA2SM80_GDN_BLOCKS сжимать нельзя: их число блоков своё.
+        _гдн_слои = (
+            fa2sm80_gdn_layers(kv_cache_config.kv_cache_groups)
+            if fa2sm80_gdn_blocks() > 0 else set()
+        )
 
         # Shrink tensor size proportionally
         for tensor in kv_cache_config.kv_cache_tensors:
+            if _гдн_слои and set(tensor.shared_by) <= _гдн_слои:
+                continue
             assert tensor.size % num_blocks_old == 0
             tensor.size = tensor.size // num_blocks_old * min_num_blocks
 
