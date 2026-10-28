@@ -1,0 +1,65 @@
+{
+  "steps": 4098,
+  "admission_probe": false,
+  "all_finished": true,
+  "scheduler_preemptions": 286,
+  "scheduled_recompute_tokens_after_preemption": 14045502,
+  "requests": [
+    {
+      "id": "0",
+      "output_tokens": 2048,
+      "preemptions": 0,
+      "first_output_step": 5,
+      "last_output_step": 2052
+    },
+    {
+      "id": "1",
+      "output_tokens": 2048,
+      "preemptions": 0,
+      "first_output_step": 11,
+      "last_output_step": 2058
+    },
+    {
+      "id": "2",
+      "output_tokens": 2048,
+      "preemptions": 0,
+      "first_output_step": 18,
+      "last_output_step": 2065
+    },
+    {
+      "id": "3",
+      "output_tokens": 2048,
+      "preemptions": 0,
+      "first_output_step": 24,
+      "last_output_step": 2071
+    },
+    {
+      "id": "4",
+      "output_tokens": 2048,
+      "preemptions": 0,
+      "first_output_step": 30,
+      "last_output_step": 2077
+    },
+    {
+      "id": "5",
+      "output_tokens": 2048,
+      "preemptions": 0,
+      "first_output_step": 36,
+      "last_output_step": 2083
+    },
+    {
+      "id": "6",
+      "output_tokens": 2048,
+      "preemptions": 0,
+      "first_output_step": 42,
+      "last_output_step": 2089
+    },
+    {
+      "id": "7",
+      "output_tokens": 2048,
+      "preemptions": 286,
+      "first_output_step": 48,
+      "last_output_step": 4097
+    }
+  ]
+}
