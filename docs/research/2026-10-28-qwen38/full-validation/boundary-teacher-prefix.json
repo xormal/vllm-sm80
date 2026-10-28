@@ -1,0 +1,55 @@
+{
+  "text": "КОД: 124465\n\nРе",
+  "initial_prefix_tokens": [
+    159885,
+    23355,
+    25,
+    220,
+    16,
+    17
+  ],
+  "steps": [
+    {
+      "step": 0,
+      "prompt_tokens": 49153,
+      "prefix_text": "КОД: 12",
+      "next_text": "4",
+      "seconds": 10.77673068700824
+    },
+    {
+      "step": 1,
+      "prompt_tokens": 49154,
+      "prefix_text": "КОД: 124",
+      "next_text": "4",
+      "seconds": 10.705318658030592
+    },
+    {
+      "step": 2,
+      "prompt_tokens": 49155,
+      "prefix_text": "КОД: 1244",
+      "next_text": "6",
+      "seconds": 10.768822590005584
+    },
+    {
+      "step": 3,
+      "prompt_tokens": 49156,
+      "prefix_text": "КОД: 12446",
+      "next_text": "5",
+      "seconds": 10.746833700977731
+    },
+    {
+      "step": 4,
+      "prompt_tokens": 49157,
+      "prefix_text": "КОД: 124465",
+      "next_text": "\n\n",
+      "seconds": 10.737300031003542
+    },
+    {
+      "step": 5,
+      "prompt_tokens": 49158,
+      "prefix_text": "КОД: 124465\n\n",
+      "next_text": "Ре",
+      "seconds": 10.748533545993268
+    }
+  ]
+}

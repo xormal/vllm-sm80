@@ -1,0 +1,690 @@
+[
+  {
+    "root": "../state/acceptance/ab-baseline-1/recall-distinct",
+    "requests": 16,
+    "scored": 16,
+    "correct_first": 16,
+    "correct_last": 14,
+    "correct_both": 14,
+    "rows": [
+      {
+        "file": "request-0.json",
+        "expected": "124465",
+        "first_line": "КОД: 124465",
+        "last_line": "И жизнь эта была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была вечной. И вечность была рекой. И река была вечностью. И вечность была кодом. И код был вечностью. И вечность была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была рекой. И река была жизнью. И жизнь была кодом. И код был жизнью. И жизнь была",
+        "first_code": "124465",
+        "last_code": null,
+        "correct_first": true,
+        "correct_last": false,
+        "correct_both": false
+      },
+      {
+        "file": "request-1.json",
+        "expected": "125196",
+        "first_line": "КОД: 125196",
+        "last_line": "ИТОГОВЫЙ КОД: 125196",
+        "first_code": "125196",
+        "last_code": "125196",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-10.json",
+        "expected": "131775",
+        "first_line": "КОД: 131775",
+        "last_line": "ИТОГОВЫЙ КОД: 131775",
+        "first_code": "131775",
+        "last_code": "131775",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-11.json",
+        "expected": "132506",
+        "first_line": "КОД: 132506",
+        "last_line": "ИТОГОВЫЙ КОД: 132506",
+        "first_code": "132506",
+        "last_code": "132506",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-12.json",
+        "expected": "133237",
+        "first_line": "КОД: 133237",
+        "last_line": "ИТОГОВЫЙ КОД: 133237",
+        "first_code": "133237",
+        "last_code": "133237",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-13.json",
+        "expected": "133968",
+        "first_line": "КОД: 133968",
+        "last_line": "ИТОГОВЫЙ КОД: 133968",
+        "first_code": "133968",
+        "last_code": "133968",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-14.json",
+        "expected": "134699",
+        "first_line": "КОД: 134699",
+        "last_line": "ИТОГОВЫЙ КОД: 134699",
+        "first_code": "134699",
+        "last_code": "134699",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-15.json",
+        "expected": "135430",
+        "first_line": "КОД: 135430",
+        "last_line": "ИТОГОВЫЙ КОД: 135430",
+        "first_code": "135430",
+        "last_code": "135430",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-2.json",
+        "expected": "125927",
+        "first_line": "КОД: 125927",
+        "last_line": "И он пошел чинить часы.",
+        "first_code": "125927",
+        "last_code": null,
+        "correct_first": true,
+        "correct_last": false,
+        "correct_both": false
+      },
+      {
+        "file": "request-3.json",
+        "expected": "126658",
+        "first_line": "КОД: 126658",
+        "last_line": "ИТОГОВЫЙ КОД: 126658",
+        "first_code": "126658",
+        "last_code": "126658",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-4.json",
+        "expected": "127389",
+        "first_line": "КОД: 127389",
+        "last_line": "ИТОГОВЫЙ КОД: 127389",
+        "first_code": "127389",
+        "last_code": "127389",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-5.json",
+        "expected": "128120",
+        "first_line": "КОД: 128120",
+        "last_line": "ИТОГОВЫЙ КОД: 128120",
+        "first_code": "128120",
+        "last_code": "128120",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-6.json",
+        "expected": "128851",
+        "first_line": "КОД: 128851",
+        "last_line": "ИТОГОВЫЙ КОД: 128851",
+        "first_code": "128851",
+        "last_code": "128851",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-7.json",
+        "expected": "129582",
+        "first_line": "КОД: 129582",
+        "last_line": "ИТОГОВЫЙ КОД: 129582",
+        "first_code": "129582",
+        "last_code": "129582",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-8.json",
+        "expected": "130313",
+        "first_line": "КОД: 130313",
+        "last_line": "Итоговый код: 130313",
+        "first_code": "130313",
+        "last_code": "130313",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-9.json",
+        "expected": "131044",
+        "first_line": "КОД: 131044",
+        "last_line": "ИТОГОВЫЙ КОД: 131044",
+        "first_code": "131044",
+        "last_code": "131044",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      }
+    ]
+  },
+  {
+    "root": "../state/acceptance/ab-candidate-1/recall-distinct",
+    "requests": 16,
+    "scored": 16,
+    "correct_first": 16,
+    "correct_last": 16,
+    "correct_both": 16,
+    "rows": [
+      {
+        "file": "request-0.json",
+        "expected": "124465",
+        "first_line": "КОД: 124465",
+        "last_line": "ИТОГОВЫЙ КОД: 124465",
+        "first_code": "124465",
+        "last_code": "124465",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-1.json",
+        "expected": "125196",
+        "first_line": "КОД: 125196",
+        "last_line": "ИТОГОВЫЙ КОД: 125196",
+        "first_code": "125196",
+        "last_code": "125196",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-10.json",
+        "expected": "131775",
+        "first_line": "КОД: 131775",
+        "last_line": "ИТОГОВЫЙ КОД: 131775",
+        "first_code": "131775",
+        "last_code": "131775",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-11.json",
+        "expected": "132506",
+        "first_line": "КОД: 132506",
+        "last_line": "ИТОГОВЫЙ КОД: 132506",
+        "first_code": "132506",
+        "last_code": "132506",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-12.json",
+        "expected": "133237",
+        "first_line": "КОД: 133237",
+        "last_line": "ИТОГОВЫЙ КОД: 133237",
+        "first_code": "133237",
+        "last_code": "133237",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-13.json",
+        "expected": "133968",
+        "first_line": "КОД: 133968",
+        "last_line": "ИТОГОВЫЙ КОД: 133968",
+        "first_code": "133968",
+        "last_code": "133968",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-14.json",
+        "expected": "134699",
+        "first_line": "КОД: 134699",
+        "last_line": "ИТОГОВЫЙ КОД: 134699",
+        "first_code": "134699",
+        "last_code": "134699",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-15.json",
+        "expected": "135430",
+        "first_line": "КОД: 135430",
+        "last_line": "ИТОГОВЫЙ КОД: 135430",
+        "first_code": "135430",
+        "last_code": "135430",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-2.json",
+        "expected": "125927",
+        "first_line": "КОД: 125927",
+        "last_line": "ИТОГОВЫЙ КОД: 125927",
+        "first_code": "125927",
+        "last_code": "125927",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-3.json",
+        "expected": "126658",
+        "first_line": "КОД: 126658",
+        "last_line": "ИТОГОВЫЙ КОД: 126658",
+        "first_code": "126658",
+        "last_code": "126658",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-4.json",
+        "expected": "127389",
+        "first_line": "КОД: 127389",
+        "last_line": "ИТОГОВЫЙ КОД: 127389",
+        "first_code": "127389",
+        "last_code": "127389",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-5.json",
+        "expected": "128120",
+        "first_line": "КОД: 128120",
+        "last_line": "ИТОГОВЫЙ КОД: 128120",
+        "first_code": "128120",
+        "last_code": "128120",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-6.json",
+        "expected": "128851",
+        "first_line": "КОД: 128851",
+        "last_line": "ИТОГОВЫЙ КОД: 128851",
+        "first_code": "128851",
+        "last_code": "128851",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-7.json",
+        "expected": "129582",
+        "first_line": "КОД: 129582",
+        "last_line": "ИТОГОВЫЙ КОД: 129582",
+        "first_code": "129582",
+        "last_code": "129582",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-8.json",
+        "expected": "130313",
+        "first_line": "КОД: 130313",
+        "last_line": "ИТОГОВЫЙ КОД: 130313",
+        "first_code": "130313",
+        "last_code": "130313",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-9.json",
+        "expected": "131044",
+        "first_line": "КОД: 131044",
+        "last_line": "ИТОГОВЫЙ КОД: 131044",
+        "first_code": "131044",
+        "last_code": "131044",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      }
+    ]
+  },
+  {
+    "root": "../state/acceptance/resume-admission-plain/recall-distinct",
+    "requests": 16,
+    "scored": 16,
+    "correct_first": 16,
+    "correct_last": 16,
+    "correct_both": 16,
+    "rows": [
+      {
+        "file": "request-0.json",
+        "expected": "124465",
+        "first_line": "КОД: 124465",
+        "last_line": "ИТОГОВЫЙ КОД: 124465",
+        "first_code": "124465",
+        "last_code": "124465",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-1.json",
+        "expected": "125196",
+        "first_line": "КОД: 125196",
+        "last_line": "ИТОГОВЫЙ КОД: 125196",
+        "first_code": "125196",
+        "last_code": "125196",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-10.json",
+        "expected": "131775",
+        "first_line": "КОД: 131775",
+        "last_line": "ИТОГОВЫЙ КОД: 131775",
+        "first_code": "131775",
+        "last_code": "131775",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-11.json",
+        "expected": "132506",
+        "first_line": "КОД: 132506",
+        "last_line": "ИТОГОВЫЙ КОД: 132506",
+        "first_code": "132506",
+        "last_code": "132506",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-12.json",
+        "expected": "133237",
+        "first_line": "КОД: 133237",
+        "last_line": "ИТОГОВЫЙ КОД: 133237",
+        "first_code": "133237",
+        "last_code": "133237",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-13.json",
+        "expected": "133968",
+        "first_line": "КОД: 133968",
+        "last_line": "ИТОГОВЫЙ КОД: 133968",
+        "first_code": "133968",
+        "last_code": "133968",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-14.json",
+        "expected": "134699",
+        "first_line": "КОД: 134699",
+        "last_line": "ИТОГОВЫЙ КОД: 134699",
+        "first_code": "134699",
+        "last_code": "134699",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-15.json",
+        "expected": "135430",
+        "first_line": "КОД: 135430",
+        "last_line": "ИТОГОВЫЙ КОД: 135430",
+        "first_code": "135430",
+        "last_code": "135430",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-2.json",
+        "expected": "125927",
+        "first_line": "КОД: 125927",
+        "last_line": "ИТОГОВЫЙ КОД: 125927",
+        "first_code": "125927",
+        "last_code": "125927",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-3.json",
+        "expected": "126658",
+        "first_line": "КОД: 126658",
+        "last_line": "ИТОГОВЫЙ КОД: 126658",
+        "first_code": "126658",
+        "last_code": "126658",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-4.json",
+        "expected": "127389",
+        "first_line": "КОД: 127389",
+        "last_line": "ИТОГОВЫЙ КОД: 127389",
+        "first_code": "127389",
+        "last_code": "127389",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-5.json",
+        "expected": "128120",
+        "first_line": "КОД: 128120",
+        "last_line": "ИТОГОВЫЙ КОД: 128120",
+        "first_code": "128120",
+        "last_code": "128120",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-6.json",
+        "expected": "128851",
+        "first_line": "КОД: 128851",
+        "last_line": "ИТОГОВЫЙ КОД: 128851",
+        "first_code": "128851",
+        "last_code": "128851",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-7.json",
+        "expected": "129582",
+        "first_line": "КОД: 129582",
+        "last_line": "ИТОГОВЫЙ КОД: 129582",
+        "first_code": "129582",
+        "last_code": "129582",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-8.json",
+        "expected": "130313",
+        "first_line": "КОД: 130313",
+        "last_line": "ИТОГОВЫЙ КОД: 130313",
+        "first_code": "130313",
+        "last_code": "130313",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "request-9.json",
+        "expected": "131044",
+        "first_line": "КОД: 131044",
+        "last_line": "ИТОГОВЫЙ КОД: 131044",
+        "first_code": "131044",
+        "last_code": "131044",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      }
+    ]
+  },
+  {
+    "root": "../state/acceptance/resume-admission-plain/preemption-quality",
+    "requests": 8,
+    "scored": 8,
+    "correct_first": 1,
+    "correct_last": 4,
+    "correct_both": 1,
+    "rows": [
+      {
+        "file": "response-0.json",
+        "expected": "124465",
+        "first_line": "КОД: 1244455",
+        "last_line": "ИТОГОВЫЙ КОД: 244455",
+        "first_code": null,
+        "last_code": "244455",
+        "correct_first": false,
+        "correct_last": false,
+        "correct_both": false
+      },
+      {
+        "file": "response-1.json",
+        "expected": "125196",
+        "first_line": "КОД: 1257456",
+        "last_line": "ИТОГОВЫЙ КОД: 257456",
+        "first_code": null,
+        "last_code": "257456",
+        "correct_first": false,
+        "correct_last": false,
+        "correct_both": false
+      },
+      {
+        "file": "response-2.json",
+        "expected": "125927",
+        "first_line": "КОД: 125% of the text is in Russian. The user wants a story in Russian (implied by the prompt language and the context of the previous text, though the prompt itself is mixed). Let's check the prompt language. The prompt is in Russian: \"Задание: вычисли 123456 + 2471. Результат — твой шестизначный код. Запиши его первой строкой «КОД: XXXXXX». Затем напиши художественный рассказ не меньше 900 слов о деревне. В конце повтори код отдельной строкой «ИТОГОВЫЙ КОД: XXXXXX». В середине рассказа код не повторяй.\"",
+        "last_line": "ИТОГОВЫЙ КОД: 125927",
+        "first_code": null,
+        "last_code": "125927",
+        "correct_first": false,
+        "correct_last": true,
+        "correct_both": false
+      },
+      {
+        "file": "response-3.json",
+        "expected": "126658",
+        "first_line": "КОД: 1253478",
+        "last_line": "ИТОГОВЫЙ КОД: 253478",
+        "first_code": null,
+        "last_code": "253478",
+        "correct_first": false,
+        "correct_last": false,
+        "correct_both": false
+      },
+      {
+        "file": "response-4.json",
+        "expected": "127389",
+        "first_line": "КОД: 127",
+        "last_line": "ИТОГОВЫЙ КОД: 127389",
+        "first_code": null,
+        "last_code": "127389",
+        "correct_first": false,
+        "correct_last": true,
+        "correct_both": false
+      },
+      {
+        "file": "response-5.json",
+        "expected": "128120",
+        "first_line": "КОД: 1280100",
+        "last_line": "ИТОГОВЫЙ КОД: 123456",
+        "first_code": null,
+        "last_code": "123456",
+        "correct_first": false,
+        "correct_last": false,
+        "correct_both": false
+      },
+      {
+        "file": "response-6.json",
+        "expected": "128851",
+        "first_line": "КОД: 128851",
+        "last_line": "ИТОГОВЫЙ КОД: 128851",
+        "first_code": "128851",
+        "last_code": "128851",
+        "correct_first": true,
+        "correct_last": true,
+        "correct_both": true
+      },
+      {
+        "file": "response-7.json",
+        "expected": "129582",
+        "first_line": "КОД: 129472",
+        "last_line": "ИТОГОВЫЙ КОД: 129582",
+        "first_code": "129472",
+        "last_code": "129582",
+        "correct_first": false,
+        "correct_last": true,
+        "correct_both": false
+      }
+    ]
+  },
+  {
+    "root": "../state/acceptance/resume-admission-plain/preemption-solo",
+    "requests": 2,
+    "scored": 2,
+    "correct_first": 0,
+    "correct_last": 0,
+    "correct_both": 0,
+    "rows": [
+      {
+        "file": "response-0.json",
+        "expected": "124465",
+        "first_line": "КОД: 1244455",
+        "last_line": "ИТОГОВЫЙ КОД: 244455",
+        "first_code": null,
+        "last_code": "244455",
+        "correct_first": false,
+        "correct_last": false,
+        "correct_both": false
+      },
+      {
+        "file": "response-3.json",
+        "expected": "126658",
+        "first_line": "КОД: 1253478",
+        "last_line": "ИТОГОВЫЙ КОД: 253478",
+        "first_code": null,
+        "last_code": "253478",
+        "correct_first": false,
+        "correct_last": false,
+        "correct_both": false
+      }
+    ]
+  }
+]

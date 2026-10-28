@@ -1,0 +1,69 @@
+{
+  "steps": 4105,
+  "admission_probe": false,
+  "runtime_admission": true,
+  "attention_block_size": 16384,
+  "total_page_token_slots_including_null": 524288,
+  "allocation_lookahead": 4,
+  "all_finished": true,
+  "scheduler_preemptions": 1,
+  "scheduled_recompute_tokens_after_preemption": 49148,
+  "requests": [
+    {
+      "id": "0",
+      "output_tokens": 2048,
+      "preemptions": 0,
+      "first_output_step": 5,
+      "last_output_step": 2052
+    },
+    {
+      "id": "1",
+      "output_tokens": 2048,
+      "preemptions": 0,
+      "first_output_step": 11,
+      "last_output_step": 2058
+    },
+    {
+      "id": "2",
+      "output_tokens": 2048,
+      "preemptions": 0,
+      "first_output_step": 18,
+      "last_output_step": 2065
+    },
+    {
+      "id": "3",
+      "output_tokens": 2048,
+      "preemptions": 0,
+      "first_output_step": 24,
+      "last_output_step": 2071
+    },
+    {
+      "id": "4",
+      "output_tokens": 2048,
+      "preemptions": 0,
+      "first_output_step": 30,
+      "last_output_step": 2077
+    },
+    {
+      "id": "5",
+      "output_tokens": 2048,
+      "preemptions": 0,
+      "first_output_step": 36,
+      "last_output_step": 2083
+    },
+    {
+      "id": "6",
+      "output_tokens": 2048,
+      "preemptions": 0,
+      "first_output_step": 42,
+      "last_output_step": 2089
+    },
+    {
+      "id": "7",
+      "output_tokens": 2048,
+      "preemptions": 1,
+      "first_output_step": 48,
+      "last_output_step": 4104
+    }
+  ]
+}

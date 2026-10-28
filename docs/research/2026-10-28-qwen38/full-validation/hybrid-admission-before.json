@@ -1,0 +1,15 @@
+{
+  "admitted": false,
+  "all_recompute_chunks_fit": true,
+  "decode_transition_fits": true,
+  "chunks": 30,
+  "before": [
+    13,
+    17
+  ],
+  "after_preview": [
+    13,
+    17
+  ],
+  "computed_tokens": 245760
+}
