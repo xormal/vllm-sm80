@@ -1,0 +1,42 @@
+# Полная приёмка: состояние прогона
+
+2026-10-28. Пользователь разрешил полную проверку, очередь ×2,5 и тела запросов 60 МБ+. Только GPU0–1, localhost:8086. Production 8085 остаётся закрыт; старые код/unit/автозапуск не меняются.
+
+**Статус: выполняется. Это не финальный quality/performance pass.**
+
+## Методика
+
+- Текущий default-кандидат: runtime `aef8fa694`, FALLBACK_ROWS=0.
+- Reference: четыре изменённых integration-модуля из `351e4c74b`, проверенные SHA256, в `state/acceptance/baseline-overlay`. Все CUDA kernels и остальной vLLM код для A/B одинаковы; original checkout не запускается и не меняется. Разрешение imports проверено через acceptance_python.sh.
+- Для вариантов отдельные VLLM compile caches, общий неизменённый kernel build и текущие Triton/tuning caches. Это сравнение Python runtime-пакета при общем окружении; оно не объявляет полную идентичность с историческими бинарниками и кэшами production.
+- Сервер: MemoryHigh20G/Max21G, swap0, CPU1600%; clients:3G/swap0/CPU200%. Сборки — прежняя отдельная группа 6G/CPU400%. Отдельный host watcher остановит только активный кандидат при MemAvailable<8G.
+- SSE-паузы считаются между чанками. Внутри speculative chunk искусственных нулевых интервалов нет. Очередь и TTFT учитываются для каждого запроса.
+
+## Уже получено на первом процессе кандидата
+
+- Штатные baza/clef: повтор 35/35 решений Clef, max |Δp|=0.
+- Длинные Clef-записи до 34816: известные факты 50/50.
+- Clef с изображениями:16/16, повтор побитовый, невалидные запросы возвращают400.
+- C8+R4 для Clef2K/8K/34K: все ответы; для34K p99 gap2,35с, max2,68с — равномерность ещё не решена.
+- Очередь40 чатов:40/40,40960 output tokens,159,72с; max engine waiting35, maxTTFT145,62с, max gap19,26с. Это включает холодные новые формы/графы, не A/B скорости.
+- Очередь20 чатов+10 Clef34K:30/30,153,01с; max engine waiting15, последний Clef137,35с.
+- Одиночные тела67991964..67992118 байт: Clef200/8,22с; chat400/9,68с (15011477 входных токенов больше контекста); tokenize200/11,83с,15011196 токенов и67108944 байт ответа.
+- 40 больших Clef тел:40/40 HTTP200, последний342,49с.
+- 40 больших tokenize тел: ещё выполняется. Health во время этой очереди200/22мс.
+
+Пока в этих сериях нет CUDA OOM или host cgroup OOM. Это не доказывает их невозможность на остальных нагрузках.
+
+## Осталось
+
+- Завершить большие HTTP-серии и mixed с разными известными фактами по слотам.
+- Изображения8×2 → игла245K → длинные генерации/recall, prefix reuse, отмены, max_tokens1, K4-tail8197.
+- Reasoning/tools/seeds, контроль top20 logprobs и границ энтропии; ручная проверка смысловых результатов.
+- Пять чередующихся A/B пар для основных сценариев; сравнение неизменной арифметики и baseline repeat noise.
+- Opt-in chunked fallback1024: отдельный GPU quality/memory/speed gate, не включать автоматически.
+- Soak≥6ч, затем24ч перед выпуском: ещё не выполнялись. Общий mixed graph не реализован.
+
+## Артефакты
+
+`кандидат/state/acceptance/`: запросы/ответы, результаты SSE и timeline по каждому запросу, gpu-memory.csv, host-memory.jsonl, baseline-overlay.json, baseline-resolution.txt, active-unit.
+
+Клиенты/контроллер: scripts/acceptance_{fixtures,streams,large_http,state,semantics,service,resource_watch}.py. Подготовка эталона: scripts/prepare_acceptance_reference.py.

@@ -37,6 +37,7 @@ def main():
     parser.add_argument("--cases", default="pure1,pure8,mixed2k,mixed8k,mixed34k")
     parser.add_argument("--tokens", type=int, default=1024)
     parser.add_argument("--repeat", type=int, default=1)
+    parser.add_argument("--distinct-clef", action="store_true")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     source = REPO / "sm70/integrations/vllm_sm70/clef/proverka_stenda.py"
@@ -101,14 +102,27 @@ def main():
                 return item
 
             def clef(index):
+                expected = None
                 record = {"model": "clef", "max_length": clef_length,
                           "state": f"Record {case}-{repeat}-{index}. The switch is ON.\n" + docs[:clef_length * 4],
                           "questions": {"switch": {"type": "choice", "instructions": "What is the switch position?",
                                         "criteria": {"on": "The switch is ON.", "off": "The switch is OFF."}}}}
+                if args.distinct_clef:
+                    sample = fixture.длинные_записи(34816)[16 + index % 4]
+                    record = sample["record"]
+                    expected = sample["meta"]
                 item = {"index": index, "sent": time.monotonic() - started, "ok": False}
                 try:
                     item["response"] = post("/v1/systemone", record)
                     item["ok"] = "answers" in item["response"]
+                    if expected is not None and item["ok"]:
+                        answer = item["response"]["answers"]
+                        checks = {"password": (answer["password"]["noul"] > .5) == expected["password"]}
+                        if expected["pos"] is not None:
+                            checks.update(city=answer["city"]["choice"] == expected["city"],
+                                          car=answer["car"]["choice"] == expected["car"])
+                        item.update(expected=expected, checks=checks)
+                        item["ok"] = all(checks.values())
                 except Exception as exc: item["error"] = repr(exc)
                 item["finished"] = time.monotonic() - started
                 (path / f"clef-{index}.json").write_text(json.dumps(item, ensure_ascii=False, indent=2))
@@ -146,7 +160,7 @@ def main():
             seconds = time.monotonic() - started
             overlap = (not clef_length or (len(clef_results) == clef_count and
                        max(item["sent"] for item in clef_results) < min(item["finished"] for item in chat_results)))
-            result = {"case": case, "repeat": repeat, "seconds": seconds,
+            result = {"case": case, "repeat": repeat, "seconds": seconds, "distinct_clef": args.distinct_clef,
                       "start_gate_met": coverage, "start_gate_requests": ready_count, "seen_at_gate": seen_at_gate,
                       "chat_requests": count, "clef_requests": len(clef_results),
                       "max_engine_waiting": max((x.get("num_requests_waiting", 0) for x in metric_samples), default=None), "clef_started_before_any_chat_finished": overlap,
