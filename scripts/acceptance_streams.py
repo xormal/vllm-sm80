@@ -69,7 +69,7 @@ def main():
             seen = set()
 
             def stream(index):
-                item = {"index": index, "events": [], "ok": False}
+                item = {"index": index, "events": [], "tokens": [], "ok": False}
                 try:
                     head = post("/tokenize", {"model": MODEL, "prompt": f"Document {case}-{repeat}-{index}. Continue the exposition.\n",
                                               "add_special_tokens": False})["tokens"]
@@ -92,6 +92,7 @@ def main():
                                 choice = value["choices"][0]
                                 tokens = (choice.get("logprobs") or {}).get("tokens") or []
                                 if tokens:
+                                    item["tokens"].extend(tokens)
                                     item["events"].append({"t": time.monotonic() - started, "tokens": len(tokens)})
                                     with lock:
                                         seen.add(index)

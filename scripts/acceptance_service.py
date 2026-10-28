@@ -21,7 +21,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("variant", choices=("baseline", "candidate"))
     parser.add_argument("label")
+    parser.add_argument("--fallback-rows", type=int, choices=(0,1024), default=0)
     args = parser.parse_args()
+    if args.variant == "baseline" and args.fallback_rows:
+        raise ValueError("The reference has no chunked fallback")
     if not re.fullmatch("[a-z0-9-]+", args.label): raise ValueError(args.label)
     production = run("systemctl", "--user", "show", "sm80-vllm.service", "-p", "ActiveState", "--value", capture_output=True).stdout.strip()
     if production not in ("inactive", "failed"): raise RuntimeError("Production must remain stopped")
@@ -42,13 +45,13 @@ def main():
                  "OOMScoreAdjust=900", "TimeoutStopSec=45", "KillMode=control-group",
                  f"WorkingDirectory={REPO}", f"StandardOutput=append:{output}/server.log", "StandardError=inherit"):
         cmd += ["--property=" + prop]
-    for env in (f"CANDIDATE_VARIANT={args.variant}", "FA2SM80_BLOCKPIPE_FALLBACK_ROWS=0",
+    for env in (f"CANDIDATE_VARIANT={args.variant}", f"FA2SM80_BLOCKPIPE_FALLBACK_ROWS={args.fallback_rows}",
                 "OMP_NUM_THREADS=1", "OPENBLAS_NUM_THREADS=1", "TORCHINDUCTOR_COMPILE_THREADS=1"):
         cmd += ["--setenv=" + env]
     cmd += [str(REPO / "scripts/serve_acceptance_variant.sh")]
     run(*cmd)
     (STATE / "active-unit").write_text(unit + "\n")
-    (output / "launch.json").write_text(json.dumps({"variant": args.variant, "unit": unit,
+    (output / "launch.json").write_text(json.dumps({"variant": args.variant, "fallback_rows": args.fallback_rows, "unit": unit,
              "epoch": time.time(), "command": cmd, "reference_overlay": manifest}, indent=2))
     started = time.monotonic()
     while time.monotonic() - started < 900:

@@ -47,6 +47,8 @@ def main():
                     if pair == 1:
                         client("state", "acceptance_state.py", output / "state")
                         client("recall", "acceptance_recall_distinct.py", output / "recall-distinct")
+                        client("preemption", "acceptance_streams.py", output / "preemption", "--cases", "pure8",
+                               "--prompt-tokens", "49147", "--tokens", "512")
                     entry.update(phase="done", finished=time.time())
                 except Exception as exc:
                     entry.update(phase="failed", finished=time.time(), error=repr(exc)); save()
