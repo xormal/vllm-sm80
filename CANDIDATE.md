@@ -4,6 +4,10 @@
 
 Текущее состояние GPU-проверок: [FULL_VALIDATION_PROGRESS.md](docs/research/2026-10-28-qwen38/FULL_VALIDATION_PROGRESS.md). Начальные build/smoke-проверки ниже — история этапов. Исправлены цикл preemption/recompute и адреса чтения/записи свёртки на границе KV-страницы. Длинные коды после реального вытеснения проходят8/8; очереди40chat и20chat+10Clef завершаются. Опциональное разбиение MLP выключено из-за изменений численных результатов. Отдельное fused integer metadata ядро прошло48 exact parity случаев, CUDA graph replay и функциональный model-level gate,но сквозного выигрыша не подтвердило и оставлено выключенным. Текущий launcher кандидата задаёт admission1,GRAN_CONV_ALL1,fallback0,fused0;длинный/HTTP/мультимодальный стресс завершён. [Итог](docs/research/2026-10-28-qwen38/VALIDATION_RESULT.md):OOM не наблюдался,но прямой NVML free доходил до5MiB;достаточный allocator reserve не доказан. Общий mixed graph не реализован, полный release pass не объявлен. [Диагностика](docs/research/2026-10-28-qwen38/GDN_BOUNDARY_FOLLOWUP.md). Активный временный service указан в `../state/acceptance/active-unit`; порт только localhost8086.
 
+## Текущий эксплуатационный режим,29.10
+
+Владелец разрешил боевой порт8085,автозапуск кандидата и восстановление при падении. Кандидат принимает реальные запросы;основной service и два наблюдателя включены при загрузке,старый `sm80-vllm.service` disabled. Старый код и unit не изменены. [Запуск,наблюдение и откат](docs/research/2026-10-28-qwen38/LIVE_DEPLOYMENT.md). Описания localhost8086 и прежнего автозапуска ниже относятся к предыдущему этапу проверки.
+
 ## Изоляция
 
 Боевой `sm80-vllm.service` при запуске использует `/home/alex/devpack_sm70_20261022/sm80_work/bin/serve_prod_sm80.sh`. Его код, `.venv`, конфиги и unit не изменены. Кандидат не запускается при загрузке. После разрешения владельца создан временный `kandidat-validation.service` для локальных GPU-проверок.

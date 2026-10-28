@@ -1,0 +1,31 @@
+[Unit]
+Description=Candidate vLLM live service GPU0-1 port8085
+Wants=kandidat-acceptance-hostwatch.service kandidat-live-observer.service
+After=sm80-memguard.service kandidat-acceptance-hostwatch.service
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=exec
+Slice=sm80.slice
+WorkingDirectory=/home/alex/devpack_sm70_20261022/кандидат/vllm-sm70
+ExecStartPre=/usr/bin/python3 -I /home/alex/devpack_sm70_20261022/кандидат/vllm-sm70/scripts/candidate_live_preflight.py
+ExecStart=/home/alex/devpack_sm70_20261022/кандидат/vllm-sm70/scripts/serve_candidate_live.sh
+Environment=OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 TORCHINDUCTOR_COMPILE_THREADS=1
+Restart=always
+RestartSec=30
+TimeoutStartSec=900
+TimeoutStopSec=45
+KillMode=control-group
+OOMPolicy=kill
+OOMScoreAdjust=900
+MemoryHigh=20G
+MemoryMax=21G
+MemorySwapMax=0
+CPUQuota=1600%
+TasksMax=4096
+StandardOutput=append:/home/alex/devpack_sm70_20261022/кандидат/state/acceptance/live-20261029/server.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target

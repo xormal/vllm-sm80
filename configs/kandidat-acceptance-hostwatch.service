@@ -1,0 +1,17 @@
+[Unit]
+Description=Candidate host-memory reserve guard
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+WorkingDirectory=/home/alex/devpack_sm70_20261022/кандидат/vllm-sm70
+ExecStart=/usr/bin/python3 -I /home/alex/devpack_sm70_20261022/кандидат/vllm-sm70/scripts/acceptance_resource_watch.py
+Restart=always
+RestartSec=5
+MemoryMax=128M
+MemorySwapMax=0
+CPUQuota=50%
+TasksMax=32
+
+[Install]
+WantedBy=default.target

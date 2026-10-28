@@ -1,0 +1,130 @@
+{
+  "persistence": {
+    "main_pid_before": "4172692",
+    "main_pid_after": "4172692",
+    "boot_links": {
+      "kandidat-acceptance-live-20261029.service": "/home/alex/.config/systemd/user/kandidat-acceptance-live-20261029.service",
+      "kandidat-live-observer.service": "/home/alex/.config/systemd/user/kandidat-live-observer.service",
+      "kandidat-acceptance-hostwatch.service": "/home/alex/.config/systemd/user/kandidat-acceptance-hostwatch.service"
+    },
+    "original_autostart": "disabled"
+  },
+  "cpu_restart_probe": {
+    "before": {
+      "Restart": "on-failure",
+      "MainPID": "393821",
+      "NRestarts": "0",
+      "ActiveState": "active"
+    },
+    "after": {
+      "Restart": "on-failure",
+      "MainPID": "428014",
+      "NRestarts": "1",
+      "ActiveState": "active"
+    },
+    "test": "CPU-only sleep service SIGKILL; no model interruption"
+  },
+  "policy_cpu_tests": 6,
+  "isolation": {
+    "recorded_utc": "2026-10-28T23:18:12.012503+00:00",
+    "production_files_unchanged": {
+      "/home/alex/devpack_sm70_20261022/sm80_work/bin/serve_prod_sm80.sh": true,
+      "/home/alex/.config/systemd/user/sm80-vllm.service": true,
+      "/home/alex/devpack_sm70_20261022/vllm-sm70/.venv/lib/python3.12/site-packages/vllm_sm80_src.pth": true,
+      "/home/alex/devpack_sm70_20261022/vllm-sm70/configs/qwen38-27b-int8-sm80.env": true,
+      "/home/alex/devpack_sm70_20261022/vllm-sm70/configs/qwen38-27b-int8-clef.env": true
+    },
+    "production_git_status": "",
+    "production_head": "351e4c74bb61abfb122233f2b03d98af65eb9265",
+    "production_service": "ExecStart={ path=/home/alex/devpack_sm70_20261022/sm80_work/bin/serve_prod_sm80.sh ; argv[]=/home/alex/devpack_sm70_20261022/sm80_work/bin/serve_prod_sm80.sh ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }\nActiveState=failed\nUnitFileState=disabled",
+    "candidate_unit": "kandidat-acceptance-live-20261029.service",
+    "candidate_service": {
+      "MainPID": "4172692",
+      "CPUQuotaPerSecUSec": "16s",
+      "MemoryMax": "22548578304",
+      "MemorySwapMax": "0",
+      "ActiveState": "active"
+    },
+    "candidate_selected_environment": {
+      "FA2SM70_GRAN_CONV_ALL": "1",
+      "FA2SM80_CONV_META_FUSED": "0",
+      "FA2SM80_BLOCKPIPE_FALLBACK_ROWS": "0",
+      "CUDA_VISIBLE_DEVICES": "0,1",
+      "CANDIDATE_VARIANT": "candidate",
+      "FA2SM80_RESUME_ADMISSION": "1"
+    },
+    "listeners": "LISTEN 0      2048   0.0.0.0:8085 0.0.0.0:*"
+  },
+  "latest_telemetry": {
+    "epoch": 1793229757.0949059,
+    "unit": "kandidat-acceptance-live-20261029.service",
+    "Result": "success",
+    "ControlGroup": "/user.slice/user-1000.slice/user@1000.service/sm80.slice/kandidat-acceptance-live-20261029.service",
+    "ActiveState": "active",
+    "ActiveEnterTimestampMonotonic": "392804389241",
+    "InvocationID": "9c1b546f06af439588d106aed0643b21",
+    "host_available_bytes": 22003003392,
+    "healthy": true,
+    "metrics": {
+      "spec_decode_num_drafts_total": 7292.0,
+      "spec_decode_num_accepted_tokens_total": 19905.0,
+      "num_requests_running": 1.0,
+      "num_requests_waiting": 0.0,
+      "kv_cache_usage_perc": 0.10416666666666663,
+      "num_preemptions_total": 0.0,
+      "prompt_tokens_total": 2482748.0,
+      "generation_tokens_total": 28440.0,
+      "request_success_total": 1357.0
+    },
+    "gpu_csv": "0, 32768, 465, 30974, 1331, 89\n1, 32768, 465, 30586, 1719, 98",
+    "memory.current": "14516277248",
+    "memory.peak": "21478137856",
+    "memory.events": "low 0\nhigh 9274\nmax 0\noom 0\noom_kill 0\noom_group_kill 0"
+  },
+  "units": {
+    "kandidat-acceptance-live-20261029.service": {
+      "Restart": "always",
+      "RestartUSec": "30s",
+      "MainPID": "4172692",
+      "NRestarts": "0",
+      "CPUQuotaPerSecUSec": "16s",
+      "MemoryMax": "22548578304",
+      "MemorySwapMax": "0",
+      "ActiveState": "active",
+      "StartLimitIntervalUSec": "5min",
+      "StartLimitBurst": "3"
+    },
+    "kandidat-live-observer.service": {
+      "Restart": "always",
+      "RestartUSec": "5s",
+      "MainPID": "601970",
+      "NRestarts": "0",
+      "CPUQuotaPerSecUSec": "500ms",
+      "MemoryMax": "134217728",
+      "MemorySwapMax": "0",
+      "ActiveState": "active",
+      "StartLimitIntervalUSec": "0",
+      "StartLimitBurst": "5"
+    },
+    "kandidat-acceptance-hostwatch.service": {
+      "Restart": "always",
+      "RestartUSec": "5s",
+      "MainPID": "2319690",
+      "NRestarts": "0",
+      "CPUQuotaPerSecUSec": "500ms",
+      "MemoryMax": "134217728",
+      "MemorySwapMax": "infinity",
+      "ActiveState": "active",
+      "StartLimitIntervalUSec": "0",
+      "StartLimitBurst": "5"
+    }
+  },
+  "health": 200,
+  "models": [
+    "huihui-qwen3.5-35b-a3b-abliterated-q8_0",
+    "gpt-4-0125-preview",
+    "Qwen3.6-27B-AWQ",
+    "Qwen3.8-27B-ABLITERATED"
+  ],
+  "linger": "yes"
+}
