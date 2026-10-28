@@ -1,0 +1,72 @@
+{
+  "chats": {
+    "чат0": {
+      "text_equal": true,
+      "logprobs_equal": false,
+      "max_logprob_delta_if_same_text": 0.012479901313781738
+    },
+    "чат1": {
+      "text_equal": true,
+      "logprobs_equal": true,
+      "max_logprob_delta_if_same_text": 0.0
+    },
+    "чат2": {
+      "text_equal": true,
+      "logprobs_equal": false,
+      "max_logprob_delta_if_same_text": 0.011418819427490234
+    }
+  },
+  "clef": {
+    "answers_equal": true,
+    "max_numeric_delta": 0.0,
+    "baseline_repeat_equal": true,
+    "candidate_repeat_equal": true
+  },
+  "semantics": {
+    "arithmetic": {
+      "message_equal": true,
+      "logprobs_equal": true,
+      "common_input_prefix_positions": 4,
+      "all_aligned_top20_equal": true,
+      "max_aligned_entropy_bound_delta": 0.0,
+      "baseline_expected": true,
+      "candidate_expected": true
+    },
+    "reasoning": {
+      "message_equal": true,
+      "logprobs_equal": false,
+      "common_input_prefix_positions": 85,
+      "all_aligned_top20_equal": false,
+      "max_aligned_entropy_bound_delta": 0.014845733829909502,
+      "baseline_expected": true,
+      "candidate_expected": true
+    },
+    "code": {
+      "message_equal": true,
+      "logprobs_equal": false,
+      "common_input_prefix_positions": 84,
+      "all_aligned_top20_equal": false,
+      "max_aligned_entropy_bound_delta": 2.3470608674344885e-06,
+      "baseline_expected": null,
+      "candidate_expected": null
+    },
+    "russian": {
+      "message_equal": true,
+      "logprobs_equal": true,
+      "common_input_prefix_positions": 58,
+      "all_aligned_top20_equal": true,
+      "max_aligned_entropy_bound_delta": 0.0,
+      "baseline_expected": null,
+      "candidate_expected": null
+    }
+  },
+  "seed": {
+    "baseline_repeat_equal": true,
+    "candidate_repeat_equal": true,
+    "cross_variant_messages_equal": true
+  },
+  "tools": {
+    "baseline": true,
+    "candidate": true
+  }
+}

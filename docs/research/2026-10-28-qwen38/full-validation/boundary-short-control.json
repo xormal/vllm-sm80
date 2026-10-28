@@ -1,0 +1,29 @@
+[
+  {
+    "index": 0,
+    "expected": "124465",
+    "seconds": 11.677146665984765,
+    "first_code": "124465",
+    "last_code": null,
+    "same_text_as_concurrent": false,
+    "ok": false
+  },
+  {
+    "index": 3,
+    "expected": "126658",
+    "seconds": 11.083710022969171,
+    "first_code": "126658",
+    "last_code": null,
+    "same_text_as_concurrent": false,
+    "ok": false
+  },
+  {
+    "index": 6,
+    "expected": "128851",
+    "seconds": 11.12679686397314,
+    "first_code": "128851",
+    "last_code": null,
+    "same_text_as_concurrent": false,
+    "ok": false
+  }
+]
