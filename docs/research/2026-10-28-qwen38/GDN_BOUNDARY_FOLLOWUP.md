@@ -22,7 +22,7 @@
 
 `conv-boundary-1`:candidate,admission v2,GRAN_CONV_ALL1,fallback0,отдельный compile cache. Три32-token продолжения input0/3/6 вернули правильные первые коды124465/126658/128851. Финальный код здесь не проверяется из-за намеренно короткого продолжения; сохранённое поле`ok:false` старого replay-harness относится к отсутствию конечного кода,а не к начальной арифметике.
 
-Полный gate выполняется:`acceptance_boundary_gate.py` —8 длинных кодов с реальным preemption,повтор KV-boundary16384 output tokens,baza/Clef,semantic entropy probes,cancel/prefix/tails,16 recall,warmed C1/C8/mixed,очереди40chat/20chat+10Clef и игла243K. Требуется также оценка overhead metadata/графов; не включать режим по одному короткому ответу.
+Полный gate `acceptance_boundary_gate.py` завершён в01:20:8 длинных кодов с реальным preemption,повтор KV-boundary16384 output tokens,baza/Clef,semantic entropy probes,cancel/prefix/tails,16 recall,warmed C1/C8/mixed,очереди40chat/20chat+10Clef и игла243K. Требуется также оценка overhead metadata/графов; завершение серии не означает quality/performance pass.
 
 ## Gate: первые полные результаты,01:09
 
@@ -31,3 +31,13 @@
 Повтор C8×(49147+2048) с admission v2:8/8,16384 output tokens,151,82с,maxgap35,53с. Время ожидания вытесненного запроса сохраняется,но цикл пересчёта не вернулся. Это отдельный прогон без scheduler-трассировки; меньшее время относительно166,25с нельзя целиком приписать одной правке. [Артефакт](full-validation/boundary-regression.json).
 
 Короткие baza/semantic тексты,Clef,seed messages и tool case совпадают с предыдущим вариантом. Но дваbaza-примера имеют logprob drift до0,012480 и0,011419; reasoning entropy bounds отличаются до0,014846nat. Code top20 имеет малое отличие,арифметика и русский пример совпали полностью. Порядок предшествующих нагрузок отличается:новый процесс проверял длинные ответы до коротких,а старый — после. Поэтому влияние истории speculative routing/форм ещё не исключено; это не доказательство bitwise эквивалентности и не количественная оценка общей деградации. [Сравнение](full-validation/boundary-short-comparison.json).
+
+## Завершение gate и опциональное разбиение MLP,01:32
+
+Очередь40:40/40,40960 output tokens,139,12с,maxgap1,730с. Mixed20chat+10Clef:30/30,152,58с,maxgap2,679с. Игла243173токена:правильный ответ за78,01с. [Очереди](full-validation/boundary-queue.json),[длинный контекст](full-validation/boundary-long-context.json).
+
+Один warmed замер conv1: C1=95,092,C8=292,314,mixed=79,703 token/s с учётом prefill. Предыдущий conv0 дал102,948/279,980/81,112. Возможная просадка C1 требует отдельного измерения; одних последовательных точек недостаточно для причинного вывода. Общий mixed graph ещё не реализован. [Замер](full-validation/boundary-performance.json).
+
+Опциональный `FA2SM80_BLOCKPIPE_FALLBACK_ROWS=1024` с conv1 прошёл8/8 длинных кодов (151,66с,одно вытеснение), длинные факты Clef50/50 и изображения16/16. Однако один baza-текст изменился, вероятности Clef различаются до0,0051; хвост16389 выдаёт разные solo/mixed токены. Это исключает утверждение об эквивалентности. Режим остаётся **выключенным**. C1=133,888,C8=277,339,mixed=79,502token/s не принимаются как бесплатный выигрыш: изменившаяся численность может менять токены и MTP acceptance. [Качество](full-validation/fallback-quality.json),[сравнение](full-validation/fallback-comparison.json),[скорость](full-validation/fallback-performance.json).
+
+Для проверки overhead подготовлен отдельный opt-in `FA2SM80_CONV_META_FUSED=1`: один integer Triton launch вместо цепочки Torch операций над адресами, только для uniform speculative batches. Сначала48 точных сравнений таблиц/колонок и CUDA graph replay на освобождённой GPU0, затем полный model-level gate. Ошибка в экспериментальном пути прерывает выполнение, а не молча убирает исправление адресов. До этих проверок ускорение и корректность интеграции не заявляются.

@@ -1,0 +1,162 @@
+{
+  "quality": {
+    "chats": {
+      "чат0": {
+        "text_equal": true,
+        "logprobs_equal": false,
+        "max_logprob_delta_if_same_text": 0.012479901313781738
+      },
+      "чат1": {
+        "text_equal": true,
+        "logprobs_equal": true,
+        "max_logprob_delta_if_same_text": 0.0
+      },
+      "чат2": {
+        "text_equal": false,
+        "logprobs_equal": false,
+        "max_logprob_delta_if_same_text": null
+      }
+    },
+    "clef": {
+      "answers_equal": false,
+      "max_numeric_delta": 0.005100000000000021,
+      "baseline_repeat_equal": true,
+      "candidate_repeat_equal": true
+    },
+    "semantics": {
+      "arithmetic": {
+        "message_equal": true,
+        "logprobs_equal": true,
+        "common_input_prefix_positions": 4,
+        "all_aligned_top20_equal": true,
+        "max_aligned_entropy_bound_delta": 0.0,
+        "baseline_expected": true,
+        "candidate_expected": true
+      },
+      "reasoning": {
+        "message_equal": true,
+        "logprobs_equal": false,
+        "common_input_prefix_positions": 85,
+        "all_aligned_top20_equal": false,
+        "max_aligned_entropy_bound_delta": 0.014845733829909502,
+        "baseline_expected": true,
+        "candidate_expected": true
+      },
+      "code": {
+        "message_equal": true,
+        "logprobs_equal": false,
+        "common_input_prefix_positions": 84,
+        "all_aligned_top20_equal": false,
+        "max_aligned_entropy_bound_delta": 2.3470608674344885e-06,
+        "baseline_expected": null,
+        "candidate_expected": null
+      },
+      "russian": {
+        "message_equal": true,
+        "logprobs_equal": true,
+        "common_input_prefix_positions": 58,
+        "all_aligned_top20_equal": true,
+        "max_aligned_entropy_bound_delta": 0.0,
+        "baseline_expected": null,
+        "candidate_expected": null
+      }
+    },
+    "seed": {
+      "baseline_repeat_equal": true,
+      "candidate_repeat_equal": true,
+      "cross_variant_messages_equal": true
+    },
+    "tools": {
+      "baseline": true,
+      "candidate": true
+    }
+  },
+  "extra": {
+    "states": {
+      "cancel": {
+        "before": {
+          "tokens_equal": true,
+          "logprobs_equal": false,
+          "max_logprob_delta_if_same_tokens": 0.01336516160517931
+        },
+        "after": {
+          "tokens_equal": true,
+          "logprobs_equal": false,
+          "max_logprob_delta_if_same_tokens": 0.01336516160517931
+        },
+        "baseline_within_trial_max_logprob_delta": 0.0,
+        "candidate_within_trial_max_logprob_delta": 0.0
+      },
+      "prefix_max_tokens_1": {
+        "first": {
+          "tokens_equal": true,
+          "logprobs_equal": false,
+          "max_logprob_delta_if_same_tokens": 2.466401201672852e-05
+        },
+        "again": {
+          "tokens_equal": true,
+          "logprobs_equal": false,
+          "max_logprob_delta_if_same_tokens": 0.0002450161846354604
+        },
+        "baseline_within_trial_max_logprob_delta": 0.0,
+        "candidate_within_trial_max_logprob_delta": 0.0
+      },
+      "8196": {
+        "solo": {
+          "tokens_equal": true,
+          "logprobs_equal": false,
+          "max_logprob_delta_if_same_tokens": 0.00039448635652661324
+        },
+        "mixed": {
+          "tokens_equal": true,
+          "logprobs_equal": false,
+          "max_logprob_delta_if_same_tokens": 0.002234793733805418
+        },
+        "baseline_within_trial_max_logprob_delta": 0.0029399730265140533,
+        "candidate_within_trial_max_logprob_delta": 0.005569253116846085
+      },
+      "8197": {
+        "solo": {
+          "tokens_equal": true,
+          "logprobs_equal": false,
+          "max_logprob_delta_if_same_tokens": 0.0021006823517382145
+        },
+        "mixed": {
+          "tokens_equal": true,
+          "logprobs_equal": false,
+          "max_logprob_delta_if_same_tokens": 0.0016198037192225456
+        },
+        "baseline_within_trial_max_logprob_delta": 0.006869501667097211,
+        "candidate_within_trial_max_logprob_delta": 0.005242567975074053
+      },
+      "8198": {
+        "solo": {
+          "tokens_equal": true,
+          "logprobs_equal": false,
+          "max_logprob_delta_if_same_tokens": 0.0008040014654397964
+        },
+        "mixed": {
+          "tokens_equal": true,
+          "logprobs_equal": false,
+          "max_logprob_delta_if_same_tokens": 0.0010920928325504065
+        },
+        "baseline_within_trial_max_logprob_delta": 0.003931500017642975,
+        "candidate_within_trial_max_logprob_delta": 0.0031013693660497665
+      },
+      "16389": {
+        "solo": {
+          "tokens_equal": false,
+          "logprobs_equal": false,
+          "max_logprob_delta_if_same_tokens": null
+        },
+        "mixed": {
+          "tokens_equal": true,
+          "logprobs_equal": false,
+          "max_logprob_delta_if_same_tokens": 0.0002647954970598221
+        },
+        "baseline_within_trial_max_logprob_delta": 0.9467649443249684,
+        "candidate_within_trial_max_logprob_delta": 0.9995764143532142
+      }
+    }
+  }
+}

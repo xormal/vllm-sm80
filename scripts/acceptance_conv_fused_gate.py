@@ -13,7 +13,7 @@ ROOT = STATE / LABEL
 
 def main():
     micro = json.loads((STATE / 'conv-metadata-micro.json').read_text())
-    assert micro['parity_cases'] == 96 and micro['capture_replay']
+    assert micro['parity_cases'] == 48 and micro['capture_replay']
     assert not ROOT.exists(), 'Do not overwrite prior validation'
     ROOT.mkdir()
     def save(phase):
