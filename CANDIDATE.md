@@ -2,6 +2,8 @@
 
 Создан 2026-10-28 от `351e4c74b` (исходный runtime checkpoint — `cbe00eb0c`). Ветка `kandidat`. Рабочий каталог: `/home/alex/devpack_sm70_20261022/кандидат/vllm-sm70`.
 
+Текущее состояние GPU-проверок: [FULL_VALIDATION_PROGRESS.md](docs/research/2026-10-28-qwen38/FULL_VALIDATION_PROGRESS.md). Начальные build/smoke-проверки ниже — история этапов. Полная приёмка ещё не пройдена: при заполнении KV обнаружен 600-секундный простой запроса, воспроизведённый и на reference. Исследование причины и CPU-repro: [PREEMPTION_FOLLOWUP.md](docs/research/2026-10-28-qwen38/PREEMPTION_FOLLOWUP.md). Активный временный service A/B указан в `../state/acceptance/active-unit`; это уже не обязательно первоначальный `kandidat-validation.service`.
+
 ## Изоляция
 
 Боевой `sm80-vllm.service` при запуске использует `/home/alex/devpack_sm70_20261022/sm80_work/bin/serve_prod_sm80.sh`. Его код, `.venv`, конфиги и unit не изменены. Кандидат не запускается при загрузке. После разрешения владельца создан временный `kandidat-validation.service` для локальных GPU-проверок.
