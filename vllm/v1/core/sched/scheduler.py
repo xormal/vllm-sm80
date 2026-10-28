@@ -715,6 +715,9 @@ class Scheduler(SchedulerInterface):
                 can_resume = (
                     not self._resume_admission
                     or request.status != RequestStatus.PREEMPTED
+                    # One-shot requests have no recompute-to-decode transition;
+                    # retain their existing no-spec allocation path.
+                    or request.max_tokens == 1
                     or load_kv_async
                     or can_resume_with_decode_headroom(
                         self.kv_cache_manager, request,
@@ -723,6 +726,8 @@ class Scheduler(SchedulerInterface):
                         num_external_computed_tokens=num_external_computed_tokens,
                         num_lookahead_tokens=self.num_lookahead_tokens,
                         num_encoder_tokens=num_encoder_tokens,
+                        num_new_tokens=num_new_tokens,
+                        effective_lookahead_tokens=effective_lookahead_tokens,
                     )
                 )
                 if can_resume:
