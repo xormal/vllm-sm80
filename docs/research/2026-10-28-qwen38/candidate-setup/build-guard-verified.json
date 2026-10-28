@@ -1,0 +1,6 @@
+{
+  "low_memory_admission": "passed (simulated reading)",
+  "exclusive_build_lock": "passed",
+  "memory_watchdog": "passed (simulated reading, real transient scope with sleep child killed)",
+  "gpu_work": "none"
+}

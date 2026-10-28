@@ -1,0 +1,24 @@
+{
+  "cgroup": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/kandidat.slice/kandidat-build.slice/kandidat-build-1688584-1793196093345878573.scope",
+  "limits": {
+    "memory.high": "5368709120",
+    "memory.max": "6442450944",
+    "memory.swap.max": "0",
+    "cpu.max": "400000 100000",
+    "cpu.weight": "10",
+    "pids.max": "256",
+    "io.weight": "unavailable"
+  },
+  "python": "/home/alex/devpack_sm70_20261022/кандидат/vllm-sm70/.venv",
+  "vllm": "/home/alex/devpack_sm70_20261022/кандидат/vllm-sm70/vllm/__init__.py",
+  "kernels": "/home/alex/devpack_sm70_20261022/кандидат/vllm-sm70/sm70/fa2_sm70/__init__.py",
+  "cuda_initialized": false,
+  "environment": {
+    "MAX_JOBS": "2",
+    "NVCC_THREADS": "1",
+    "CMAKE_BUILD_PARALLEL_LEVEL": "2",
+    "CUDA_VISIBLE_DEVICES": "",
+    "FA2SM70_BUILD_ONLY": "1"
+  },
+  "nice": 15
+}

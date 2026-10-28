@@ -1,0 +1,9 @@
+{
+  "production_files_unchanged": true,
+  "production_git_clean": true,
+  "production_pid_and_execstart_path_unchanged": true,
+  "main_pid": 2219760,
+  "files_checked_for_shared_inodes": 46026,
+  "shared_inodes": [],
+  "candidate_model_link": "/home/alex/devpack_sm70_20261022/model"
+}

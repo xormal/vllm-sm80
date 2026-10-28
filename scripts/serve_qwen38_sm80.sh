@@ -194,7 +194,11 @@ if command -v ss >/dev/null && ss -ltn 2>/dev/null | grep -q ":$PORT "; then die
 # Otherwise both TP workers build lazily at the same time and contend for the build lock. The first
 # build in a clean STATE_DIR takes 15-30 minutes (CUTLASS prefill alone ~9 min); later starts take seconds.
 say "building / loading sm70 kernels in $FA2SM70_BUILD_DIR"
-"$PY" -u - <<'PYEOF'
+KERNEL_PY=("$PY")
+if [ -n "${CANDIDATE_BUILD_RUNNER:-}" ]; then
+  KERNEL_PY=(/usr/bin/python3 "$CANDIDATE_BUILD_RUNNER" -- "$PY")
+fi
+"${KERNEL_PY[@]}" -u - <<'PYEOF'
 import sys, time
 import fa2_sm70._ext as e
 names = ["decode_ext", "w8a16_ext", "w8a16_sm80_ext", "gdn_ext", "gdn_head_ext", "prefill_ext",

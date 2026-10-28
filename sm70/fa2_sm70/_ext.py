@@ -74,15 +74,19 @@ def _preflight():
     if torch.version.cuda is None:
         raise RuntimeError("fa2_sm70: this torch has no CUDA (torch.version.cuda is None). Install a "
                            "CUDA (cu12x) build of torch.\n" + _RECIPE)
-    if not torch.cuda.is_available():
+    build_only = os.environ.get("FA2SM70_BUILD_ONLY") == "1"
+    if build_only and not os.environ.get("TORCH_CUDA_ARCH_LIST"):
+        raise RuntimeError("FA2SM70_BUILD_ONLY requires explicit TORCH_CUDA_ARCH_LIST")
+    if not build_only and not torch.cuda.is_available():
         raise RuntimeError("fa2_sm70: torch.cuda.is_available() is False (no GPU visible). Check "
                            "CUDA_VISIBLE_DEVICES / driver.\n" + _RECIPE)
 
     # 2. Device arch: the kernels are tuned for sm_70; newer archs compile but are off-target.
     try:
-        cc = torch.cuda.get_device_capability(0)
-        if cc[0] < 7 or (cc[0] == 7 and cc[1] != 0):
-            warnings.warn(f"fa2_sm70: device is sm_{cc[0]}{cc[1]}; the package targets sm_70 (V100) and sm_80 (A100).")
+        if not build_only:
+            cc = torch.cuda.get_device_capability(0)
+            if cc[0] < 7 or (cc[0] == 7 and cc[1] != 0):
+                warnings.warn(f"fa2_sm70: device is sm_{cc[0]}{cc[1]}; the package targets sm_70 (V100) and sm_80 (A100).")
     except Exception:
         pass
 
@@ -143,7 +147,8 @@ def _is_sm80():
 
 
 def _common():
-    os.environ.setdefault("TORCH_CUDA_ARCH_LIST", _arch_default())
+    if "TORCH_CUDA_ARCH_LIST" not in os.environ:
+        os.environ["TORCH_CUDA_ARCH_LIST"] = _arch_default()
     os.makedirs(_BUILD, exist_ok=True)
     _preflight()
 

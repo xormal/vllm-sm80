@@ -1,0 +1,14 @@
+{
+  "source_root": "/home/alex/devpack_sm70_20261022",
+  "candidate_root": "/home/alex/devpack_sm70_20261022/кандидат",
+  "created": "2026-10-28",
+  "baseline_commit": "351e4c74bb61abfb122233f2b03d98af65eb9265",
+  "production_files": {
+    "/home/alex/devpack_sm70_20261022/sm80_work/bin/serve_prod_sm80.sh": "7569dd4dc15ff0d418fe8b851e3ed1ebd6191e83d5fff5fa37057b461a0e2712",
+    "/home/alex/.config/systemd/user/sm80-vllm.service": "d46b490b066cf0993b7405aa17252ca58569396a82c25e76b9a92b618b026af2",
+    "/home/alex/devpack_sm70_20261022/vllm-sm70/.venv/lib/python3.12/site-packages/vllm_sm80_src.pth": "49dfc18b86a54f552e70852997dd9c36a78df930638aa4023234c429d51ca86d",
+    "/home/alex/devpack_sm70_20261022/vllm-sm70/configs/qwen38-27b-int8-sm80.env": "1db8a532b884e476dd8841132f7971b49d8b16dbe5d59a4818ff35c276c9e43c",
+    "/home/alex/devpack_sm70_20261022/vllm-sm70/configs/qwen38-27b-int8-clef.env": "dce1bab4b72094076d3bb5caca174a51a090535ac9d520b544d3d5cee2dc2220"
+  },
+  "service_before": "MainPID=2219760\nExecStart={ path=/home/alex/devpack_sm70_20261022/sm80_work/bin/serve_prod_sm80.sh ; argv[]=/home/alex/devpack_sm70_20261022/sm80_work/bin/serve_prod_sm80.sh ; ignore_errors=no ; start_time=[Wed 2026-10-28 14:45:35 +04] ; stop_time=[n/a] ; pid=2219760 ; code=(null) ; status=0/0 }\nActiveState=active\n"
+}

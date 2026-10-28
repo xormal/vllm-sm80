@@ -1,0 +1,15 @@
+[Unit]
+Description=Candidate compilation limits, separate from production sm80.slice
+
+[Slice]
+CPUAccounting=yes
+CPUQuota=400%
+CPUWeight=10
+MemoryAccounting=yes
+MemoryHigh=5G
+MemoryMax=6G
+MemorySwapMax=0
+TasksAccounting=yes
+TasksMax=256
+IOAccounting=yes
+IOWeight=10
