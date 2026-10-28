@@ -18,7 +18,7 @@ MODEL = "Qwen3.8-27B-ABLITERATED-candidate"
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("output", type=Path)
-    parser.add_argument("--route", choices=("clef", "chat", "tokenize"), required=True)
+    parser.add_argument("--route", choices=("clef", "chat", "tokenize", "chat-padded"), required=True)
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--mib", type=int, default=64)
     args = parser.parse_args()
@@ -32,6 +32,11 @@ def main():
         body = {"model": MODEL, "state": text, "max_length": 34816,
                 "questions": {"switch": {"type": "choice", "instructions": "What is the switch position?",
                               "criteria": {"on": "The switch is ON.", "off": "The switch is OFF."}}}}
+    elif args.route == "chat-padded":
+        route = "/v1/chat/completions"
+        body = {"model": MODEL, "messages": [{"role": "user", "content": "Compute 19 * 23. Answer only the integer."}],
+                "max_tokens": 32, "temperature": 0, "seed": 17,
+                "chat_template_kwargs": {"enable_thinking": False}}
     elif args.route == "chat":
         route = "/v1/chat/completions"
         body = {"model": MODEL, "messages": [{"role": "user", "content": text}], "max_tokens": 1}
@@ -40,7 +45,13 @@ def main():
         body = {"model": MODEL, "prompt": text, "add_special_tokens": False}
     payload = json.dumps(body, ensure_ascii=False).encode()
     del body, text
+    padding = args.mib * 1048576 if args.route == "chat-padded" else 0
+    if padding:
+        # Legal JSON whitespace: a large accepted HTTP body with a small model
+        # context. This is NOT a 64 MiB semantic prompt or a long-context test.
+        payload = b" " * padding + payload
     meta = {"route": route, "wire_bytes_per_request": len(payload), "concurrency": args.concurrency,
+            "case":args.route,"json_whitespace_padding_bytes":padding,
             "payload_sha256": hashlib.sha256(payload).hexdigest(), "started_epoch": time.time()}
     (args.output / "input.json").write_text(json.dumps(meta, indent=2))
     print(json.dumps(meta), flush=True)
@@ -73,6 +84,11 @@ def main():
                 item["usage"] = parsed.get("usage")
                 item["answers"] = parsed.get("answers")
                 item["ok"] = bool(parsed.get("answers")) and parsed["usage"]["input_tokens"] <= 34816
+            if args.route == "chat-padded" and response.status == 200:
+                parsed = json.loads(prefix)
+                item["usage"] = parsed.get("usage")
+                item["answer"] = parsed["choices"][0]["message"].get("content", "").strip()
+                item["ok"] = item["answer"] == "437"
         except Exception as exc:
             item["error"] = repr(exc)
         finally:
