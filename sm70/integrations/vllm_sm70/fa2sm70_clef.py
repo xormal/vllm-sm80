@@ -125,13 +125,21 @@ _MOD = {"self_attn.qkv_proj": 0, "linear_attn.in_proj_qkvz": 0, "linear_attn.in_
 def _хук(x, y, ключи):
     if not _АКТИВЕН[0]:
         return
+    from fa2sm70_clef_hook import row_window_offset
+    offset = row_window_offset()
+    if offset is not None:
+        _С.ext.delta_keyed_range(x.reshape(-1, x.shape[-1]), y.view(-1, y.shape[-1]), ключи, offset)
+        return
     _С.ext.delta_keyed(x.reshape(-1, x.shape[-1]), y.view(-1, y.shape[-1]), ключи)
 
 
 def _хук_диап(x, y, ключи, r0):
     if not _АКТИВЕН[0]:
         return
-    _С.ext.delta_keyed_range(x.reshape(-1, x.shape[-1]), y.view(-1, y.shape[-1]), ключи, int(r0))
+    from fa2sm70_clef_hook import row_window_offset
+    offset = row_window_offset()
+    _С.ext.delta_keyed_range(x.reshape(-1, x.shape[-1]), y.view(-1, y.shape[-1]), ключи,
+                            int(r0) + (offset if offset is not None else 0))
 
 
 def _регистрировать_лин():

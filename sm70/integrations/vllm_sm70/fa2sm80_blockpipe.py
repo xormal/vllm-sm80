@@ -34,6 +34,10 @@ _ВКЛ_X = os.environ.get("FA2SM80_BLOCKPIPE_X", "0") == "1"
 _УЗКО = 256          # проекции уже этого (in_proj_ba, N=48) -- torch.mm: плитка своего GEMM почти пуста
 _MIN = int(os.environ.get("FA2SM80_BLOCKPIPE_MIN", "2048"))
 _ROWS = int(os.environ.get("FA2SM80_BLOCKPIPE_ROWS", "1024"))
+# Opt-in until GPU parity/throughput gates: preserves scheduler and mixer batches.
+_FALLBACK_ROWS = int(os.environ.get("FA2SM80_BLOCKPIPE_FALLBACK_ROWS", "0"))
+if _FALLBACK_ROWS < 0:
+    raise ValueError("FA2SM80_BLOCKPIPE_FALLBACK_ROWS must be nonnegative")
 # План кусков (FA2SM80_BLOCKPIPE_PLAN="голова,середина,хвост1,хвост2,..."): маленький первый кусок -- раньше первое
 # сведение out_proj, крупные в середине -- GEMM на 2048 строк эффективнее (на 1024 строках ~184 TF против ~205),
 # убывающий хвост -- короче последнее сведение down, которое ждёт следующий слой. Пусто -- равные куски по ROWS.
@@ -146,7 +150,7 @@ def установить():
             _БУФ_C[dev] = b = torch.empty(n, dtype=torch.float16, device=dev)
         return b
 
-    def _прямо(L, core, residual):
+    def _прямой_кусок(L, core, residual):
         """Малые M (декод, графы) и всё, что конвейер не берёт: исходная последовательность слоёв."""
         _С["прямо"] += 1
         proj = L.linear_attn.out_proj if L.layer_type == "linear_attention" else L.self_attn.o_proj
@@ -156,7 +160,11 @@ def установить():
         ro = torch.empty((M, H), dtype=torch.float32, device=y.device)
         n = L.post_attention_layernorm
         _норма()(y, residual, n.weight.data, n.variance_epsilon, h, ro)
+        # Все потребители y поставлены в тот же поток. Не держать его до down/TP.
+        # residual/core и ro остаются живыми; входы не переиспользуются in-place.
+        del y
         gu = L.mlp.gate_up_proj(h)[0]
+        del h
         a = torch.empty((M, gu.shape[1] // 2), dtype=gu.dtype, device=gu.device)
         if _SILU and M <= 64 and gu.is_contiguous():
             # [25.10] широкая сетка вместо M блоков vLLM; побитно (сверка FA2SM80_SILU_CHECK)
@@ -167,10 +175,25 @@ def установить():
                 a0 = torch.empty_like(a)
                 torch.ops._C.silu_and_mul(a0, gu)
                 _лог(f"SILU сверка M={M} d={a.shape[1]}: различий {int((a.view(torch.int16) != a0.view(torch.int16)).sum())}")
+                del a0
         else:
             torch.ops._C.silu_and_mul(a, gu)
+        del gu
         d = L.mlp.down_proj(a)[0]
         return d, ro
+
+    def _прямо(L, core, residual):
+        if (_FALLBACK_ROWS and core.dim() == 2 and core.shape[0] >= _MIN
+                and core.shape[0] > _FALLBACK_ROWS):
+            import fa2sm70_clef_hook as Hk
+            # Old extensions without range corrections must retain the original
+            # path; do not silently apply global Clef segments to local rows.
+            if not _clef_в_шаге() or Hk.ХУК_ДИАП[0] is not None:
+                from fa2sm80_fallback import chunked_fallback
+                _С["fallback_chunks"] = _С.get("fallback_chunks", 0) + 1
+                return chunked_fallback(core, residual, _FALLBACK_ROWS,
+                                        lambda x, r: _прямой_кусок(L, x, r))
+        return _прямой_кусок(L, core, residual)
 
     def _проекции_след(N2):
         """Входные проекции следующего слоя: [(слой, w8?)] -- GDN: in_proj_qkvz (W8) и in_proj_ba (fp16); внимание: qkv_proj."""

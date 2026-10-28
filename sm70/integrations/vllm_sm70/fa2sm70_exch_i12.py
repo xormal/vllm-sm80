@@ -59,6 +59,7 @@ _CE_МБ = int(os.environ.get("FA2SM80_EXCH_CE_MB", "72"))      # ёмкость
 if _рычаг("FA2SM70_EXCH12", "FA2SM70_ОБМЕН_I12") == "1":
     import torch
     import torch.distributed as dist
+    from fa2sm70_workspace import CapturedWorkspace
 
     С = {"n": 0, "ушло": 0, "было_бы": 0}
     # [ЗДЕСЬ БЫЛА УТЕЧКА, УРОНИВШАЯ БОЕВОЙ 17.08 ЧЕРЕЗ 4 ЧАСА РАБОТЫ]
@@ -70,9 +71,20 @@ if _рычаг("FA2SM70_EXCH12", "FA2SM70_ОБМЕН_I12") == "1":
     # форк -- ноль. За 4 часа набежало +5.5 ГиБ, и лёгкий запрос добил сервер (86 МиБ не нашлось).
     # Теперь -- ОДИН РАСТУЩИЙ буфер на карту: ёмкость сходится к самому крупному куску (~96 МБ на
     # карту с соседями) и дальше не растёт; меньшие формы берут ПРЕФИКСНЫЕ виды того же куска.
-    _КЭШ = {}    # карта -> (свой_max, чужие_max, ёмкость_байт)
+    # Раздельные ёмкости: CE нужен только send, NCCL дополнительно нужен gather.
+    # Старые адреса, использованные при capture, живут до завершения процесса.
+    # Eager-only поколения освобождаются при росте; это не кеш по точной форме.
+    _КЭШ = {}    # карта -> {роль: CapturedWorkspace}
     _ext = None
     _CE_СОСТ = {}   # карта -> состояние перевозки копировщиком (или None, если поднять не удалось)
+
+    def _буфер(ключ, роль, nb, device, capturing):
+        буферы = _КЭШ.setdefault(ключ, {})
+        б = буферы.get(роль)
+        if б is None:
+            б = буферы[роль] = CapturedWorkspace()
+        return б.get(nb, lambda size: torch.empty(size, dtype=torch.uint8, device=device),
+                     capturing=capturing)
 
     def _ce(сам):
         """Один раз на карту: приёмник 2 x ёмкость и 2 флага вне графового пула, обмен ручками через gloo."""
@@ -134,21 +146,13 @@ if _рычаг("FA2SM70_EXCH12", "FA2SM70_ОБМЕН_I12") == "1":
             nb_pk, nb_sc = ngrp * 96 * 2, ngrp * 2
             nb = nb_pk + nb_sc
             ключ = x.device.index
-            б = _КЭШ.get(ключ)
-            if б is None or б[2] < nb:
-                # ОДИН НЕПРЕРЫВНЫЙ БУФЕР НА ВЕСЬ СБОР, а не список тензоров на ранг: список
-                # заставлял torch.distributed строить питоновскую обвязку на каждой свёртке, а
-                # ncclAllGather пишет ранги ПОДРЯД сам. Буфер только РАСТЁТ и не переезжает --
-                # иначе захваченный граф держал бы протухший указатель.
-                свой = torch.empty(nb, dtype=torch.uint8, device=x.device)
-                все = torch.empty(nb * мир, dtype=torch.uint8, device=x.device)
-                _КЭШ[ключ] = (свой, все, nb)
-            свой, все, _ёмк = _КЭШ[ключ]
+            capturing = torch.cuda.is_current_stream_capturing()
+            свой = _буфер(ключ, "send", nb, x.device, capturing)
             # ПРЕФИКСНЫЕ виды непрерывны, поэтому годятся и упаковщику, и NCCL без единой копии.
             pk = свой[:nb_pk].view(torch.int16)
             sc = свой[nb_pk:nb].view(torch.float16)
             e.pack_i12_into(x, pk, sc, _БИТ)
-            if _CE and мир == 2 and not torch.cuda.is_current_stream_capturing():
+            if _CE and мир == 2 and not capturing:
                 st = _ce(self)
                 if st is not None and nb <= st["cap"]:
                     par = st["seq"] & 1
@@ -166,6 +170,9 @@ if _рычаг("FA2SM70_EXCH12", "FA2SM70_ОБМЕН_I12") == "1":
                     С["ушло"] += nb
                     С["было_бы"] += n * 2
                     return out.view_as(input_)
+            # До этой точки успешный CE не требует NCCL storage. Не резервировать
+            # 2*nb заранее: при M=8192,H=5120 это лишние 121,25 МиБ на ранг.
+            все = _буфер(ключ, "gather", nb * мир, x.device, capturing)
             # НАТИВНЫЙ СБОР: прямой ncclAllGather на ТЕКУЩЕМ потоке, без питоновской обвязки
             # torch.distributed. Он же ЗАХВАТЫВАЕТСЯ в CUDA-граф -- поэтому отката по
             # is_current_stream_capturing больше нет (он стоял без объяснения и запирал нас

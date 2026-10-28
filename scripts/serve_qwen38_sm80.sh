@@ -32,6 +32,7 @@ die() { printf '[serve] ERROR: %s\n' "$*" >&2; exit 1; }
 MODEL_DIR="${MODEL_DIR:?set MODEL_DIR to the checkpoint directory}"
 [ -f "$MODEL_DIR/config.json" ] || die "no config.json in $MODEL_DIR"
 CARDS="${CARDS:-0,1}"
+[ "$CARDS" = "0,1" ] || die "candidate is restricted to GPU0-1; GPU2-3 are reserved for training"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
 SERVED_NAMES="${SERVED_NAMES:-Qwen3.8-27B-ABLITERATED}"

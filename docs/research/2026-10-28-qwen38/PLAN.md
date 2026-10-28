@@ -78,6 +78,8 @@ StepContext содержит стабильные `row_indices`, `valid_mask`, `
 
 ## Этап 1 Ограниченный рабочий набор без изменения лимитов
 
+В кандидате подготовлен [первый пакет реализации и CPU-проверок](IMPLEMENTATION_STAGE1.md): lazy exchange storage, captured ownership, сокращение lifetime и opt-in кусочный fallback с Clef row offsets. GPU-приёмка не выполнена; состояние production не менялось. Это не означает завершение этапа.
+
 | Изменение | Место | Проверка и условие перехода |
 | --- | --- | --- |
 | Сократить lifetime `y/h/gu` после последнего потребителя | `fa2sm80_blockpipe.py::_прямо` | Проверить реальный эффект внутри custom op/compile и lifetime на дополнительных streams; простого `del` недостаточно для доказательства |
