@@ -39,8 +39,8 @@ def main():
             with urllib.request.urlopen(request,timeout=600) as response: result=json.loads(response.read())
             item["response"]=result
             text=result["choices"][0]["message"].get("content") or ""
-            first=re.search(r"КОД:\s*\**\s*(\d{6})",text,re.I)
-            last=re.findall(r"ИТОГОВЫЙ\s+КОД:\s*\**\s*(\d{6})",text,re.I)
+            first=re.match(r"\A\s*\**КОД:\s*\**(\d{6})(?!\d)\**[^\S\n]*(?:\n|\Z)",text,re.I)
+            last=re.findall(r"(?:^|\n)\s*\**ИТОГОВЫЙ\s+КОД:\s*\**(\d{6})(?!\d)\**\s*\Z",text,re.I)
             a,b=first.group(1) if first else None,last[-1] if last else None
             words=text.split(); tail=words[-400:]
             grams=[tuple(tail[k:k+12]) for k in range(max(0,len(tail)-11))]
