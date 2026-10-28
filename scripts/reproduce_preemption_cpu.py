@@ -25,9 +25,14 @@ def main():
                         help="Allocation reserve only; does not simulate MTP outputs")
     parser.add_argument("--admission-probe", action="store_true",
                         help="CPU-only experimental admission check, not a runtime fix")
+    parser.add_argument("--runtime", action="store_true", help="Test the actual candidate admission fix")
+    parser.add_argument("--expect-recovery", action="store_true")
     args = parser.parse_args()
     if not 1 <= args.steps <= 10000:
         raise ValueError("CPU reproduction is bounded to 1..10000 scheduler steps")
+    if args.runtime and args.admission_probe:
+        raise ValueError("Use the real runtime or the experimental probe, not both")
+    os.environ["FA2SM80_RESUME_ADMISSION"] = "1" if args.runtime else "0"
     with tempfile.TemporaryDirectory(prefix="kandidat-cpu-scheduler-") as temporary:
         (Path(temporary) / "config.json").write_text(json.dumps({
             "model_type":"opt", "architectures":["OPTForCausalLM"],
@@ -82,6 +87,7 @@ def main():
             if all(r.is_finished() for r in requests):
                 break
         result = {"steps":step+1,"admission_probe":args.admission_probe,
+            "runtime_admission":args.runtime,
             "allocation_lookahead":args.lookahead,
             "all_finished":all(r.is_finished() for r in requests),
             "scheduler_preemptions":preemptions,
@@ -91,6 +97,11 @@ def main():
                 "last_output_step":last_output.get(r.request_id)} for r in requests]}
         if args.output: args.output.write_text(json.dumps(result,indent=2))
         print(json.dumps(result,indent=2))
+        if args.expect_recovery:
+            assert result["all_finished"]
+            assert preemptions <= 1, "Repeated preemption returned"
+            assert recompute_tokens < 2 * 49147, "Excessive recomputation returned"
+            assert all(r.num_output_tokens == 2048 for r in requests)
 
 
 if __name__ == "__main__":

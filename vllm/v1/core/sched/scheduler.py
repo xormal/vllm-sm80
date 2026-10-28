@@ -38,6 +38,7 @@ from vllm.v1.core.encoder_cache_manager import (
 )
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
+from vllm.v1.core.resume_admission import can_resume_with_decode_headroom
 from vllm.v1.core.sched.interface import SchedulerInterface
 from vllm.v1.core.sched.output import (
     CachedRequestData,
@@ -109,6 +110,7 @@ class Scheduler(SchedulerInterface):
         self.max_num_running_reqs = self.scheduler_config.max_num_seqs
         self.max_num_scheduled_tokens = self.scheduler_config.max_num_batched_tokens
         self.max_model_len = vllm_config.model_config.max_model_len
+        self._resume_admission = _os.environ.get("FA2SM80_RESUME_ADMISSION", "1") == "1"
         self.enable_kv_cache_events = (
             self.kv_events_config is not None
             and self.kv_events_config.enable_kv_cache_events
@@ -709,16 +711,31 @@ class Scheduler(SchedulerInterface):
                     else 0
                 )
 
-                new_blocks = self.kv_cache_manager.allocate_slots(
-                    request,
-                    num_new_tokens,
-                    num_new_computed_tokens=num_new_local_computed_tokens,
-                    new_computed_blocks=new_computed_blocks,
-                    num_lookahead_tokens=effective_lookahead_tokens,
-                    num_external_computed_tokens=num_external_computed_tokens,
-                    delay_cache_blocks=load_kv_async,
-                    num_encoder_tokens=num_encoder_tokens,
+                new_blocks = None
+                can_resume = (
+                    not self._resume_admission
+                    or request.status != RequestStatus.PREEMPTED
+                    or load_kv_async
+                    or can_resume_with_decode_headroom(
+                        self.kv_cache_manager, request,
+                        new_computed_blocks=new_computed_blocks,
+                        num_new_computed_tokens=num_new_local_computed_tokens,
+                        num_external_computed_tokens=num_external_computed_tokens,
+                        num_lookahead_tokens=self.num_lookahead_tokens,
+                        num_encoder_tokens=num_encoder_tokens,
+                    )
                 )
+                if can_resume:
+                    new_blocks = self.kv_cache_manager.allocate_slots(
+                        request,
+                        num_new_tokens,
+                        num_new_computed_tokens=num_new_local_computed_tokens,
+                        new_computed_blocks=new_computed_blocks,
+                        num_lookahead_tokens=effective_lookahead_tokens,
+                        num_external_computed_tokens=num_external_computed_tokens,
+                        delay_cache_blocks=load_kv_async,
+                        num_encoder_tokens=num_encoder_tokens,
+                    )
 
                 if new_blocks is None:
                     # The request cannot be scheduled.
