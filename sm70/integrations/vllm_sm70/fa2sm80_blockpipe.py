@@ -191,6 +191,11 @@ def установить():
             if not _clef_в_шаге() or Hk.ХУК_ДИАП[0] is not None:
                 from fa2sm80_fallback import chunked_fallback
                 _С["fallback_chunks"] = _С.get("fallback_chunks", 0) + 1
+                has_clef = _clef_в_шаге()
+                _С["fallback_clef"] = _С.get("fallback_clef", 0) + int(has_clef)
+                if _С["fallback_chunks"] == 1 or (has_clef and _С["fallback_clef"] == 1):
+                    _лог(f"bounded fallback: M={core.shape[0]}, rows={_FALLBACK_ROWS}, "
+                         f"Clef={has_clef}, calls={_С['fallback_chunks']}")
                 return chunked_fallback(core, residual, _FALLBACK_ROWS,
                                         lambda x, r: _прямой_кусок(L, x, r))
         return _прямой_кусок(L, core, residual)
