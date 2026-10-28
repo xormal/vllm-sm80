@@ -136,6 +136,7 @@ def main():
               "within_variant_repeatability":repeatability,
               "notes":["Five paired samples; t intervals assume independent approximately normal log ratios.",
                        "Baseline-first order and shared host/training load can cause drift. No release pass inferred automatically.",
+                       "Concurrent clients use a start barrier, not a recorded scheduler trace; request arrival and batch slot order may differ.",
                        "Clef numeric values are rounded by the API. Top-20 entropy bounds are not full entropy."]}
     (STATE / "ab-comparison.json").write_text(json.dumps(result,ensure_ascii=False,indent=2))
     print(json.dumps({"completed_pairs":len(pairs),"performance":performance},indent=2))
