@@ -1,0 +1,98 @@
+[
+  {
+    "name": "prefill-8191",
+    "ok": true,
+    "seconds": 1.752882864966523,
+    "result": {
+      "id": "cmpl-a738b4e891b9d761",
+      "object": "text_completion",
+      "created": 1793205531,
+      "model": "Qwen3.8-27B-ABLITERATED-candidate",
+      "choices": [
+        {
+          "index": 0,
+          "text": " stores records in memory. Each request has its own identifier. Результаты независимых",
+          "logprobs": null,
+          "finish_reason": "length",
+          "stop_reason": null,
+          "token_ids": null,
+          "prompt_logprobs": null,
+          "prompt_token_ids": null
+        }
+      ],
+      "service_tier": null,
+      "system_fingerprint": null,
+      "usage": {
+        "prompt_tokens": 8191,
+        "total_tokens": 8207,
+        "completion_tokens": 16,
+        "prompt_tokens_details": null
+      },
+      "kv_transfer_params": null
+    }
+  },
+  {
+    "name": "prefill-8192",
+    "ok": true,
+    "seconds": 1.6416803180472925,
+    "result": {
+      "id": "cmpl-b3a57701eaad4cc4",
+      "object": "text_completion",
+      "created": 1793205533,
+      "model": "Qwen3.8-27B-ABLITERATED-candidate",
+      "choices": [
+        {
+          "index": 0,
+          "text": " records in memory. Each request has its own identifier. Результаты независимых запрос",
+          "logprobs": null,
+          "finish_reason": "length",
+          "stop_reason": null,
+          "token_ids": null,
+          "prompt_logprobs": null,
+          "prompt_token_ids": null
+        }
+      ],
+      "service_tier": null,
+      "system_fingerprint": null,
+      "usage": {
+        "prompt_tokens": 8192,
+        "total_tokens": 8208,
+        "completion_tokens": 16,
+        "prompt_tokens_details": null
+      },
+      "kv_transfer_params": null
+    }
+  },
+  {
+    "name": "prefill-8193",
+    "ok": true,
+    "seconds": 1.753067939018365,
+    "result": {
+      "id": "cmpl-821b442f0a5c86fc",
+      "object": "text_completion",
+      "created": 1793205535,
+      "model": "Qwen3.8-27B-ABLITERATED-candidate",
+      "choices": [
+        {
+          "index": 0,
+          "text": " in memory. Each request has its own identifier. Результаты независимых запросов",
+          "logprobs": null,
+          "finish_reason": "length",
+          "stop_reason": null,
+          "token_ids": null,
+          "prompt_logprobs": null,
+          "prompt_token_ids": null
+        }
+      ],
+      "service_tier": null,
+      "system_fingerprint": null,
+      "usage": {
+        "prompt_tokens": 8193,
+        "total_tokens": 8209,
+        "completion_tokens": 16,
+        "prompt_tokens_details": null
+      },
+      "kv_transfer_params": null
+    }
+  }
+]

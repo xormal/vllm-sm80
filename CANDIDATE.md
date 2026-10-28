@@ -110,3 +110,5 @@ python3 scripts/smoke_candidate_http.py --stage clef --output ../state/gpu-valid
 Smoke не заменяет quality/long-run и mixed C8+R4 gates. Отдельный `sm70/tests/test_workspace_cuda.py` проверяет реальный capture/replay после роста storage; запускать отдельно от модельной нагрузки с CUDA_VISIBLE_DEVICES=0,1, использует только cuda:0.
 
 Остановить только стенд: `systemctl --user stop kandidat-validation.service`. Для возврата старой версии после освобождения GPU0–1: `systemctl --user start sm80-vllm.service`. Последняя команда вновь откроет 8085 ожидающим агентам.
+
+Результат первого GPU-запуска: [GPU_VALIDATION_STAGE1.md](docs/research/2026-10-28-qwen38/GPU_VALIDATION_STAGE1.md). Кандидат оставлен работающим на localhost:8086; smoke до 208K и 16 HTTP-запросов прошли, полная приёмка качества и mixed OOM ещё не завершена.

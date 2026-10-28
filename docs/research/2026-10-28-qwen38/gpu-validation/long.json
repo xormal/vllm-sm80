@@ -1,0 +1,98 @@
+[
+  {
+    "name": "prefill-32768",
+    "ok": true,
+    "seconds": 6.688895980012603,
+    "result": {
+      "id": "cmpl-b8acc33240699769",
+      "object": "text_completion",
+      "created": 1793205663,
+      "model": "Qwen3.8-27B-ABLITERATED-candidate",
+      "choices": [
+        {
+          "index": 0,
+          "text": "яться раздельно.\nThe system stores records in memory. Each request has",
+          "logprobs": null,
+          "finish_reason": "length",
+          "stop_reason": null,
+          "token_ids": null,
+          "prompt_logprobs": null,
+          "prompt_token_ids": null
+        }
+      ],
+      "service_tier": null,
+      "system_fingerprint": null,
+      "usage": {
+        "prompt_tokens": 32768,
+        "total_tokens": 32784,
+        "completion_tokens": 16,
+        "prompt_tokens_details": null
+      },
+      "kv_transfer_params": null
+    }
+  },
+  {
+    "name": "prefill-131072",
+    "ok": true,
+    "seconds": 30.765579236031044,
+    "result": {
+      "id": "cmpl-94109c20c6ee5a77",
+      "object": "text_completion",
+      "created": 1793205670,
+      "model": "Qwen3.8-27B-ABLITERATED-candidate",
+      "choices": [
+        {
+          "index": 0,
+          "text": "ых запросов должны сохраняться раздельно.\nThe system stores records in",
+          "logprobs": null,
+          "finish_reason": "length",
+          "stop_reason": null,
+          "token_ids": null,
+          "prompt_logprobs": null,
+          "prompt_token_ids": null
+        }
+      ],
+      "service_tier": null,
+      "system_fingerprint": null,
+      "usage": {
+        "prompt_tokens": 131072,
+        "total_tokens": 131088,
+        "completion_tokens": 16,
+        "prompt_tokens_details": null
+      },
+      "kv_transfer_params": null
+    }
+  },
+  {
+    "name": "prefill-212992",
+    "ok": true,
+    "seconds": 56.32162800396327,
+    "result": {
+      "id": "cmpl-89845564f622c234",
+      "object": "text_completion",
+      "created": 1793205700,
+      "model": "Qwen3.8-27B-ABLITERATED-candidate",
+      "choices": [
+        {
+          "index": 0,
+          "text": " has its own identifier. Результаты независимых запросов должны сохраняться раздель",
+          "logprobs": null,
+          "finish_reason": "length",
+          "stop_reason": null,
+          "token_ids": null,
+          "prompt_logprobs": null,
+          "prompt_token_ids": null
+        }
+      ],
+      "service_tier": null,
+      "system_fingerprint": null,
+      "usage": {
+        "prompt_tokens": 212992,
+        "total_tokens": 213008,
+        "completion_tokens": 16,
+        "prompt_tokens_details": null
+      },
+      "kv_transfer_params": null
+    }
+  }
+]

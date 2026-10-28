@@ -1,0 +1,25 @@
+[
+  {
+    "name": "clef-short",
+    "ok": true,
+    "seconds": 0.22609578096307814,
+    "result": {
+      "model": "Qwen3.8-27B-ABLITERATED-candidate",
+      "answers": {
+        "switch": {
+          "type": "choice",
+          "choice": "on",
+          "confidence": 0.9967,
+          "probabilities": {
+            "on": 0.9967,
+            "off": 0.0033
+          }
+        }
+      },
+      "usage": {
+        "input_tokens": 141,
+        "output_tokens": 0
+      }
+    }
+  }
+]

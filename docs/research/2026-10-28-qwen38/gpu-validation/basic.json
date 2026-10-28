@@ -1,0 +1,110 @@
+[
+  {
+    "name": "models",
+    "ok": true,
+    "seconds": 5.899928510189056e-07,
+    "result": {
+      "object": "list",
+      "data": [
+        {
+          "id": "Qwen3.8-27B-ABLITERATED-candidate",
+          "object": "model",
+          "created": 1793205467,
+          "owned_by": "vllm",
+          "root": "/home/alex/devpack_sm70_20261022/кандидат/model/Qwen3.8-27B-ABLITERATED-GPTQ-Int8-Clef",
+          "parent": null,
+          "max_model_len": 262144,
+          "permission": [
+            {
+              "id": "modelperm-9ccbc1397ce104d9",
+              "object": "model_permission",
+              "created": 1793205467,
+              "allow_create_engine": false,
+              "allow_sampling": true,
+              "allow_logprobs": true,
+              "allow_search_indices": false,
+              "allow_view": true,
+              "allow_fine_tuning": false,
+              "organization": "*",
+              "group": null,
+              "is_blocking": false
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "completion",
+    "ok": true,
+    "seconds": 1.967709292017389,
+    "result": {
+      "id": "cmpl-86be3cd88eec1e5e",
+      "object": "text_completion",
+      "created": 1793205467,
+      "model": "Qwen3.8-27B-ABLITERATED-candidate",
+      "choices": [
+        {
+          "index": 0,
+          "text": " Paris, 18000000000000000000000000000",
+          "logprobs": null,
+          "finish_reason": "length",
+          "stop_reason": null,
+          "token_ids": null,
+          "prompt_logprobs": null,
+          "prompt_token_ids": null
+        }
+      ],
+      "service_tier": null,
+      "system_fingerprint": null,
+      "usage": {
+        "prompt_tokens": 5,
+        "total_tokens": 37,
+        "completion_tokens": 32,
+        "prompt_tokens_details": null
+      },
+      "kv_transfer_params": null
+    }
+  },
+  {
+    "name": "chat",
+    "ok": true,
+    "seconds": 28.64653274201555,
+    "result": {
+      "id": "chatcmpl-a29bbcc7f3f5b7e5",
+      "object": "chat.completion",
+      "created": 1793205469,
+      "model": "Qwen3.8-27B-ABLITERATED-candidate",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "4",
+            "refusal": null,
+            "annotations": null,
+            "audio": null,
+            "function_call": null,
+            "tool_calls": [],
+            "reasoning": null
+          },
+          "logprobs": null,
+          "finish_reason": "stop",
+          "stop_reason": null,
+          "token_ids": null
+        }
+      ],
+      "service_tier": null,
+      "system_fingerprint": null,
+      "usage": {
+        "prompt_tokens": 298,
+        "total_tokens": 300,
+        "completion_tokens": 2,
+        "prompt_tokens_details": null
+      },
+      "prompt_logprobs": null,
+      "prompt_token_ids": null,
+      "kv_transfer_params": null
+    }
+  }
+]

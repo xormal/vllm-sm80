@@ -1,0 +1,96 @@
+{
+  "recorded_at": "2026-10-28T20:43:48.152188+04:00",
+  "commit": "965a816dd810819e407358d21b2aed30eb7114be",
+  "endpoint": "http://127.0.0.1:8086",
+  "gpu_visible": "0,1",
+  "production_files_unchanged": {
+    "/home/alex/devpack_sm70_20261022/sm80_work/bin/serve_prod_sm80.sh": true,
+    "/home/alex/.config/systemd/user/sm80-vllm.service": true,
+    "/home/alex/devpack_sm70_20261022/vllm-sm70/.venv/lib/python3.12/site-packages/vllm_sm80_src.pth": true,
+    "/home/alex/devpack_sm70_20261022/vllm-sm70/configs/qwen38-27b-int8-sm80.env": true,
+    "/home/alex/devpack_sm70_20261022/vllm-sm70/configs/qwen38-27b-int8-clef.env": true
+  },
+  "production_git_status": "",
+  "service": "MainPID=2719858\nMemoryCurrent=21468504064\nMemoryPeak=21477437440\nCPUQuotaPerSecUSec=16s\nMemoryMax=22548578304\nMemorySwapMax=0\nActiveState=active\n",
+  "build": "MemoryPeak=5368963072\nCPUQuotaPerSecUSec=4s\nMemoryMax=6442450944\nMemorySwapMax=0\n",
+  "sampled_gpu_peak_mib": {
+    "0": 32302,
+    "1": 32298
+  },
+  "gpu_sampling_interval_ms": 500,
+  "gpu_peak_note": "Sampled NVML usage, not allocator peak; can miss transients.",
+  "tests": {
+    "basic": [
+      {
+        "name": "models",
+        "ok": true,
+        "seconds": 5.899928510189056e-07
+      },
+      {
+        "name": "completion",
+        "ok": true,
+        "seconds": 1.967709292017389
+      },
+      {
+        "name": "chat",
+        "ok": true,
+        "seconds": 28.64653274201555
+      }
+    ],
+    "boundaries": [
+      {
+        "name": "prefill-8191",
+        "ok": true,
+        "seconds": 1.752882864966523
+      },
+      {
+        "name": "prefill-8192",
+        "ok": true,
+        "seconds": 1.6416803180472925
+      },
+      {
+        "name": "prefill-8193",
+        "ok": true,
+        "seconds": 1.753067939018365
+      }
+    ],
+    "concurrent": [
+      {
+        "name": "concurrent-8",
+        "ok": true,
+        "seconds": 3.337665062979795
+      },
+      {
+        "name": "concurrent-16",
+        "ok": true,
+        "seconds": 5.395007391052786
+      }
+    ],
+    "clef": [
+      {
+        "name": "clef-short",
+        "ok": true,
+        "seconds": 0.22609578096307814
+      }
+    ],
+    "long": [
+      {
+        "name": "prefill-32768",
+        "ok": true,
+        "seconds": 6.688895980012603
+      },
+      {
+        "name": "prefill-131072",
+        "ok": true,
+        "seconds": 30.765579236031044
+      },
+      {
+        "name": "prefill-212992",
+        "ok": true,
+        "seconds": 56.32162800396327
+      }
+    ]
+  },
+  "build_memory_events": "low 0\nhigh 114\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+  "server_memory_events": "low 0\nhigh 9607\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n"
+}

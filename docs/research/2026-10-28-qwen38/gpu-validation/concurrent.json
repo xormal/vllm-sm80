@@ -1,0 +1,664 @@
+[
+  {
+    "name": "concurrent-8",
+    "ok": true,
+    "seconds": 3.337665062979795,
+    "result": [
+      {
+        "id": "cmpl-af753914706ae90a",
+        "object": "text_completion",
+        "created": 1793205612,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      },
+      {
+        "id": "cmpl-99c562411e3d247f",
+        "object": "text_completion",
+        "created": 1793205612,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      },
+      {
+        "id": "cmpl-8a814e6be4cfef39",
+        "object": "text_completion",
+        "created": 1793205612,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      },
+      {
+        "id": "cmpl-a7bf3366d4afc4d4",
+        "object": "text_completion",
+        "created": 1793205612,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      },
+      {
+        "id": "cmpl-b9dc323f4967c89a",
+        "object": "text_completion",
+        "created": 1793205612,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      },
+      {
+        "id": "cmpl-82267168f7c01479",
+        "object": "text_completion",
+        "created": 1793205612,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      },
+      {
+        "id": "cmpl-a03de24c57134c92",
+        "object": "text_completion",
+        "created": 1793205612,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      },
+      {
+        "id": "cmpl-bde6d21a0215593d",
+        "object": "text_completion",
+        "created": 1793205612,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      }
+    ]
+  },
+  {
+    "name": "concurrent-16",
+    "ok": true,
+    "seconds": 5.395007391052786,
+    "result": [
+      {
+        "id": "cmpl-bccd62d0faa59b20",
+        "object": "text_completion",
+        "created": 1793205615,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      },
+      {
+        "id": "cmpl-a4c613206f42ec32",
+        "object": "text_completion",
+        "created": 1793205615,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      },
+      {
+        "id": "cmpl-b06f1499ee10fb67",
+        "object": "text_completion",
+        "created": 1793205615,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      },
+      {
+        "id": "cmpl-8b125608b486f74c",
+        "object": "text_completion",
+        "created": 1793205615,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      },
+      {
+        "id": "cmpl-b29416a2ec5c704c",
+        "object": "text_completion",
+        "created": 1793205615,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      },
+      {
+        "id": "cmpl-82b238c5bfad7864",
+        "object": "text_completion",
+        "created": 1793205615,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      },
+      {
+        "id": "cmpl-91de346f6031c677",
+        "object": "text_completion",
+        "created": 1793205615,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      },
+      {
+        "id": "cmpl-a70a6445c1be6e33",
+        "object": "text_completion",
+        "created": 1793205615,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      },
+      {
+        "id": "cmpl-8127fb9ed356650b",
+        "object": "text_completion",
+        "created": 1793205615,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      },
+      {
+        "id": "cmpl-9f4e18f3f02cfa4d",
+        "object": "text_completion",
+        "created": 1793205615,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      },
+      {
+        "id": "cmpl-85410cd83e6135d9",
+        "object": "text_completion",
+        "created": 1793205615,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      },
+      {
+        "id": "cmpl-94fb1229a07cfb03",
+        "object": "text_completion",
+        "created": 1793205615,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      },
+      {
+        "id": "cmpl-af5a33585b1bdc1f",
+        "object": "text_completion",
+        "created": 1793205615,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      },
+      {
+        "id": "cmpl-89ccff8dacc7d07a",
+        "object": "text_completion",
+        "created": 1793205615,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      },
+      {
+        "id": "cmpl-a5a0c40c22e711f1",
+        "object": "text_completion",
+        "created": 1793205615,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      },
+      {
+        "id": "cmpl-8362cd94ff498726",
+        "object": "text_completion",
+        "created": 1793205615,
+        "model": "Qwen3.8-27B-ABLITERATED-candidate",
+        "choices": [
+          {
+            "index": 0,
+            "text": " stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has its own identifier. Результаты независимых запросов должны сохраняться раздельно.\nThe system stores records in memory. Each request has",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "prompt_tokens": 1024,
+          "total_tokens": 1088,
+          "completion_tokens": 64,
+          "prompt_tokens_details": null
+        },
+        "kv_transfer_params": null
+      }
+    ]
+  }
+]
