@@ -13,12 +13,16 @@ def main():
     parser.add_argument('inputs',type=Path)
     parser.add_argument('output',type=Path)
     parser.add_argument('--indices',default='0,3')
+    parser.add_argument("--max-tokens",type=int)
     args=parser.parse_args()
+    if args.max_tokens is not None and not 1 <= args.max_tokens <= 4096:
+        raise ValueError("Invalid diagnostic output length")
     args.output.mkdir(parents=True,exist_ok=False)
     results=[]
     for i in map(int,args.indices.split(',')):
         body=json.loads((args.inputs/f'input-{i}.json').read_text())
         prior=json.loads((args.inputs/f'response-{i}.json').read_text())
+        if args.max_tokens is not None: body['max_tokens']=args.max_tokens
         body['cache_salt']=f'replay-{i}-{time.time_ns()}'
         started=time.monotonic()
         request=urllib.request.Request('http://127.0.0.1:8086/v1/completions',
