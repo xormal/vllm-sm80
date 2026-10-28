@@ -182,3 +182,14 @@ SSE-чанк с несколькими speculative tokens — одно собы�
 - [Исходная ревизия памяти](VLLM_MEMORY_AUDIT_2026-10-28.md) и её evidence snapshot.
 - [Снимок текущего процесса и GPU](research-evidence.json).
 - Локальные исходники checkpoint: `sm70/integrations/vllm_sm70/{fa2sm80_blockpipe,fa2sm80_rowpipe,fa2sm70_exch_i12,fa2sm70_clef}.py`, `sm70/fa2_sm70/csrc/{clef,exch_i12}.cu`, `vllm/v1/{spec_decode/eagle,worker/gpu_model_runner,core/sched/scheduler}.py`.
+
+## Дополнение: production OOM 28.10 в 18:53
+
+Перед первым GPU-запуском кандидата обнаружены новые отказы старого сервера, после первоначального аудита. [Стеки без содержимого запросов](production-oom-1853-stacks.txt):
+
+- 156 МиБ: MTP `mtp.layers.0.self_attn.attn` → `_prefill_row` → `sparse_select`, при 124,25 МиБ свободных на GPU0.
+- 272 МиБ: target layer 0 → blockpipe fallback → `gate_up_proj` → `torch.nn.functional.linear`, при 184,25 МиБ свободных на GPU0.
+
+В `sparse_select.cu:1145` GEMM-путь материализует Qp и Sdot `[ntiles,Hkv,PROBE*g,NB]`, дополнительно gamma matmul и softmax той же формы. При текущих TI=128, PROBE=16, Hkv=2, g=6 матрица для Sq=8192/T=212992 занимает ровно 156 МиБ. Это совместимая с ошибкой форма, **не доказанная длина исходного запроса**: стек не сообщает размеры. Нужны реальные замеры и ограничение памяти selector, сохраняющее выбранные блоки, causal offsets, gamma и row-normalized mass. Отключать sparse или уменьшать контекст в качестве исправления нельзя.
+
+Добавлены контролируемые prefill-пробы 32K/128K/208K в `scripts/smoke_candidate_http.py --stage long`. Один успешный запуск этих проб не заменяет mixed C8+R4, long-run quality и проверки прогретых private pools.

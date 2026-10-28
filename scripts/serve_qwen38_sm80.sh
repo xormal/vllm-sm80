@@ -71,9 +71,13 @@ command -v ninja >/dev/null || "$PY" -c "import ninja" 2>/dev/null || die "ninja
 probe_dir="$(mktemp -d)"; trap 'rm -rf "$probe_dir"' EXIT
 printf '#include <cuda_runtime.h>\n__global__ void k(){}\nint main(){return 0;}\n' > "$probe_dir/p.cu"
 cc_ok=""
+PROBE_RUNNER=()
+if [ -n "${CANDIDATE_BUILD_RUNNER:-}" ]; then
+  PROBE_RUNNER=(/usr/bin/python3 -I "$CANDIDATE_BUILD_RUNNER" --)
+fi
 for cand in ${CC:-} /usr/bin/gcc /usr/bin/gcc-14 /usr/bin/gcc-13 /usr/bin/gcc-12 /usr/bin/gcc-11; do
   [ -x "$cand" ] || continue
-  if "$CUDA_HOME/bin/nvcc" -ccbin "$cand" -arch=sm_80 -o "$probe_dir/p" "$probe_dir/p.cu" >/dev/null 2>&1; then
+  if "${PROBE_RUNNER[@]}" "$CUDA_HOME/bin/nvcc" -ccbin "$cand" -arch=sm_80 -o "$probe_dir/p" "$probe_dir/p.cu" >/dev/null 2>&1; then
     cc_ok="$cand"; break
   fi
 done
@@ -197,13 +201,13 @@ if command -v ss >/dev/null && ss -ltn 2>/dev/null | grep -q ":$PORT "; then die
 say "building / loading sm70 kernels in $FA2SM70_BUILD_DIR"
 KERNEL_PY=("$PY")
 if [ -n "${CANDIDATE_BUILD_RUNNER:-}" ]; then
-  KERNEL_PY=(/usr/bin/python3 "$CANDIDATE_BUILD_RUNNER" -- "$PY")
+  KERNEL_PY=(/usr/bin/python3 -I "$CANDIDATE_BUILD_RUNNER" -- "$PY")
 fi
 "${KERNEL_PY[@]}" -u - <<'PYEOF'
 import sys, time
 import fa2_sm70._ext as e
 names = ["decode_ext", "w8a16_ext", "w8a16_sm80_ext", "gdn_ext", "gdn_head_ext", "prefill_ext",
-         "w12a16_ext", "exch_ext", "conv_ext", "i4_ext"]
+         "w12a16_ext", "exch_ext", "conv_ext", "i4_ext", "cg_sm80_ext"]
 import os
 if os.environ.get("FA2SM70_CLEF") == "1":
     names.append("clef_ext")

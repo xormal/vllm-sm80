@@ -4,7 +4,7 @@
 
 ## Изоляция
 
-Боевой `sm80-vllm.service` продолжает запускать `/home/alex/devpack_sm70_20261022/sm80_work/bin/serve_prod_sm80.sh`. Его код, `.venv`, конфиги и unit не изменены. Кандидат не зарегистрирован как сервер в systemd и не запускается при загрузке.
+Боевой `sm80-vllm.service` при запуске использует `/home/alex/devpack_sm70_20261022/sm80_work/bin/serve_prod_sm80.sh`. Его код, `.venv`, конфиги и unit не изменены. Кандидат не запускается при загрузке. После разрешения владельца создан временный `kandidat-validation.service` для локальных GPU-проверок.
 
 У кандидата отдельные Git-репозитории vLLM и fa2_sm70_kernels, копия `.venv` без общих hardlinks, исправленные пути `.pth`/entrypoints и отдельные mutable caches в `../state`. Веса доступны через `../model`, ссылку на прежние веса; их не редактировать. Скопированы таблицы CG/W8 tuning, но не старые CUDA/Triton graph caches и не каталоги CMake со старыми абсолютными путями. Совпадение генерации после новой сборки ещё не проверено.
 
@@ -50,7 +50,7 @@ scripts/build_candidate_sm80.sh
 scripts/candidate_build.py -- .venv/bin/python your_build_script.py
 ```
 
-Обёртка задаёт отдельные пути, скрывает GPU, фиксирует архитектуру 8.0 и запускает дочернее дерево в cgroup. Добавлен `FA2SM70_BUILD_ONLY=1`: preflight допускает компиляцию с явной архитектурой без доступа к CUDA device; поведение обычного runtime не меняется. Полная сборка не запускалась.
+Обёртка задаёт отдельные пути, скрывает GPU, фиксирует архитектуру 8.0 и запускает дочернее дерево в cgroup. Добавлен `FA2SM70_BUILD_ONLY=1`: preflight допускает компиляцию с явной архитектурой без доступа к CUDA device; поведение обычного runtime не меняется. Полная сборка vLLM не запускалась; 28.10 начата адресная сборка собственных CUDA-расширений для первого GPU-запуска.
 
 Просмотр путей будущего сервера без запуска:
 
@@ -58,7 +58,7 @@ scripts/candidate_build.py -- .venv/bin/python your_build_script.py
 scripts/serve_candidate_sm80.sh --paths
 ```
 
-`--dry-run` также проверяет toolchain; `--run` требует `CARDS` и свободной пары GPU. По умолчанию кандидат слушает `127.0.0.1:8086`. Вызов без аргументов только показывает пути. Предварительная сборка собственных CUDA-ядер при запуске кандидата идёт через ограниченную обёртку. Ресурсные лимиты относятся к сборочному процессу; будущий inference-процесс и его runtime JIT требуют отдельного бюджета перед испытанием. Сейчас кандидат не запущен.
+`--dry-run` также проверяет toolchain; `--run` требует `CARDS` и свободной пары GPU. По умолчанию кандидат слушает `127.0.0.1:8086`. Вызов без аргументов только показывает пути. Предварительная сборка собственных CUDA-ядер при запуске кандидата идёт через ограниченную обёртку. Ресурсные лимиты относятся к сборочному процессу; будущий inference-процесс и его runtime JIT требуют отдельного бюджета перед испытанием. Для GPU-проверок используется временный service ниже.
 
 Уточнение владельца: до явного разрешения — только CPU. После разрешения замена боевого сервиса возможна только на GPU0–1; GPU2–3 запрещены, там обучение другого проекта. Оба launchers кандидата отклоняют `CARDS`, отличающийся от `0,1`, до проверки CUDA toolchain и обращения к устройствам.
 
@@ -83,3 +83,30 @@ scripts/candidate_build.py -- .venv/bin/python sm70/tests/test_sm80_memory_cpu.p
 - Bash/Python syntax и `git diff --check` пройдены. Снимки проверок: `../state/build-limits-verified.json`, `../state/build-guard-verified.json`.
 
 Дальнейшая работа: [план OOM и графов](docs/research/2026-10-28-qwen38/PLAN.md), [исследование оптимизаций и качества](docs/research/2026-10-28-qwen38/BREAKTHROUGH_OPTIMIZATIONS.md).
+
+## Локальная GPU-проверка после разрешения 28.10
+
+Владелец разрешил остановить production и работать с кандидатом на GPU0–1. Production остановлен; порт агентов 8085 оставлен закрытым. Его unit/автозапуск и прежний код сохранены. Остановка API превысила штатные 90 секунд: systemd завершил остаток группы, результат unit — timeout; GPU0–1 освободились раньше. Это не ошибка кандидата.
+
+Воспроизводимый запуск (предварительно старый service должен быть остановлен):
+
+```bash
+scripts/start_candidate_validation.sh --run
+```
+
+Кандидат слушает только `127.0.0.1:8086`, имя `Qwen3.8-27B-ABLITERATED-candidate`. Unit временный, Restart=no, при загрузке не поднимается. Сервер: MemoryHigh=20G, MemoryMax=21G, swap=0, CPUQuota=1600%, Inductor compile threads=1. Для inference используется прежний sm80.slice и его memory guard; сборки по-прежнему вынесены в отдельный kandidat-build.slice с лимитами 6G/400%. Ограничение CPU сервера учитывать при интерпретации замеров.
+
+Проверка компилятора и предварительная сборка расширений, включая cg_sm80, выполняются через candidate_build.py. Управляющий Python запускается с -I: не исполняет runtime sitecustomize из PYTHONPATH в системном Python без torch. Это не меняет Python рабочих процессов.
+
+Журнал: `../state/gpu-validation/server.log`. Запросы smoke направлены только на фиксированный localhost:8086:
+
+```bash
+python3 scripts/smoke_candidate_http.py --stage basic --output ../state/gpu-validation/basic.json
+python3 scripts/smoke_candidate_http.py --stage boundaries --output ../state/gpu-validation/boundaries.json
+python3 scripts/smoke_candidate_http.py --stage concurrent --output ../state/gpu-validation/concurrent.json
+python3 scripts/smoke_candidate_http.py --stage clef --output ../state/gpu-validation/clef.json
+```
+
+Smoke не заменяет quality/long-run и mixed C8+R4 gates. Отдельный `sm70/tests/test_workspace_cuda.py` проверяет реальный capture/replay после роста storage; запускать отдельно от модельной нагрузки с CUDA_VISIBLE_DEVICES=0,1, использует только cuda:0.
+
+Остановить только стенд: `systemctl --user stop kandidat-validation.service`. Для возврата старой версии после освобождения GPU0–1: `systemctl --user start sm80-vllm.service`. Последняя команда вновь откроет 8085 ожидающим агентам.
