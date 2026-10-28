@@ -72,8 +72,8 @@ def main():
         try:
             response=post('/v1/completions',bodies[i]);item['response']=response
             text=response['choices'][0]['text']
-            first=re.search(r'КОД:\s*\**\s*(\d{6})',text,re.I)
-            last=re.findall(r'ИТОГОВЫЙ\s+КОД:\s*\**\s*(\d{6})',text,re.I)
+            first=re.match(r'\A\s*\**КОД:\s*\**(\d{6})(?!\d)\**[^\S\n]*(?:\n|\Z)',text,re.I)
+            last=re.findall(r'(?:^|\n)\s*\**ИТОГОВЫЙ\s+КОД:\s*\**(\d{6})(?!\d)\**\s*\Z',text,re.I)
             words=text.split();tail=words[-400:]
             grams=[tuple(tail[k:k+12]) for k in range(max(0,len(tail)-11))]
             item.update(first_code=first.group(1) if first else None,

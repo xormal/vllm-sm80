@@ -25,8 +25,8 @@ def main():
                                       json.dumps(body).encode(),{'Content-Type':'application/json'})
         with urllib.request.urlopen(request,timeout=600) as response: result=json.loads(response.read())
         text=result['choices'][0]['text']
-        first=re.search(r'КОД:\s*\**\s*(\d{6})',text,re.I)
-        last=re.findall(r'ИТОГОВЫЙ\s+КОД:\s*\**\s*(\d{6})',text,re.I)
+        first=re.match(r'\A\s*\**КОД:\s*\**(\d{6})(?!\d)\**[^\S\n]*(?:\n|\Z)',text,re.I)
+        last=re.findall(r'(?:^|\n)\s*\**ИТОГОВЫЙ\s+КОД:\s*\**(\d{6})(?!\d)\**\s*\Z',text,re.I)
         item={'index':i,'expected':prior['expected'],'seconds':time.monotonic()-started,
               'first_code':first.group(1) if first else None,'last_code':last[-1] if last else None,
               'same_text_as_concurrent':text==prior['response']['choices'][0]['text'],
