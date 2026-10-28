@@ -16,14 +16,16 @@ def main():
         progress.update(phase=phase,epoch=time.time(),**extra)
         (STATE/'fallback-progress.json').write_text(json.dumps(progress,indent=2))
         print(phase,flush=True)
-    save('waiting_for_preemption_quality')
+    save('waiting_for_boundary_gate')
     deadline=time.monotonic()+7200
-    quality=STATE/'resume-admission-plain/preemption-quality/summary.json'
-    while not quality.exists():
-        if time.monotonic()>deadline: raise TimeoutError('postfix/preemption quality')
+    quality=STATE/'conv-boundary-1/preemption-quality/summary.json'
+    while True:
+        report=STATE/'boundary-progress.json'
+        if report.exists() and json.loads(report.read_text()).get('phase')=='complete': break
+        if time.monotonic()>deadline: raise TimeoutError('boundary gate')
         state=subprocess.check_output(['systemctl','--user','show',
-              'kandidat-preemption-quality-controller.service','-p','ActiveState','--value'],text=True).strip()
-        if state not in ('active','activating'): raise RuntimeError('Preemption quality did not finish')
+              'kandidat-boundary-gate-controller.service','-p','ActiveState','--value'],text=True).strip()
+        if state not in ('active','activating'): raise RuntimeError('Boundary gate did not finish')
         time.sleep(2)
     checked=json.loads(quality.read_text())
     if checked['correct']!=8 or checked['preemptions']<1:
@@ -34,7 +36,7 @@ def main():
         save(label+'_startup')
         with (output/(label+'-startup.log')).open('w') as log:
             subprocess.run(['python3','-I','scripts/acceptance_service.py','candidate',label,
-                            '--fallback-rows',str(rows)],cwd=REPO,stdout=log,stderr=subprocess.STDOUT,check=True)
+                            '--fallback-rows',str(rows),'--gran-conv-all','1'],cwd=REPO,stdout=log,stderr=subprocess.STDOUT,check=True)
     def client(phase,script,*args):
         save(phase)
         command=['systemd-run','--user','--scope','--quiet','--collect',
@@ -50,13 +52,14 @@ def main():
         client('quality','acceptance_fixtures.py','baza','clef')
         client('semantics','acceptance_semantics.py')
         client('state','acceptance_state.py')
+        client('preemption-quality','acceptance_preemption_quality.py')
         client('long-clef','acceptance_fixtures.py','dlinnye','clefkart')
         for phase in ('warmup','measure'):
             client(phase,'acceptance_streams.py','--cases','pure1,pure8,mixed34k','--tokens','512')
         spec=importlib.util.spec_from_file_location('compare',REPO/'scripts/acceptance_compare.py')
         compare=importlib.util.module_from_spec(spec);spec.loader.exec_module(compare)
-        result={'quality':compare.compare_quality(STATE/'resume-admission-plain',STATE/'fallback-1024'),
-                'extra':compare.compare_extra(STATE/'resume-admission-plain',STATE/'fallback-1024')}
+        result={'quality':compare.compare_quality(STATE/'conv-boundary-1',STATE/'fallback-1024'),
+                'extra':compare.compare_extra(STATE/'conv-boundary-1',STATE/'fallback-1024')}
         (output/'comparison.json').write_text(json.dumps(result,ensure_ascii=False,indent=2))
         log=(STATE/'fallback-1024/server.log').read_text(errors='replace')
         if 'bounded fallback:' not in log or 'Clef=True' not in log:
@@ -64,7 +67,7 @@ def main():
         save('tests_complete')
     finally:
         start('validated-candidate',0)
-    save('complete',default_restored=True)
+    save('complete',fallback_default_restored=True,gran_conv_all=1)
 
 
 if __name__=='__main__':
