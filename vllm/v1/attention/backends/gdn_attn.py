@@ -1303,6 +1303,9 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
                                 num_rows=_nк, block_size=_Bк, pad_slot=PAD_SLOT_ID,
                             )
                         if _fused_width is not None:
+                            if not getattr(self, "_conv_meta_fused_reported", False):
+                                print("Fused convolution metadata active (uniform integer tables)", flush=True)
+                                self._conv_meta_fused_reported = True
                             _вш_к = _fused_width
                         else:
                             _шир_сп = int(spec_state_indices_tensor.shape[1])
@@ -1354,7 +1357,9 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
                         _спец_conv_блоки = self._conv_блоки_буф[:_nк, :_вш_к]
                         _спец_conv_чт = self._conv_чт_буф[:_nк]
                         _спец_conv_зап = self._conv_зап_буф[:_nк]
-            except Exception:
+            except Exception as exc:
+                if _CONV_META_FUSED:
+                    raise RuntimeError("Fused convolution metadata failed; refusing unsafe address fallback") from exc
                 _спец_conv_блоки = _спец_conv_чт = _спец_conv_зап = None
         if _ГРАН_ИСТОК and mamba_all and spec_state_indices_tensor is not None:
             try:
