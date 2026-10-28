@@ -1,0 +1,312 @@
+{
+  "quality": {
+    "chats": {
+      "чат0": {
+        "text_equal": true,
+        "logprobs_equal": false,
+        "max_logprob_delta_if_same_text": 0.012479901313781738
+      },
+      "чат1": {
+        "text_equal": true,
+        "logprobs_equal": true,
+        "max_logprob_delta_if_same_text": 0.0
+      },
+      "чат2": {
+        "text_equal": true,
+        "logprobs_equal": false,
+        "max_logprob_delta_if_same_text": 0.011418819427490234
+      }
+    },
+    "clef": {
+      "answers_equal": true,
+      "max_numeric_delta": 0.0,
+      "baseline_repeat_equal": true,
+      "candidate_repeat_equal": true
+    },
+    "semantics": {
+      "arithmetic": {
+        "message_equal": true,
+        "logprobs_equal": true,
+        "common_input_prefix_positions": 4,
+        "all_aligned_top20_equal": true,
+        "max_aligned_entropy_bound_delta": 0.0,
+        "baseline_expected": true,
+        "candidate_expected": true
+      },
+      "reasoning": {
+        "message_equal": true,
+        "logprobs_equal": true,
+        "common_input_prefix_positions": 85,
+        "all_aligned_top20_equal": true,
+        "max_aligned_entropy_bound_delta": 0.0,
+        "baseline_expected": true,
+        "candidate_expected": true
+      },
+      "code": {
+        "message_equal": true,
+        "logprobs_equal": true,
+        "common_input_prefix_positions": 84,
+        "all_aligned_top20_equal": true,
+        "max_aligned_entropy_bound_delta": 0.0,
+        "baseline_expected": null,
+        "candidate_expected": null
+      },
+      "russian": {
+        "message_equal": true,
+        "logprobs_equal": true,
+        "common_input_prefix_positions": 58,
+        "all_aligned_top20_equal": true,
+        "max_aligned_entropy_bound_delta": 0.0,
+        "baseline_expected": null,
+        "candidate_expected": null
+      }
+    },
+    "seed": {
+      "baseline_repeat_equal": true,
+      "candidate_repeat_equal": true,
+      "cross_variant_messages_equal": true
+    },
+    "tools": {
+      "baseline": true,
+      "candidate": true
+    }
+  },
+  "extra": {
+    "states": {
+      "cancel": {
+        "before": {
+          "tokens_equal": true,
+          "logprobs_equal": true,
+          "max_logprob_delta_if_same_tokens": 0.0
+        },
+        "after": {
+          "tokens_equal": true,
+          "logprobs_equal": true,
+          "max_logprob_delta_if_same_tokens": 0.0
+        },
+        "baseline_within_trial_max_logprob_delta": 0.0,
+        "candidate_within_trial_max_logprob_delta": 0.0
+      },
+      "prefix_max_tokens_1": {
+        "first": {
+          "tokens_equal": true,
+          "logprobs_equal": true,
+          "max_logprob_delta_if_same_tokens": 0.0
+        },
+        "again": {
+          "tokens_equal": true,
+          "logprobs_equal": true,
+          "max_logprob_delta_if_same_tokens": 0.0
+        },
+        "baseline_within_trial_max_logprob_delta": 0.0,
+        "candidate_within_trial_max_logprob_delta": 0.0
+      },
+      "8196": {
+        "solo": {
+          "tokens_equal": true,
+          "logprobs_equal": true,
+          "max_logprob_delta_if_same_tokens": 0.0
+        },
+        "mixed": {
+          "tokens_equal": true,
+          "logprobs_equal": true,
+          "max_logprob_delta_if_same_tokens": 0.0
+        },
+        "baseline_within_trial_max_logprob_delta": 0.0029399730265140533,
+        "candidate_within_trial_max_logprob_delta": 0.0029399730265140533
+      },
+      "8197": {
+        "solo": {
+          "tokens_equal": true,
+          "logprobs_equal": true,
+          "max_logprob_delta_if_same_tokens": 0.0
+        },
+        "mixed": {
+          "tokens_equal": true,
+          "logprobs_equal": true,
+          "max_logprob_delta_if_same_tokens": 0.0
+        },
+        "baseline_within_trial_max_logprob_delta": 0.006869501667097211,
+        "candidate_within_trial_max_logprob_delta": 0.006869501667097211
+      },
+      "8198": {
+        "solo": {
+          "tokens_equal": true,
+          "logprobs_equal": true,
+          "max_logprob_delta_if_same_tokens": 0.0
+        },
+        "mixed": {
+          "tokens_equal": true,
+          "logprobs_equal": true,
+          "max_logprob_delta_if_same_tokens": 0.0
+        },
+        "baseline_within_trial_max_logprob_delta": 0.003931500017642975,
+        "candidate_within_trial_max_logprob_delta": 0.003931500017642975
+      },
+      "16389": {
+        "solo": {
+          "tokens_equal": true,
+          "logprobs_equal": true,
+          "max_logprob_delta_if_same_tokens": 0.0
+        },
+        "mixed": {
+          "tokens_equal": true,
+          "logprobs_equal": true,
+          "max_logprob_delta_if_same_tokens": 0.0
+        },
+        "baseline_within_trial_max_logprob_delta": 0.9467649443249684,
+        "candidate_within_trial_max_logprob_delta": 0.9467649443249684
+      }
+    },
+    "recall": {
+      "baseline": {
+        "requests": 16,
+        "correct_first": 16,
+        "recall_equal": 16,
+        "unique_first_codes": 16,
+        "stopped": 16,
+        "errors": [],
+        "note": "Code is computed from input arithmetic; this probes cross-request isolation but is not pure unconstrained self-generated recall."
+      },
+      "candidate": {
+        "requests": 16,
+        "correct_first": 16,
+        "recall_equal": 16,
+        "unique_first_codes": 16,
+        "stopped": 16,
+        "errors": [],
+        "note": "Code is computed from input arithmetic; this probes cross-request isolation but is not pure unconstrained self-generated recall."
+      },
+      "requests": [
+        {
+          "index": 0,
+          "same_message": false,
+          "baseline_words": 842,
+          "candidate_words": 845,
+          "baseline_repeated_tail_12grams": 0,
+          "candidate_repeated_tail_12grams": 0
+        },
+        {
+          "index": 1,
+          "same_message": false,
+          "baseline_words": 778,
+          "candidate_words": 925,
+          "baseline_repeated_tail_12grams": 0,
+          "candidate_repeated_tail_12grams": 0
+        },
+        {
+          "index": 2,
+          "same_message": false,
+          "baseline_words": 793,
+          "candidate_words": 911,
+          "baseline_repeated_tail_12grams": 0,
+          "candidate_repeated_tail_12grams": 0
+        },
+        {
+          "index": 3,
+          "same_message": false,
+          "baseline_words": 686,
+          "candidate_words": 604,
+          "baseline_repeated_tail_12grams": 0,
+          "candidate_repeated_tail_12grams": 0
+        },
+        {
+          "index": 4,
+          "same_message": false,
+          "baseline_words": 676,
+          "candidate_words": 724,
+          "baseline_repeated_tail_12grams": 0,
+          "candidate_repeated_tail_12grams": 0
+        },
+        {
+          "index": 5,
+          "same_message": false,
+          "baseline_words": 858,
+          "candidate_words": 831,
+          "baseline_repeated_tail_12grams": 0,
+          "candidate_repeated_tail_12grams": 0
+        },
+        {
+          "index": 6,
+          "same_message": false,
+          "baseline_words": 720,
+          "candidate_words": 693,
+          "baseline_repeated_tail_12grams": 0,
+          "candidate_repeated_tail_12grams": 0
+        },
+        {
+          "index": 7,
+          "same_message": false,
+          "baseline_words": 928,
+          "candidate_words": 830,
+          "baseline_repeated_tail_12grams": 0,
+          "candidate_repeated_tail_12grams": 0
+        },
+        {
+          "index": 8,
+          "same_message": false,
+          "baseline_words": 698,
+          "candidate_words": 889,
+          "baseline_repeated_tail_12grams": 0,
+          "candidate_repeated_tail_12grams": 0
+        },
+        {
+          "index": 9,
+          "same_message": false,
+          "baseline_words": 897,
+          "candidate_words": 804,
+          "baseline_repeated_tail_12grams": 0,
+          "candidate_repeated_tail_12grams": 0
+        },
+        {
+          "index": 10,
+          "same_message": false,
+          "baseline_words": 632,
+          "candidate_words": 725,
+          "baseline_repeated_tail_12grams": 0,
+          "candidate_repeated_tail_12grams": 0
+        },
+        {
+          "index": 11,
+          "same_message": true,
+          "baseline_words": 730,
+          "candidate_words": 730,
+          "baseline_repeated_tail_12grams": 0,
+          "candidate_repeated_tail_12grams": 0
+        },
+        {
+          "index": 12,
+          "same_message": true,
+          "baseline_words": 880,
+          "candidate_words": 880,
+          "baseline_repeated_tail_12grams": 0,
+          "candidate_repeated_tail_12grams": 0
+        },
+        {
+          "index": 13,
+          "same_message": true,
+          "baseline_words": 709,
+          "candidate_words": 709,
+          "baseline_repeated_tail_12grams": 0,
+          "candidate_repeated_tail_12grams": 0
+        },
+        {
+          "index": 14,
+          "same_message": false,
+          "baseline_words": 846,
+          "candidate_words": 905,
+          "baseline_repeated_tail_12grams": 0,
+          "candidate_repeated_tail_12grams": 0
+        },
+        {
+          "index": 15,
+          "same_message": true,
+          "baseline_words": 843,
+          "candidate_words": 843,
+          "baseline_repeated_tail_12grams": 0,
+          "candidate_repeated_tail_12grams": 0
+        }
+      ]
+    }
+  }
+}

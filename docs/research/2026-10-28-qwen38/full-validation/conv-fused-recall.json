@@ -1,0 +1,9 @@
+{
+  "requests": 16,
+  "correct_first": 16,
+  "recall_equal": 16,
+  "unique_first_codes": 16,
+  "stopped": 16,
+  "errors": [],
+  "note": "Code is computed from input arithmetic; this probes cross-request isolation but is not pure unconstrained self-generated recall."
+}

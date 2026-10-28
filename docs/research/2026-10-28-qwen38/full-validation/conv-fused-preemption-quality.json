@@ -1,0 +1,113 @@
+{
+  "seconds": 155.14055748895044,
+  "requests": 8,
+  "correct": 8,
+  "preemptions": 1.0,
+  "results": [
+    {
+      "index": 0,
+      "expected": "124465",
+      "prompt_tokens": 49147,
+      "first_code": "124465",
+      "last_code": "124465",
+      "words": 783,
+      "repeated_tail_12grams": 0,
+      "output_tokens": 1385,
+      "finish_reason": "stop",
+      "ok": true,
+      "seconds": 139.9972818440292
+    },
+    {
+      "index": 1,
+      "expected": "125196",
+      "prompt_tokens": 49147,
+      "first_code": "125196",
+      "last_code": "125196",
+      "words": 711,
+      "repeated_tail_12grams": 0,
+      "output_tokens": 1324,
+      "finish_reason": "stop",
+      "ok": true,
+      "seconds": 155.11098476097686
+    },
+    {
+      "index": 2,
+      "expected": "125927",
+      "prompt_tokens": 49147,
+      "first_code": "125927",
+      "last_code": "125927",
+      "words": 971,
+      "repeated_tail_12grams": 0,
+      "output_tokens": 1737,
+      "finish_reason": "stop",
+      "ok": true,
+      "seconds": 146.45240989001468
+    },
+    {
+      "index": 3,
+      "expected": "126658",
+      "prompt_tokens": 49147,
+      "first_code": "126658",
+      "last_code": "126658",
+      "words": 609,
+      "repeated_tail_12grams": 0,
+      "output_tokens": 1151,
+      "finish_reason": "stop",
+      "ok": true,
+      "seconds": 131.0957202730351
+    },
+    {
+      "index": 4,
+      "expected": "127389",
+      "prompt_tokens": 49147,
+      "first_code": "127389",
+      "last_code": "127389",
+      "words": 661,
+      "repeated_tail_12grams": 0,
+      "output_tokens": 1297,
+      "finish_reason": "stop",
+      "ok": true,
+      "seconds": 137.47819051303668
+    },
+    {
+      "index": 5,
+      "expected": "128120",
+      "prompt_tokens": 49147,
+      "first_code": "128120",
+      "last_code": "128120",
+      "words": 743,
+      "repeated_tail_12grams": 0,
+      "output_tokens": 1268,
+      "finish_reason": "stop",
+      "ok": true,
+      "seconds": 137.0075550469919
+    },
+    {
+      "index": 6,
+      "expected": "128851",
+      "prompt_tokens": 49147,
+      "first_code": "128851",
+      "last_code": "128851",
+      "words": 1109,
+      "repeated_tail_12grams": 0,
+      "output_tokens": 1876,
+      "finish_reason": "stop",
+      "ok": true,
+      "seconds": 148.71940562297823
+    },
+    {
+      "index": 7,
+      "expected": "129582",
+      "prompt_tokens": 49147,
+      "first_code": "129582",
+      "last_code": "129582",
+      "words": 902,
+      "repeated_tail_12grams": 0,
+      "output_tokens": 1688,
+      "finish_reason": "stop",
+      "ok": true,
+      "seconds": 143.1629171120003
+    }
+  ],
+  "note": "Functional code retention after KV saturation; no bitwise or broad quality claim."
+}
