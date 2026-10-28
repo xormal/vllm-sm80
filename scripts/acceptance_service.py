@@ -77,6 +77,11 @@ def main():
         try:
             with urllib.request.urlopen("http://127.0.0.1:8086/health", timeout=1) as response:
                 if response.status == 200:
+                    startup_log = (output / "server.log").read_text(errors="replace")
+                    if ("НАСТРОЙКА НЕ УДАЛАСЬ" in startup_log or
+                        not all(f"ранг {rank}/2: поправка на" in startup_log for rank in (0,1))):
+                        run("systemctl", "--user", "stop", unit)
+                        raise RuntimeError("Clef did not initialize on both TP ranks; reference is invalid")
                     print(f"READY {args.variant} {unit} {time.monotonic()-started:.1f}s", flush=True)
                     return
         except OSError: pass
