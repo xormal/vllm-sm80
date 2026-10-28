@@ -1,0 +1,38 @@
+{
+  "probes": {
+    "arithmetic": {
+      "positions": 4,
+      "max_H_lower_nats": 0.016265413598135516,
+      "max_H_upper_nats": 0.016439671028913572,
+      "positions_H_lower_gt_1": 0,
+      "positions_top1_top2_margin_lt_0_1": 0,
+      "positions_top1_top2_margin_lt_0_01": 0
+    },
+    "reasoning": {
+      "positions": 85,
+      "max_H_lower_nats": 2.516565277063683,
+      "max_H_upper_nats": 3.8166272835559685,
+      "positions_H_lower_gt_1": 18,
+      "positions_top1_top2_margin_lt_0_1": 5,
+      "positions_top1_top2_margin_lt_0_01": 1
+    },
+    "code": {
+      "positions": 84,
+      "max_H_lower_nats": 1.6074922138449776,
+      "max_H_upper_nats": 1.6150858681360536,
+      "positions_H_lower_gt_1": 1,
+      "positions_top1_top2_margin_lt_0_1": 0,
+      "positions_top1_top2_margin_lt_0_01": 0
+    },
+    "russian": {
+      "positions": 58,
+      "max_H_lower_nats": 2.4502121415183415,
+      "max_H_upper_nats": 2.8520810078010945,
+      "positions_H_lower_gt_1": 17,
+      "positions_top1_top2_margin_lt_0_1": 3,
+      "positions_top1_top2_margin_lt_0_01": 0
+    }
+  },
+  "vocabulary_size": 248320,
+  "note": "Top20 bounds and margin coverage only. These four aligned semantic probes match Torch metadata exactly; not full-network quality proof."
+}
