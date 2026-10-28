@@ -36,5 +36,5 @@
   ],
   "requested_output_tokens": 16384,
   "preemptions": 2,
-  "note": "Retrospective summary; original results.json and per-request evidence preserved unchanged."
+  "note": "Retrospective summary; original results.json and per-request evidence preserved unchanged. Preemptions=2 is the observed HTTP counter; events may remain buffered during output-free recomputation, so this is not a proven total scheduler count."
 }
