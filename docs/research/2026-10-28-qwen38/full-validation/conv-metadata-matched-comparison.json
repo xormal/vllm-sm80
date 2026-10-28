@@ -1,0 +1,205 @@
+{
+  "cases": {
+    "pure1": {
+      "pairs": [
+        {
+          "repeat": 0,
+          "tokens_equal_requests": 0,
+          "requests": 1,
+          "torch_tps": 105.09818160094089,
+          "fused_tps": 102.41364926098018,
+          "fused_over_torch": 0.9744569097289055,
+          "torch_gap_p99_s": 0.0246369710075669,
+          "fused_gap_p99_s": 0.028023326012771577,
+          "draft_counter_deltas": {
+            "torch": {
+              "spec_decode_num_drafts_total": 192.0,
+              "spec_decode_num_accepted_tokens_total": 320.0
+            },
+            "fused": {
+              "spec_decode_num_drafts_total": 186.0,
+              "spec_decode_num_accepted_tokens_total": 325.0
+            }
+          }
+        },
+        {
+          "repeat": 1,
+          "tokens_equal_requests": 1,
+          "requests": 1,
+          "torch_tps": 137.2434337143065,
+          "fused_tps": 134.8810060490655,
+          "fused_over_torch": 0.9827865887547031,
+          "torch_gap_p99_s": 0.0240219269762747,
+          "fused_gap_p99_s": 0.02801657799864188,
+          "draft_counter_deltas": {
+            "torch": {
+              "spec_decode_num_drafts_total": 140.0,
+              "spec_decode_num_accepted_tokens_total": 371.0
+            },
+            "fused": {
+              "spec_decode_num_drafts_total": 139.0,
+              "spec_decode_num_accepted_tokens_total": 372.0
+            }
+          }
+        },
+        {
+          "repeat": 2,
+          "tokens_equal_requests": 0,
+          "requests": 1,
+          "torch_tps": 116.6582906547173,
+          "fused_tps": 111.77296658237506,
+          "fused_over_torch": 0.958122787116762,
+          "torch_gap_p99_s": 0.025554792024195194,
+          "fused_gap_p99_s": 0.02625716000329703,
+          "draft_counter_deltas": {
+            "torch": {
+              "spec_decode_num_drafts_total": 167.0,
+              "spec_decode_num_accepted_tokens_total": 348.0
+            },
+            "fused": {
+              "spec_decode_num_drafts_total": 178.0,
+              "spec_decode_num_accepted_tokens_total": 334.0
+            }
+          }
+        }
+      ],
+      "geomean_fused_over_torch": 0.9717346223629736
+    },
+    "pure8": {
+      "pairs": [
+        {
+          "repeat": 0,
+          "tokens_equal_requests": 1,
+          "requests": 8,
+          "torch_tps": 284.0057802590027,
+          "fused_tps": 288.33916074909814,
+          "fused_over_torch": 1.0152580714594737,
+          "torch_gap_p99_s": 0.06429598404793069,
+          "fused_gap_p99_s": 0.055921452993061393,
+          "draft_counter_deltas": {
+            "torch": {
+              "spec_decode_num_drafts_total": 1562.0,
+              "spec_decode_num_accepted_tokens_total": 2542.0
+            },
+            "fused": {
+              "spec_decode_num_drafts_total": 1518.0,
+              "spec_decode_num_accepted_tokens_total": 2580.0
+            }
+          }
+        },
+        {
+          "repeat": 1,
+          "tokens_equal_requests": 0,
+          "requests": 8,
+          "torch_tps": 311.07089126387274,
+          "fused_tps": 301.3732164650105,
+          "fused_over_torch": 0.9688248721715463,
+          "torch_gap_p99_s": 0.055782984010875225,
+          "fused_gap_p99_s": 0.05819120799424127,
+          "draft_counter_deltas": {
+            "torch": {
+              "spec_decode_num_drafts_total": 1321.0,
+              "spec_decode_num_accepted_tokens_total": 2778.0
+            },
+            "fused": {
+              "spec_decode_num_drafts_total": 1391.0,
+              "spec_decode_num_accepted_tokens_total": 2706.0
+            }
+          }
+        },
+        {
+          "repeat": 2,
+          "tokens_equal_requests": 5,
+          "requests": 8,
+          "torch_tps": 292.2158961274879,
+          "fused_tps": 294.7140181765286,
+          "fused_over_torch": 1.008548891700097,
+          "torch_gap_p99_s": 0.057470669969916344,
+          "fused_gap_p99_s": 0.056063598953187466,
+          "draft_counter_deltas": {
+            "torch": {
+              "spec_decode_num_drafts_total": 1517.0,
+              "spec_decode_num_accepted_tokens_total": 2585.0
+            },
+            "fused": {
+              "spec_decode_num_drafts_total": 1511.0,
+              "spec_decode_num_accepted_tokens_total": 2594.0
+            }
+          }
+        }
+      ],
+      "geomean_fused_over_torch": 0.9973315602095736
+    },
+    "mixed34k": {
+      "pairs": [
+        {
+          "repeat": 0,
+          "tokens_equal_requests": 2,
+          "requests": 8,
+          "torch_tps": 77.78659942047972,
+          "fused_tps": 79.74238140003612,
+          "fused_over_torch": 1.0251429165708135,
+          "torch_gap_p99_s": 3.1512635820545256,
+          "fused_gap_p99_s": 2.522502752020955,
+          "draft_counter_deltas": {
+            "torch": {
+              "spec_decode_num_drafts_total": 1479.0,
+              "spec_decode_num_accepted_tokens_total": 2620.0
+            },
+            "fused": {
+              "spec_decode_num_drafts_total": 1512.0,
+              "spec_decode_num_accepted_tokens_total": 2589.0
+            }
+          }
+        },
+        {
+          "repeat": 1,
+          "tokens_equal_requests": 1,
+          "requests": 8,
+          "torch_tps": 80.91590506839474,
+          "fused_tps": 80.19652479500164,
+          "fused_over_torch": 0.991109531892586,
+          "torch_gap_p99_s": 2.4785038859699853,
+          "fused_gap_p99_s": 2.5387426170054823,
+          "draft_counter_deltas": {
+            "torch": {
+              "spec_decode_num_drafts_total": 1556.0,
+              "spec_decode_num_accepted_tokens_total": 2543.0
+            },
+            "fused": {
+              "spec_decode_num_drafts_total": 1504.0,
+              "spec_decode_num_accepted_tokens_total": 2591.0
+            }
+          }
+        },
+        {
+          "repeat": 2,
+          "tokens_equal_requests": 2,
+          "requests": 8,
+          "torch_tps": 80.18993395111386,
+          "fused_tps": 79.57113469230086,
+          "fused_over_torch": 0.9922833299851546,
+          "torch_gap_p99_s": 2.5292972779716365,
+          "fused_gap_p99_s": 2.5241246319492348,
+          "draft_counter_deltas": {
+            "torch": {
+              "spec_decode_num_drafts_total": 1536.0,
+              "spec_decode_num_accepted_tokens_total": 2565.0
+            },
+            "fused": {
+              "spec_decode_num_drafts_total": 1548.0,
+              "spec_decode_num_accepted_tokens_total": 2548.0
+            }
+          }
+        }
+      ],
+      "geomean_fused_over_torch": 1.002722102200797
+    }
+  },
+  "notes": [
+    "Each repeat index changes the prompt header; only matching indices are compared.",
+    "Three matched inputs, one process per variant, fused then Torch; not independent process replications.",
+    "Concurrent HTTP arrival and batch placement are not replayed deterministically.",
+    "Different generated tokens or draft acceptance can affect throughput. No global zero-regression claim."
+  ]
+}

@@ -14,14 +14,17 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--fused',action='store_true',help='Require completed fused metadata gate')
     parser.add_argument('--matched-control',action='store_true',help='Wait for the matched control and final fused restart')
+    parser.add_argument('--torch-final',action='store_true',help='Use the ordinary metadata path after matched comparison')
     args=parser.parse_args()
     if args.matched_control and not args.fused:raise ValueError('--matched-control requires --fused')
-    gate='conv-control' if args.matched_control else 'conv-fused' if args.fused else 'fallback'
-    controller=('kandidat-conv-control-controller.service' if args.matched_control else
+    if args.torch_final and args.fused:raise ValueError('Choose one final metadata path')
+    gate='conv-control' if args.matched_control or args.torch_final else 'conv-fused' if args.fused else 'fallback'
+    controller=('kandidat-conv-control-controller.service' if args.matched_control or args.torch_final else
                 'kandidat-conv-fused-gate-controller.service' if args.fused
                 else 'kandidat-fallback-gate-v2-controller.service')
-    label='conv-meta-final-1' if args.matched_control else 'conv-meta-fast-1' if args.fused else 'validated-candidate'
-    progress={}
+    label=('conv-meta-final-torch-1' if args.torch_final else
+           'conv-meta-final-1' if args.matched_control else 'conv-meta-fast-1' if args.fused else 'validated-candidate')
+    progress={'label':label}
     def save(phase):
         progress.update(phase=phase,epoch=time.time())
         (STATE/'final-stress-progress.json').write_text(json.dumps(progress,indent=2))
