@@ -40,7 +40,11 @@ def main():
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--distinct-clef", action="store_true")
     parser.add_argument("--clef-requests", type=int, choices=(1,4,10))
+    parser.add_argument("--stream-read-timeout", type=float, default=600,
+                        help="Socket read timeout; shorten only for separate diagnostic runs")
     args = parser.parse_args()
+    if not 30 <= args.stream_read_timeout <= 1800:
+        raise ValueError("Stream read timeout must be between 30 and 1800 seconds")
     if not 128 <= args.prompt_tokens < 262144 or args.prompt_tokens + args.tokens > 262144:
         raise ValueError("Prompt and generation must fit the unchanged context limit")
     args.output.mkdir(parents=True, exist_ok=True)
@@ -82,7 +86,7 @@ def main():
                         {"Content-Type": "application/json"})
                     barrier.wait(timeout=30)
                     item["sent"] = time.monotonic() - started
-                    with urllib.request.urlopen(req, timeout=600) as response:
+                    with urllib.request.urlopen(req, timeout=args.stream_read_timeout) as response:
                         for line in response:
                             if not line.startswith(b"data: "): continue
                             if line.strip() == b"data: [DONE]": break
@@ -174,6 +178,7 @@ def main():
             overlap = (not clef_length or (len(clef_results) == clef_count and
                        max(item["sent"] for item in clef_results) < min(item["finished"] for item in chat_results)))
             result = {"case": case, "repeat": repeat, "seconds": seconds, "distinct_clef": args.distinct_clef,
+                      "stream_read_timeout_s": args.stream_read_timeout,
                       "start_gate_met": coverage, "start_gate_requests": ready_count, "seen_at_gate": seen_at_gate,
                       "chat_requests": count, "prompt_tokens_each": args.prompt_tokens, "clef_requests": len(clef_results),
                       "max_engine_waiting": max((x.get("num_requests_waiting", 0) for x in metric_samples), default=None), "clef_started_before_any_chat_finished": overlap,
