@@ -1,0 +1,40 @@
+[
+  {
+    "case": "pure8",
+    "repeat": 0,
+    "seconds": 166.24835742404684,
+    "distinct_clef": false,
+    "stream_read_timeout_s": 600,
+    "start_gate_met": true,
+    "start_gate_requests": 8,
+    "seen_at_gate": 8,
+    "chat_requests": 8,
+    "prompt_tokens_each": 49147,
+    "clef_requests": 0,
+    "max_engine_waiting": 7.0,
+    "clef_started_before_any_chat_finished": true,
+    "ok": true,
+    "total_tokens": 16384,
+    "aggregate_tokens_per_s_including_prefill": 98.55134964256887,
+    "requested_output_tokens": 16384,
+    "observed_stream_tokens": 16384,
+    "failed_chat_requests": [],
+    "ttft_s": [
+      77.57825465599308,
+      90.58197430497967,
+      11.798151594004594,
+      102.23721332196146,
+      64.63795069995103,
+      26.191110919986386,
+      38.88053077697987,
+      51.73205336503452
+    ],
+    "chunk_gap_p50_s": 0.06195425003534183,
+    "chunk_gap_p95_s": 0.06555069197202101,
+    "chunk_gap_p99_s": 2.371601575985551,
+    "chunk_gap_max_s": 45.71036277001258,
+    "max_terminal_silence_s": 0.001574683003127575,
+    "max_gap_or_terminal_silence_s": 45.71036277001258,
+    "clef_latency_s": []
+  }
+]
