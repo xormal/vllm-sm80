@@ -21,9 +21,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path)
     parser.add_argument("--steps", type=int, default=500)
+    parser.add_argument("--lookahead", type=int, choices=(0,4), default=0,
+                        help="Allocation reserve only; does not simulate MTP outputs")
     parser.add_argument("--admission-probe", action="store_true",
                         help="CPU-only experimental admission check, not a runtime fix")
     args = parser.parse_args()
+    if not 1 <= args.steps <= 10000:
+        raise ValueError("CPU reproduction is bounded to 1..10000 scheduler steps")
     with tempfile.TemporaryDirectory(prefix="kandidat-cpu-scheduler-") as temporary:
         (Path(temporary) / "config.json").write_text(json.dumps({
             "model_type":"opt", "architectures":["OPTForCausalLM"],
@@ -33,6 +37,7 @@ def main():
         scheduler = create_scheduler(model=temporary, max_num_seqs=16,
             max_num_batched_tokens=8192, num_blocks=32, block_size=16384,
             max_model_len=262144, skip_tokenizer_init=True, async_scheduling=False)
+        scheduler.num_lookahead_tokens = args.lookahead
         if args.admission_probe:
             allocate = scheduler.kv_cache_manager.allocate_slots
             def probe(request, num_new_tokens, **kwargs):
@@ -40,8 +45,9 @@ def main():
                     manager = scheduler.kv_cache_manager
                     cached = kwargs.get("new_computed_blocks") or manager.empty_kv_cache_blocks
                     target = min(request.num_tokens + 1, scheduler.max_model_len)
+                    slots = min(target + scheduler.num_lookahead_tokens, scheduler.max_model_len)
                     manager.coordinator.get_num_blocks_to_allocate(
-                        request_id=request.request_id, num_tokens=target,
+                        request_id=request.request_id, num_tokens=slots,
                         new_computed_blocks=cached.blocks, num_encoder_tokens=0,
                         total_computed_tokens=kwargs.get("num_new_computed_tokens",0),
                         num_tokens_main_model=target)
@@ -76,6 +82,7 @@ def main():
             if all(r.is_finished() for r in requests):
                 break
         result = {"steps":step+1,"admission_probe":args.admission_probe,
+            "allocation_lookahead":args.lookahead,
             "all_finished":all(r.is_finished() for r in requests),
             "scheduler_preemptions":preemptions,
             "scheduled_recompute_tokens_after_preemption":recompute_tokens,
