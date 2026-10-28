@@ -1,0 +1,1052 @@
+{
+  "records": 1529,
+  "preemptions": {
+    "cmpl-aa925876a7517f51-0-b59ab67c": 26
+  },
+  "requests": {
+    "cmpl-aa925876a7517f51-0-b59ab67c": {
+      "preemptions": 26,
+      "first_preempt": {
+        "event": "preempt",
+        "step": 50,
+        "t": 382465.264025729,
+        "before": {
+          "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+          "status": "RUNNING",
+          "prompt": 49147,
+          "output": 0,
+          "computed": 49147,
+          "placeholders": 1,
+          "spec": 4,
+          "prefill": false,
+          "preemptions": 0
+        },
+        "after": {
+          "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+          "status": "PREEMPTED",
+          "prompt": 49147,
+          "output": 0,
+          "computed": 0,
+          "placeholders": 1,
+          "spec": 0,
+          "prefill": false,
+          "preemptions": 1
+        }
+      },
+      "last_preempt": {
+        "event": "preempt",
+        "step": 126,
+        "t": 382586.302785958,
+        "before": {
+          "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+          "status": "RUNNING",
+          "prompt": 49147,
+          "output": 2,
+          "computed": 49082,
+          "placeholders": 0,
+          "spec": 0,
+          "prefill": true,
+          "preemptions": 25
+        },
+        "after": {
+          "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+          "status": "PREEMPTED",
+          "prompt": 49147,
+          "output": 2,
+          "computed": 0,
+          "placeholders": 0,
+          "spec": 0,
+          "prefill": true,
+          "preemptions": 26
+        }
+      },
+      "generated_tokens_from_first_preempt": 2,
+      "scheduled_tokens_from_first_preempt": 424230,
+      "resume_events": 26,
+      "first_schedules": [
+        {
+          "step": 50,
+          "seconds_since_first_preempt": 8.34219972603023e-05,
+          "before": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 0,
+            "computed": 49147,
+            "placeholders": 1,
+            "spec": 4,
+            "prefill": false,
+            "preemptions": 0
+          },
+          "after": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "PREEMPTED",
+            "prompt": 49147,
+            "output": 0,
+            "computed": 0,
+            "placeholders": 1,
+            "spec": 0,
+            "prefill": false,
+            "preemptions": 1
+          },
+          "scheduled": 0,
+          "resumed": false,
+          "preempted": true,
+          "pools_before": [
+            {
+              "total": 49,
+              "free": 8
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ],
+          "pools_after": [
+            {
+              "total": 49,
+              "free": 13
+            },
+            {
+              "total": 32,
+              "free": 3
+            }
+          ]
+        },
+        {
+          "step": 51,
+          "seconds_since_first_preempt": 0.5145990570308641,
+          "before": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "PREEMPTED",
+            "prompt": 49147,
+            "output": 1,
+            "computed": 0,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": false,
+            "preemptions": 1
+          },
+          "after": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 1,
+            "computed": 40925,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 1
+          },
+          "scheduled": 8157,
+          "resumed": true,
+          "preempted": false,
+          "pools_before": [
+            {
+              "total": 49,
+              "free": 13
+            },
+            {
+              "total": 32,
+              "free": 3
+            }
+          ],
+          "pools_after": [
+            {
+              "total": 49,
+              "free": 7
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ]
+        },
+        {
+          "step": 52,
+          "seconds_since_first_preempt": 0.579918688046746,
+          "before": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 1,
+            "computed": 40925,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 1
+          },
+          "after": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 1,
+            "computed": 49082,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 1
+          },
+          "scheduled": 8157,
+          "resumed": false,
+          "preempted": false,
+          "pools_before": [
+            {
+              "total": 49,
+              "free": 7
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ],
+          "pools_after": [
+            {
+              "total": 49,
+              "free": 8
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ]
+        },
+        {
+          "step": 53,
+          "seconds_since_first_preempt": 2.944514364004135,
+          "before": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 1,
+            "computed": 49082,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 1
+          },
+          "after": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 1,
+            "computed": 49148,
+            "placeholders": 1,
+            "spec": 4,
+            "prefill": false,
+            "preemptions": 1
+          },
+          "scheduled": 66,
+          "resumed": false,
+          "preempted": false,
+          "pools_before": [
+            {
+              "total": 49,
+              "free": 8
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ],
+          "pools_after": [
+            {
+              "total": 49,
+              "free": 8
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ]
+        },
+        {
+          "step": 54,
+          "seconds_since_first_preempt": 5.434097229037434,
+          "before": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 1,
+            "computed": 49148,
+            "placeholders": 1,
+            "spec": 4,
+            "prefill": false,
+            "preemptions": 1
+          },
+          "after": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "PREEMPTED",
+            "prompt": 49147,
+            "output": 1,
+            "computed": 0,
+            "placeholders": 1,
+            "spec": 0,
+            "prefill": false,
+            "preemptions": 2
+          },
+          "scheduled": 0,
+          "resumed": false,
+          "preempted": true,
+          "pools_before": [
+            {
+              "total": 49,
+              "free": 8
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ],
+          "pools_after": [
+            {
+              "total": 49,
+              "free": 13
+            },
+            {
+              "total": 32,
+              "free": 3
+            }
+          ]
+        },
+        {
+          "step": 55,
+          "seconds_since_first_preempt": 5.647305591031909,
+          "before": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "PREEMPTED",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 0,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": false,
+            "preemptions": 2
+          },
+          "after": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 40925,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 2
+          },
+          "scheduled": 8157,
+          "resumed": true,
+          "preempted": false,
+          "pools_before": [
+            {
+              "total": 49,
+              "free": 13
+            },
+            {
+              "total": 32,
+              "free": 3
+            }
+          ],
+          "pools_after": [
+            {
+              "total": 49,
+              "free": 7
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ]
+        },
+        {
+          "step": 56,
+          "seconds_since_first_preempt": 5.720111666014418,
+          "before": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 40925,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 2
+          },
+          "after": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 49082,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 2
+          },
+          "scheduled": 8157,
+          "resumed": false,
+          "preempted": false,
+          "pools_before": [
+            {
+              "total": 49,
+              "free": 7
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ],
+          "pools_after": [
+            {
+              "total": 49,
+              "free": 8
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ]
+        },
+        {
+          "step": 57,
+          "seconds_since_first_preempt": 8.08309517201269,
+          "before": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 49082,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 2
+          },
+          "after": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "PREEMPTED",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 0,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 3
+          },
+          "scheduled": 0,
+          "resumed": false,
+          "preempted": true,
+          "pools_before": [
+            {
+              "total": 49,
+              "free": 8
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ],
+          "pools_after": [
+            {
+              "total": 49,
+              "free": 13
+            },
+            {
+              "total": 32,
+              "free": 3
+            }
+          ]
+        },
+        {
+          "step": 58,
+          "seconds_since_first_preempt": 10.558069142047316,
+          "before": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "PREEMPTED",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 0,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 3
+          },
+          "after": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 40925,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 3
+          },
+          "scheduled": 8157,
+          "resumed": true,
+          "preempted": false,
+          "pools_before": [
+            {
+              "total": 49,
+              "free": 13
+            },
+            {
+              "total": 32,
+              "free": 3
+            }
+          ],
+          "pools_after": [
+            {
+              "total": 49,
+              "free": 7
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ]
+        },
+        {
+          "step": 59,
+          "seconds_since_first_preempt": 10.630637679016218,
+          "before": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 40925,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 3
+          },
+          "after": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 49082,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 3
+          },
+          "scheduled": 8157,
+          "resumed": false,
+          "preempted": false,
+          "pools_before": [
+            {
+              "total": 49,
+              "free": 7
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ],
+          "pools_after": [
+            {
+              "total": 49,
+              "free": 8
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ]
+        },
+        {
+          "step": 60,
+          "seconds_since_first_preempt": 12.99146590899909,
+          "before": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 49082,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 3
+          },
+          "after": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "PREEMPTED",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 0,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 4
+          },
+          "scheduled": 0,
+          "resumed": false,
+          "preempted": true,
+          "pools_before": [
+            {
+              "total": 49,
+              "free": 8
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ],
+          "pools_after": [
+            {
+              "total": 49,
+              "free": 13
+            },
+            {
+              "total": 32,
+              "free": 3
+            }
+          ]
+        },
+        {
+          "step": 61,
+          "seconds_since_first_preempt": 15.492244880006183,
+          "before": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "PREEMPTED",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 0,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 4
+          },
+          "after": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 40925,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 4
+          },
+          "scheduled": 8157,
+          "resumed": true,
+          "preempted": false,
+          "pools_before": [
+            {
+              "total": 49,
+              "free": 13
+            },
+            {
+              "total": 32,
+              "free": 3
+            }
+          ],
+          "pools_after": [
+            {
+              "total": 49,
+              "free": 7
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ]
+        },
+        {
+          "step": 62,
+          "seconds_since_first_preempt": 15.566034257004503,
+          "before": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 40925,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 4
+          },
+          "after": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 49082,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 4
+          },
+          "scheduled": 8157,
+          "resumed": false,
+          "preempted": false,
+          "pools_before": [
+            {
+              "total": 49,
+              "free": 7
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ],
+          "pools_after": [
+            {
+              "total": 49,
+              "free": 8
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ]
+        },
+        {
+          "step": 63,
+          "seconds_since_first_preempt": 17.92923246801365,
+          "before": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 49082,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 4
+          },
+          "after": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "PREEMPTED",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 0,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 5
+          },
+          "scheduled": 0,
+          "resumed": false,
+          "preempted": true,
+          "pools_before": [
+            {
+              "total": 49,
+              "free": 8
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ],
+          "pools_after": [
+            {
+              "total": 49,
+              "free": 13
+            },
+            {
+              "total": 32,
+              "free": 3
+            }
+          ]
+        },
+        {
+          "step": 64,
+          "seconds_since_first_preempt": 20.408553347049747,
+          "before": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "PREEMPTED",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 0,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 5
+          },
+          "after": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 40925,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 5
+          },
+          "scheduled": 8157,
+          "resumed": true,
+          "preempted": false,
+          "pools_before": [
+            {
+              "total": 49,
+              "free": 13
+            },
+            {
+              "total": 32,
+              "free": 3
+            }
+          ],
+          "pools_after": [
+            {
+              "total": 49,
+              "free": 7
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ]
+        },
+        {
+          "step": 65,
+          "seconds_since_first_preempt": 20.485437174036633,
+          "before": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 40925,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 5
+          },
+          "after": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 49082,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 5
+          },
+          "scheduled": 8157,
+          "resumed": false,
+          "preempted": false,
+          "pools_before": [
+            {
+              "total": 49,
+              "free": 7
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ],
+          "pools_after": [
+            {
+              "total": 49,
+              "free": 8
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ]
+        }
+      ],
+      "last_schedules": [
+        {
+          "step": 125,
+          "seconds_since_first_preempt": 118.69378222804517,
+          "before": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 40925,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 25
+          },
+          "after": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 49082,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 25
+          },
+          "scheduled": 8157,
+          "resumed": false,
+          "preempted": false,
+          "pools_before": [
+            {
+              "total": 49,
+              "free": 7
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ],
+          "pools_after": [
+            {
+              "total": 49,
+              "free": 8
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ]
+        },
+        {
+          "step": 126,
+          "seconds_since_first_preempt": 121.03885135101154,
+          "before": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 49082,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 25
+          },
+          "after": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "PREEMPTED",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 0,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 26
+          },
+          "scheduled": 0,
+          "resumed": false,
+          "preempted": true,
+          "pools_before": [
+            {
+              "total": 49,
+              "free": 8
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ],
+          "pools_after": [
+            {
+              "total": 49,
+              "free": 13
+            },
+            {
+              "total": 32,
+              "free": 3
+            }
+          ]
+        },
+        {
+          "step": 127,
+          "seconds_since_first_preempt": 123.49999456503429,
+          "before": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "PREEMPTED",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 0,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 26
+          },
+          "after": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 40925,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 26
+          },
+          "scheduled": 8157,
+          "resumed": true,
+          "preempted": false,
+          "pools_before": [
+            {
+              "total": 49,
+              "free": 13
+            },
+            {
+              "total": 32,
+              "free": 3
+            }
+          ],
+          "pools_after": [
+            {
+              "total": 49,
+              "free": 7
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ]
+        },
+        {
+          "step": 128,
+          "seconds_since_first_preempt": 123.57309215300484,
+          "before": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 40925,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 26
+          },
+          "after": {
+            "id": "cmpl-aa925876a7517f51-0-b59ab67c",
+            "status": "RUNNING",
+            "prompt": 49147,
+            "output": 2,
+            "computed": 49082,
+            "placeholders": 0,
+            "spec": 0,
+            "prefill": true,
+            "preemptions": 26
+          },
+          "scheduled": 8157,
+          "resumed": false,
+          "preempted": false,
+          "pools_before": [
+            {
+              "total": 49,
+              "free": 7
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ],
+          "pools_after": [
+            {
+              "total": 49,
+              "free": 8
+            },
+            {
+              "total": 32,
+              "free": 0
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
