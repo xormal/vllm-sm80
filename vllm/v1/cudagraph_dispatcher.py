@@ -10,6 +10,13 @@ from vllm.lora.utils import get_captured_lora_counts
 logger = init_logger(__name__)
 
 
+import os as _os
+_CLEF_GRAPH = (_os.environ.get("FA2SM70_CLEF", "0") == "1"
+               and _os.environ.get("FA2SM70_CLEF_GRAPH", "0") == "1")
+_CLEF_GRAPH_MAX = int(_os.environ.get("FA2SM70_CLEF_GRAPH_MAX", "512"))
+_CLEF_GRAPH_MIN = int(_os.environ.get("FA2SM70_CLEF_GRAPH_MIN", "64"))   # меньшие шаги с Clef -- eager (редки)
+
+
 class CudagraphDispatcher:
     """
     Runtime cudagraph dispatcher to dispatch keys for multiple set of
@@ -125,6 +132,7 @@ class CudagraphDispatcher:
         uniform_decode: bool,
         has_lora: bool,
         num_active_loras: int = 0,
+        has_clef: bool = False,
     ) -> BatchDescriptor:
         max_num_seqs = self.vllm_config.scheduler_config.max_num_seqs
         uniform_decode_query_len = self.uniform_decode_query_len
@@ -143,6 +151,7 @@ class CudagraphDispatcher:
             uniform=uniform_decode,
             has_lora=has_lora,
             num_active_loras=num_active_loras,
+            has_clef=has_clef,
         )
 
     def add_cudagraph_key(
@@ -187,6 +196,19 @@ class CudagraphDispatcher:
                     ).relax_for_mixed_batch_cudagraphs(),
                 )
 
+        # [ПЛАВНОСТЬ 29.10] семейство кусочных графов шагов с Clef (графобезопасная поправка, FA2SM70_CLEF_GRAPH=1)
+        if (_CLEF_GRAPH and cudagraph_mode.mixed_mode() == CUDAGraphMode.PIECEWISE):
+            for bs, num_active_loras in product(
+                self.compilation_config.cudagraph_capture_sizes, lora_cases
+            ):
+                if _CLEF_GRAPH_MIN <= bs <= _CLEF_GRAPH_MAX:
+                    self.add_cudagraph_key(
+                        CUDAGraphMode.PIECEWISE,
+                        self._create_padded_batch_descriptor(
+                            bs, False, num_active_loras > 0, num_active_loras, has_clef=True
+                        ).relax_for_mixed_batch_cudagraphs(),
+                    )
+
         # if decode cudagraph mode is FULL, and we don't already have mixed
         # mode full cudagraphs then add them here.
         if (
@@ -221,6 +243,7 @@ class CudagraphDispatcher:
         has_lora: bool = False,
         disable_full: bool = False,
         num_active_loras: int = 0,
+        has_clef: bool = False,
     ) -> tuple[CUDAGraphMode, BatchDescriptor]:
         """
         Given conditions(e.g.,batch descriptor and if using piecewise only),
@@ -244,6 +267,16 @@ class CudagraphDispatcher:
             or num_tokens > self.compilation_config.max_cudagraph_capture_size
         ):
             return CUDAGraphMode.NONE, BatchDescriptor(num_tokens)
+        if has_clef and num_tokens > _CLEF_GRAPH_MAX:
+            return CUDAGraphMode.NONE, BatchDescriptor(num_tokens)   # больше буферов -- прежний путь Clef
+        if has_clef:
+            # [ПЛАВНОСТЬ 29.10] шаг с Clef -- только кусочный граф семейства has_clef, иначе eager
+            batch_desc = self._create_padded_batch_descriptor(
+                num_tokens, False, has_lora, num_active_loras, has_clef=True
+            ).relax_for_mixed_batch_cudagraphs()
+            if batch_desc in self.cudagraph_keys[CUDAGraphMode.PIECEWISE]:
+                return CUDAGraphMode.PIECEWISE, batch_desc
+            return CUDAGraphMode.NONE, BatchDescriptor(num_tokens, has_clef=True)
 
         effective_num_active_loras = num_active_loras
         if has_lora and num_active_loras > 0:

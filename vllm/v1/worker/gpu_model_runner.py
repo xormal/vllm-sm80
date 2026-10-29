@@ -3889,6 +3889,7 @@ class GPUModelRunner(
         force_has_lora: bool | None = None,
         force_num_active_loras: int | None = None,
         num_encoder_reqs: int = 0,
+        force_has_clef: bool | None = None,
     ) -> tuple[
         CUDAGraphMode,
         BatchDescriptor,
@@ -3925,6 +3926,7 @@ class GPUModelRunner(
                 uniform_decode=uniform_decode,
                 disable_full=disable_full,
                 num_active_loras=num_active_loras,
+                has_clef=bool(force_has_clef),     # [ПЛАВНОСТЬ 29.10] семейство графов шагов с Clef
             )
             if not force_eager
             else (CUDAGraphMode.NONE, BatchDescriptor(num_tokens_padded))
@@ -5916,6 +5918,7 @@ class GPUModelRunner(
         remove_lora: bool = True,
         is_graph_capturing: bool = False,
         num_active_loras: int = 0,
+        has_clef: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Run a dummy forward pass to warm up/profile run or capture the
@@ -6025,6 +6028,7 @@ class GPUModelRunner(
                 # `force_num_active_loras` is used for cudagraph capture; because we
                 # need to capture graphs for specific num_active_loras counts
                 force_num_active_loras=num_active_loras,
+                force_has_clef=has_clef,
             )
         )
 
@@ -6626,6 +6630,7 @@ class GPUModelRunner(
                     cudagraph_runtime_mode=CUDAGraphMode.NONE,
                     allow_microbatching=allow_microbatching,
                     num_active_loras=num_active_loras,
+                    has_clef=batch_desc.has_clef,
                 )
 
             # Capture run
@@ -6635,6 +6640,7 @@ class GPUModelRunner(
                 allow_microbatching=allow_microbatching,
                 num_active_loras=num_active_loras,
                 is_graph_capturing=True,
+                has_clef=batch_desc.has_clef,
             )
         self.maybe_remove_all_loras(self.lora_config)
 

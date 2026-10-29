@@ -37,6 +37,7 @@
 #include <cuda_runtime.h>
 
 #include <cmath>
+#include <cstring>
 #include <map>
 #include <string>
 #include <tuple>
@@ -610,6 +611,185 @@ void delta_keyed_range(at::Tensor x, at::Tensor y, std::vector<at::Tensor> keys,
 }
 
 // ------------------------------------------------------------------------------------------------
+// ГРАФОБЕЗОПАСНАЯ ПОПРАВКА (29.10, FA2SM70_CLEF_GRAPH)
+// Шаг с Clef шёл без CUDA-графа (force_eager): delta() выбирает адреса и размеры GEMM по CPU-вектору
+// сегментов, а при захвате это запеклось бы. Здесь строки Clef приходят через ПОСТОЯННЫЕ буферы на GPU
+// (индексы строк шага и их число, асинхронная копия из кольца закреплённых буферов перед шагом), а
+// поправка -- статичная последовательность: сбор строк x и y -> та же цепочка cuBLAS (сжатие, разжатие и
+// плотное с beta=1, в том же порядке) на M = размер шага -> запись обратно ТОЛЬКО строк Clef. Строки
+// чатов не трогаются (побитно прежние). Граф, захваченный с этими ядрами, при повторе берёт текущий
+// состав строк без перезахвата. Число строк Clef и размеры шага ограничены max_rows (размер графа).
+// ------------------------------------------------------------------------------------------------
+struct GState {
+  bool on = false;
+  int max_rows = 0;
+  int64_t kmax = 0, nmax = 0;
+  at::Tensor rows, n, xc, yc, tb;           // GPU: int32 [max_rows], int32 [1], half scratch
+  std::vector<at::Tensor> host;             // закреплённое кольцо int32 [1 + max_rows]
+  std::vector<cudaEvent_t> ev;
+  int ring = 0;
+  int64_t n_delta = 0, n_set = 0;
+};
+GState G;
+
+template <bool VEC>
+__global__ void g_gather_k(const half* __restrict__ src, int64_t lds, half* __restrict__ dst, int64_t ldd,
+                           int cols, const int* __restrict__ rows, const int* __restrict__ n, int zero_tail) {
+  const int i = blockIdx.x;
+  half* d = dst + (int64_t)i * ldd;
+  if (i < *n) {
+    const half* s = src + (int64_t)rows[i] * lds;
+    if (VEC) {
+      for (int c = threadIdx.x * 8; c < cols; c += blockDim.x * 8)
+        *reinterpret_cast<uint4*>(d + c) = *reinterpret_cast<const uint4*>(s + c);
+    } else {
+      for (int c = threadIdx.x; c < cols; c += blockDim.x) d[c] = s[c];
+    }
+  } else if (zero_tail) {
+    const half z = __float2half(0.f);
+    for (int c = threadIdx.x; c < cols; c += blockDim.x) d[c] = z;
+  }
+}
+
+template <bool VEC>
+__global__ void g_scatter_k(const half* __restrict__ src, int64_t lds, half* __restrict__ dst, int64_t ldd,
+                            int cols, const int* __restrict__ rows, const int* __restrict__ n) {
+  const int i = blockIdx.x;
+  if (i >= *n) return;
+  const half* s = src + (int64_t)i * lds;
+  half* d = dst + (int64_t)rows[i] * ldd;
+  if (VEC) {
+    for (int c = threadIdx.x * 8; c < cols; c += blockDim.x * 8)
+      *reinterpret_cast<uint4*>(d + c) = *reinterpret_cast<const uint4*>(s + c);
+  } else {
+    for (int c = threadIdx.x; c < cols; c += blockDim.x) d[c] = s[c];
+  }
+}
+
+inline bool vec_ok(const void* a, int64_t lda, const void* b, int64_t ldb, int cols) {
+  return ((uintptr_t)a % 16 == 0) && ((uintptr_t)b % 16 == 0) && lda % 8 == 0 && ldb % 8 == 0 && cols % 8 == 0;
+}
+
+void g_gather(const half* src, int64_t lds, half* dst, int64_t ldd, int cols, int M, int zero_tail, cudaStream_t st) {
+  if (M <= 0) return;
+  if (vec_ok(src, lds, dst, ldd, cols))
+    g_gather_k<true><<<M, 256, 0, st>>>(src, lds, dst, ldd, cols, G.rows.data_ptr<int>(), G.n.data_ptr<int>(), zero_tail);
+  else
+    g_gather_k<false><<<M, 256, 0, st>>>(src, lds, dst, ldd, cols, G.rows.data_ptr<int>(), G.n.data_ptr<int>(), zero_tail);
+  CLEF_CK(cudaGetLastError());
+}
+
+void g_scatter(const half* src, int64_t lds, half* dst, int64_t ldd, int cols, int M, cudaStream_t st) {
+  if (M <= 0) return;
+  if (vec_ok(src, lds, dst, ldd, cols))
+    g_scatter_k<true><<<M, 256, 0, st>>>(src, lds, dst, ldd, cols, G.rows.data_ptr<int>(), G.n.data_ptr<int>());
+  else
+    g_scatter_k<false><<<M, 256, 0, st>>>(src, lds, dst, ldd, cols, G.rows.data_ptr<int>(), G.n.data_ptr<int>());
+  CLEF_CK(cudaGetLastError());
+}
+
+void init_graph(int64_t max_rows, int64_t kmax, int64_t nmax, int64_t ring) {
+  TORCH_CHECK(E.inited && !G.on, "clef: init_graph -- после finalize_delta, один раз");
+  TORCH_CHECK(max_rows > 0 && kmax > 0 && nmax > 0 && ring >= 2, "clef: init_graph: размеры");
+  const auto dev = at::Device(at::kCUDA, c10::cuda::current_device());
+  const auto i32 = at::TensorOptions().dtype(at::kInt).device(dev);
+  const auto f16 = at::TensorOptions().dtype(at::kHalf).device(dev);
+  G.max_rows = (int)max_rows;
+  G.kmax = kmax;
+  G.nmax = nmax;
+  G.rows = at::zeros({max_rows}, i32);
+  G.n = at::zeros({1}, i32);
+  G.xc = at::empty({max_rows * kmax}, f16);
+  G.yc = at::empty({max_rows * nmax}, f16);
+  G.tb = at::empty({max_rows * (int64_t)E.rmax}, f16);
+  for (int64_t k = 0; k < ring; ++k) {
+    G.host.push_back(at::empty({1 + max_rows}, at::TensorOptions().dtype(at::kInt).pinned_memory(true)));
+    cudaEvent_t e;
+    CLEF_CK(cudaEventCreateWithFlags(&e, cudaEventDisableTiming));
+    G.ev.push_back(e);
+  }
+  for (const HLayer& L : E.layers) TORCH_CHECK(!L.streamed, "clef: графовый путь требует резидентных слоёв поправки");
+  G.on = true;
+}
+
+// строки Clef этого шага (номера строк в пачке, int32 cpu); копия -- в текущем потоке, до прохода
+void graph_set_rows(at::Tensor r) {
+  TORCH_CHECK(G.on, "clef: graph_set_rows без init_graph");
+  TORCH_CHECK(r.device().is_cpu() && r.scalar_type() == at::kInt && r.dim() == 1 && r.is_contiguous(), "clef: rows int32 cpu 1-D");
+  const int64_t m = r.numel();
+  TORCH_CHECK(m <= G.max_rows, "clef: строк Clef ", m, " > ", G.max_rows);
+  const int k = G.ring;
+  G.ring = (k + 1) % (int)G.host.size();
+  CLEF_CK(cudaEventSynchronize(G.ev[k]));      // прошлая копия из этого буфера уже ушла
+  int* h = G.host[k].data_ptr<int>();
+  h[0] = (int)m;
+  if (m) std::memcpy(h + 1, r.data_ptr<int>(), m * sizeof(int));
+  cudaStream_t st = at::cuda::getCurrentCUDAStream();
+  CLEF_CK(cudaMemcpyAsync(G.n.data_ptr(), h, sizeof(int), cudaMemcpyHostToDevice, st));
+  if (m) CLEF_CK(cudaMemcpyAsync(G.rows.data_ptr(), h + 1, m * sizeof(int), cudaMemcpyHostToDevice, st));
+  CLEF_CK(cudaEventRecord(G.ev[k], st));
+  G.n_set++;
+}
+
+void delta_graph(at::Tensor x, at::Tensor y, int64_t model_layer, int64_t mod) {
+  if (!G.on) return;
+  if (model_layer < 0 || model_layer >= 256 || E.lmap[model_layer] < 0) return;
+  if (x.dim() != 2 || y.dim() != 2 || x.scalar_type() != at::kHalf || y.scalar_type() != at::kHalf ||
+      x.stride(1) != 1 || y.stride(1) != 1 || x.size(0) != y.size(0) || !x.is_cuda() || !y.is_cuda()) {
+    fail("delta_graph: форма/тип x,y");
+    return;
+  }
+  HLayer& L = E.layers[E.lmap[model_layer]];
+  bool has_op = false;
+  for (const Op& o : L.ops) has_op |= (o.mod == mod);
+  if (!has_op) return;
+  const int64_t M = x.size(0), ldx = x.stride(0), ldy = y.stride(0), K = x.size(1), N = y.size(1);
+  if (M > G.max_rows || K > G.kmax || N > G.nmax) { fail("delta_graph: шаг больше буферов"); return; }
+  cudaStream_t st = at::cuda::getCurrentCUDAStream();
+  const uint8_t* base = (const uint8_t*)L.dev.data_ptr();
+  half* xc = (half*)G.xc.data_ptr();
+  half* yc = (half*)G.yc.data_ptr();
+  half* tb = (half*)G.tb.data_ptr();
+  g_gather((const half*)x.data_ptr(), ldx, xc, K, (int)K, (int)M, 1, st);
+  g_gather((const half*)y.data_ptr(), ldy, yc, N, (int)N, (int)M, 0, st);
+  int rank = 0;
+  for (const Op& o : L.ops) {
+    if (o.mod != mod) continue;
+    const half* w = (const half*)(base + o.off);
+    cublasStatus_t s = CUBLAS_STATUS_SUCCESS;
+    if (o.type == 0) {
+      if (o.in != K) { fail("delta_graph: in != K"); return; }
+      rank = o.n;
+      s = gemm_xwt(xc, (int)K, w, o.in, tb, CUDA_R_16F, rank, (int)M, rank, o.in, 0.f);
+    } else if (o.type == 1) {
+      if (rank == 0 || o.col + o.n > N) { fail("delta_graph: разжатие без сжатия / за краем"); return; }
+      s = gemm_xwt(tb, rank, w, rank, yc + o.col, CUDA_R_16F, (int)N, (int)M, o.n, rank, 1.f);
+    } else {
+      if (o.in != K || o.col + o.n > N) { fail("delta_graph: плотная форма"); return; }
+      s = gemm_xwt(xc, (int)K, w, o.in, yc + o.col, CUDA_R_16F, (int)N, (int)M, o.n, o.in, 1.f);
+    }
+    if (s != CUBLAS_STATUS_SUCCESS) { fail("delta_graph: cublas " + std::to_string((int)s)); return; }
+  }
+  g_scatter(yc, N, (half*)y.data_ptr(), ldy, (int)N, (int)M, st);
+  G.n_delta++;
+}
+
+void delta_keyed_graph(at::Tensor x, at::Tensor y, std::vector<at::Tensor> keys) {
+  if (!G.on) return;
+  for (const auto& k : keys) {
+    if (!k.defined() || k.numel() == 0) continue;
+    auto it = E.keys.find((uintptr_t)k.data_ptr());
+    if (it != E.keys.end()) {
+      delta_graph(x, y, it->second.first, it->second.second);
+      return;
+    }
+  }
+  E.n_keymiss++;
+}
+
+std::vector<int64_t> graph_stats() { return {G.on ? 1 : 0, G.max_rows, G.kmax, G.nmax, G.n_delta, G.n_set}; }
+
+// ------------------------------------------------------------------------------------------------
 // ГОЛОВА
 // ------------------------------------------------------------------------------------------------
 const half* W(const std::string& name) {
@@ -945,4 +1125,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("step_bad", &step_bad);
   m.def("stats", &stats);
   m.def("last_error", &last_error);
+  m.def("init_graph", &init_graph);
+  m.def("graph_set_rows", &graph_set_rows);
+  m.def("delta_graph", &delta_graph);
+  m.def("delta_keyed_graph", &delta_keyed_graph);
+  m.def("graph_stats", &graph_stats);
 }

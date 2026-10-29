@@ -84,6 +84,43 @@ _QOMAX, _QNMAX = 448, 64
 _SALT = "fa2sm70-clef"
 
 _АКТИВЕН = [False]
+# [ПЛАВНОСТЬ 29.10] ГРАФОБЕЗОПАСНАЯ ПОПРАВКА (FA2SM70_CLEF_GRAPH=1): шаги с Clef до FA2SM70_CLEF_GRAPH_MAX токенов идут
+# кусочными графами семейства has_clef (cudagraph_dispatcher) вместо force_eager; поправка -- clef.cu delta_graph
+# (строки Clef через постоянные буферы на GPU). FA2SM70_CLEF_GRAPH_FILE=<путь>: "0" в файле -- прежний путь
+# (force_eager), "1" -- графовый; перечитывается раз в секунду (A/B в одном экземпляре). Нужны размеры графов
+# до FA2SM70_CLEF_GRAPH_MAX в FA2SM80_CG_SIZES.
+_ГРАФ = os.environ.get("FA2SM70_CLEF_GRAPH", "0") == "1"
+_ГРАФ_МАКС = int(os.environ.get("FA2SM70_CLEF_GRAPH_MAX", "512"))
+_ГРАФ_ФАЙЛ = os.environ.get("FA2SM70_CLEF_GRAPH_FILE", "")
+_ГРАФ_ГОТОВ = [False]
+_ГРАФ_ПЕРЕКЛ = {"t": 0.0, "вкл": True}
+
+
+def _граф_включён():
+    if not _ГРАФ_ГОТОВ[0]:
+        return False
+    if _ГРАФ_ФАЙЛ:
+        сейчас = time.monotonic()
+        if сейчас - _ГРАФ_ПЕРЕКЛ["t"] >= 1.0:
+            _ГРАФ_ПЕРЕКЛ["t"] = сейчас
+            try:
+                with open(_ГРАФ_ФАЙЛ) as f:
+                    _ГРАФ_ПЕРЕКЛ["вкл"] = f.read(1) != "0"
+            except OSError:
+                _ГРАФ_ПЕРЕКЛ["вкл"] = True
+        return _ГРАФ_ПЕРЕКЛ["вкл"]
+    return True
+
+
+def _шаг_графовый():
+    """Текущий проход -- шаг семейства has_clef (кусочный граф или eager с графовой поправкой)."""
+    if not _ГРАФ_ГОТОВ[0]:
+        return False
+    from vllm.forward_context import get_forward_context, is_forward_context_available
+    if not is_forward_context_available():
+        return False
+    bd = get_forward_context().batch_descriptor
+    return bd is not None and getattr(bd, "has_clef", False)
 
 
 def _лог(*a):
@@ -123,6 +160,9 @@ _MOD = {"self_attn.qkv_proj": 0, "linear_attn.in_proj_qkvz": 0, "linear_attn.in_
 
 
 def _хук(x, y, ключи):
+    if _ГРАФ_ГОТОВ[0] and _шаг_графовый():
+        _С.ext.delta_keyed_graph(x.reshape(-1, x.shape[-1]), y.view(-1, y.shape[-1]), ключи)
+        return
     if not _АКТИВЕН[0]:
         return
     from fa2sm70_clef_hook import row_window_offset
@@ -219,6 +259,7 @@ def _настроить(runner):
     # ключи модулей: тензоры, которые тело умножения получает аргументами
     _регистрировать_лин()
     найдено, ширина_плохо = set(), []
+    _гр_размеры = []
     for name, m in runner.model.named_modules():
         if "mtp" in name:
             continue
@@ -233,6 +274,8 @@ def _настроить(runner):
         шир = getattr(m, "output_size_per_partition", None)
         if mod in (2, 4):
             шир = getattr(m, "output_size", шир)
+        _вх = getattr(m, "input_size_per_partition", None) or getattr(m, "input_size", 0)
+        _гр_размеры.append((int(_вх or 0), int(шир or 0)))
         if шир is not None and ожидаемые[(L, mod)] > шир:
             ширина_плохо.append((name, ожидаемые[(L, mod)], шир))
         ключи = []
@@ -267,6 +310,15 @@ def _настроить(runner):
         _С.lm_head = _ЧтецСловаря(runner.model_config.model)
     _С.free = list(range(_R))
     _С.ext = ext
+    if _ГРАФ and hasattr(ext, "init_graph") and _гр_размеры:
+        kmax = max(k for k, _ in _гр_размеры)
+        nmax = max(n for _, n in _гр_размеры)
+        ext.init_graph(_ГРАФ_МАКС, kmax, nmax, 4)
+        _ГРАФ_ГОТОВ[0] = True
+        _лог(f"графобезопасная поправка: шаги с Clef до {_ГРАФ_МАКС} токенов -- графами has_clef "
+             f"(буферы {_ГРАФ_МАКС} x K {kmax} / N {nmax})")
+    elif _ГРАФ:
+        _лог("графобезопасная поправка НЕ включена: расширение без init_graph или нет модулей")
     import fa2sm70_clef_hook
     fa2sm70_clef_hook.ХУК[0] = _хук
     if hasattr(_С.ext, "delta_keyed_range"):
@@ -492,7 +544,10 @@ def установить_воркер():
 
     def _determine_batch_execution_and_padding(self, *a, **kw):
         if getattr(self, "_clef_segs", None) is not None:
-            kw["force_eager"] = True
+            if _граф_включён():
+                kw["force_has_clef"] = True      # кусочный граф has_clef; больше FA2SM70_CLEF_GRAPH_MAX -- eager
+            else:
+                kw["force_eager"] = True
         return _det(self, *a, **kw)
 
     def _model_forward(self, *a, **kw):
@@ -502,6 +557,11 @@ def установить_воркер():
         import torch
         self._clef_segs = None
         _С.ext.set_step(torch.from_numpy(segs))
+        if _ГРАФ_ГОТОВ[0] and _шаг_графовый():
+            import numpy as np
+            строки = np.concatenate([np.arange(int(r0), int(r0) + int(n), dtype=np.int32)
+                                     for r0, n in segs[:, :2]]) if len(segs) else np.zeros(0, np.int32)
+            _С.ext.graph_set_rows(torch.from_numpy(строки))
         _АКТИВЕН[0] = True
         try:
             out = _fwd(self, *a, **kw)
