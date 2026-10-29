@@ -10,6 +10,10 @@ export FA2SM70_CLEF=1 FA2SM80_SEL_DENSE_NB=1024 FA2SM70_EXCH12=1
 export FA2SM80_RESUME_ADMISSION=1 FA2SM70_GRAN_CONV_ALL=1
 export FA2SM80_BLOCKPIPE_FALLBACK_ROWS=0 FA2SM80_CONV_META_FUSED=0
 export FA2SM80_MEMTRACE=900
+# [ПЛАВНОСТЬ 30.10] по решению владельца после окон 9-10b: бюджет prefill 2048 токенов на шаг, пока идёт декод
+# (без порога очереди), и голова Clef вне критического пути (сборщик с замком захвата графов)
+export FA2SM80_PREFILL_BUDGET_DECODING=2048 FA2SM80_PREFILL_BUDGET_BACKLOG=0
+export FA2SM70_CLEF_HEAD_ASYNC=1
 export VLLM_CACHE_ROOT="$STATE_DIR/acceptance/vllm-candidate-fallback-0-conv-all-1"
 export FA2SM70_CLEF_OUT="$STATE_DIR/acceptance/clef-candidate"
 cd "$CANDIDATE_REPO"
