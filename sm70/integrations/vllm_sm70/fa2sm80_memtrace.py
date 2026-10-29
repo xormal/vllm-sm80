@@ -76,6 +76,69 @@ def _закреплённая():
         return None
 
 
+def _видеопамять():
+    """[ПАМЯТЬ 29.10] Сводка аллокатора CUDA ЭТОГО процесса -- только если CUDA здесь уже поднята (API-сервер и ядро
+    движка не трогаются) и только по картам с зарезервированной памятью. Без вызовов CUDA API (только учёт
+    аллокатора на хосте): фоновый поток не должен сорвать захват графа в другом потоке. Свободное у драйвера пишет
+    наблюдатель (NVML). Приватные пулы (CUDA-графы) -- по сегментам снимка: так видно, как запас VRAM съедают
+    графы. Снимок держит замок аллокатора миллисекунды; раз в период прибора (боевой -- 900 с)."""
+    try:
+        import torch
+        if not torch.cuda.is_initialized():
+            return []
+        out = []
+        for d in range(torch.cuda.device_count()):
+            st = torch.cuda.memory_stats(d)
+            if not st.get("reserved_bytes.all.current", 0):
+                continue
+            пул = пул_занято = n = 0
+            for seg in torch.cuda.memory_snapshot():
+                if seg.get("device") != d:
+                    continue
+                pid = seg.get("segment_pool_id")
+                if pid is not None and tuple(pid) != (0, 0):
+                    пул += seg.get("total_size", 0)
+                    пул_занято += seg.get("allocated_size", 0)
+                    n += 1
+            out.append((d, st.get("allocated_bytes.all.current", 0), st.get("reserved_bytes.all.current", 0),
+                        st.get("allocated_bytes.all.peak", 0), пул, пул_занято, n,
+                        st.get("num_alloc_retries", 0), st.get("num_ooms", 0)))
+        return out
+    except Exception:  # noqa: BLE001
+        return []
+
+
+# [ПАМЯТЬ 29.10] FA2SM80_MEMHIST=<префикс> -- ТОЛЬКО для диагностического экземпляра: в процессе, чьё имя содержит
+# FA2SM80_MEMHIST_ONLY (умолчание Worker_TP0), включается история выделений CUDA со стеками Python (дорого: каждая
+# аллокация снимает стек) по появлению файла <префикс>.start; при появлении <префикс>.trigger пишется снимок <префикс>.<n>.pickle (кто держит
+# память, сегменты по потокам и пулам). В бою не задаётся.
+_ИСТОРИЯ = {"вкл": False, "n": 0}
+
+
+def _история_памяти():
+    префикс = os.environ.get("FA2SM80_MEMHIST", "")
+    if not префикс or os.environ.get("FA2SM80_MEMHIST_ONLY", "Worker_TP0") not in _имя():
+        return
+    try:
+        import torch
+        if not torch.cuda.is_initialized():
+            return
+        if not _ИСТОРИЯ["вкл"] and os.path.exists(префикс + ".start"):
+            os.remove(префикс + ".start")
+            torch.cuda.memory._record_memory_history(max_entries=int(os.environ.get("FA2SM80_MEMHIST_N", "200000")),
+                                                     stacks="python")
+            _ИСТОРИЯ["вкл"] = True
+            _лог(f"история выделений CUDA включена в {_имя()}")
+        if os.path.exists(префикс + ".trigger"):
+            os.remove(префикс + ".trigger")
+            _ИСТОРИЯ["n"] += 1
+            путь = f"{префикс}.{_ИСТОРИЯ['n']}.pickle"
+            torch.cuda.memory._dump_snapshot(путь)
+            _лог(f"снимок памяти CUDA записан: {путь}")
+    except Exception as ex:  # noqa: BLE001
+        _лог(f"история выделений: {type(ex).__name__}: {ex}")
+
+
 def _цикл(период, tm, gc_on):
     import collections
     прежн = None
@@ -97,6 +160,10 @@ def _цикл(период, tm, gc_on):
              f"(отображений {к['n_anon']}, >=64M {к['big_anon']}) file={к['file'] / 1024:.0f} "
              f"shm={к['shm'] / 1024:.0f} МиБ{d}")
         прежн = к
+        _история_памяти()
+        for d, a, r, pk, pl, plu, n, rt, oo in _видеопамять():
+            _лог(f"GPU{d}: выделено {a / 2**20:.0f} резерв {r / 2**20:.0f} пик {pk / 2**20:.0f} | приватные пулы "
+                 f"{pl / 2**20:.0f} (занято {plu / 2**20:.0f}, сегментов {n}) МиБ | повторов {rt}, OOM {oo}")
         з = _закреплённая()
         if з:
             _лог("закреплённая (torch host): " + " ".join(f"{k}={v / 2**20:.0f}M" for k, v in sorted(з.items())))
