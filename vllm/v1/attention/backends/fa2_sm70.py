@@ -467,6 +467,32 @@ def _с_повтором(fn):
         return fn()
 
 
+# [ПЛАВНОСТЬ 29.10] FA2SM80_MIX_DEC_UNIFORM=1: в СМЕШАННОМ шаге ведущие строки спекулятивного декода (одинаковый
+# q = 1+k, гибридная модель кладёт декод первым) считаются ОДНИМ вызовом однородного пути (_decode_uniform, то же ядро,
+# что в каждом чистом шаге декода), а не построчным префилльным путём: профиль окна 7 -- 8 чатов x 17 слоёв внимания =
+# ~139 вызовов _prefill_row на шаг, по ~0,45 мс CPU и ~18 запусков ядер каждый. Строки чатов в смешанном шаге
+# считаются тем же ядром, что и в обычном шаге декода. FA2SM80_MIX_DEC_CHECK=N -- первые N вызовов считают оба пути
+# и печатают расхождение (сверка на GPU).
+_MIX_DEC = os.environ.get("FA2SM80_MIX_DEC_UNIFORM", "0") == "1"
+_MIX_DEC_CHECK = [int(os.environ.get("FA2SM80_MIX_DEC_CHECK", "0"))]
+_MIX_DEC_N = [0]
+_MIX_DEC_FILE = os.environ.get("FA2SM80_MIX_DEC_FILE", "")   # "0"/"1" в файле -- A/B в одном экземпляре
+_MIX_DEC_ПЕРЕКЛ = {"t": 0.0, "вкл": True}
+
+
+def _смешанный_декод_вкл():
+    if not _MIX_DEC_FILE:
+        return True
+    сейчас = time.monotonic()
+    if сейчас - _MIX_DEC_ПЕРЕКЛ["t"] >= 1.0:
+        _MIX_DEC_ПЕРЕКЛ["t"] = сейчас
+        try:
+            with open(_MIX_DEC_FILE) as f:
+                _MIX_DEC_ПЕРЕКЛ["вкл"] = f.read(1) != "0"
+        except OSError:
+            _MIX_DEC_ПЕРЕКЛ["вкл"] = True
+    return _MIX_DEC_ПЕРЕКЛ["вкл"]
+
 _SEL_SINK = int(os.environ.get("FA2SM70_SEL_SINK", "2"))
 _SEL_WIN = int(os.environ.get("FA2SM70_SEL_WIN", "8"))
 _SEL_REC = int(os.environ.get("FA2SM70_SEL_REC", "2"))
@@ -1974,6 +2000,11 @@ class FA2SM70Impl(AttentionImpl):
             pool["kscale"] = float(getattr(layer, "_k_scale_float", 1.0) or 1.0)
             pool["vscale"] = float(getattr(layer, "_v_scale_float", 1.0) or 1.0)
 
+        if (_MIX_DEC and self._cg_fast and pre_rows and getattr(m, "causal", True) and self._winmode != "block"
+                and _смешанный_декод_вкл()):
+            pre_rows = self._смешанный_декод(query, output, out3, kv_cache, pool, m, qsl, seq_lens, pre_rows,
+                                            block_size, Hkv, d)
+
         for i in pre_rows:
             _с_повтором(lambda i=i: self._prefill_row(
                 query, out3, pool, m, i,
@@ -2468,6 +2499,43 @@ class FA2SM70Impl(AttentionImpl):
             self._vsl[:need].view(B, q).copy_(sl_src[:B].unsqueeze(1).expand(B, q))
         self._virt_m, self._virt_key = m_obj, (B, q, причинно)
         return self._vbt[:need], self._vsl[:need]
+
+    def _смешанный_декод(self, query, output, out3, kv_cache, pool, m, qsl, seq_lens, pre_rows, block_size, Hkv, d):
+        """Ведущие строки с одинаковым q in [2, qmax] -- одним однородным вызовом; возвращает оставшиеся pre_rows."""
+        if not pre_rows or pre_rows[0] != 0 or qsl[0] != 0:
+            return pre_rows
+        q0 = qsl[1] - qsl[0]
+        if not (2 <= q0 <= self._uniform_qmax):
+            return pre_rows
+        k0 = 0
+        for i in pre_rows:
+            if i != k0 or qsl[i + 1] - qsl[i] != q0:
+                break
+            k0 += 1
+        if k0 == 0 or k0 == len(pre_rows):
+            return pre_rows                       # нет префилла (однородный путь и так бы взялся) или нечего брать
+        N = k0 * q0
+        сверка = None
+        if _MIX_DEC_CHECK[0] > 0 and not torch.cuda.is_current_stream_capturing():
+            сверка = out3[:N].clone()
+            for i in range(k0):                   # эталон: прежний построчный путь
+                self._prefill_row(query, out3, pool, m, i, qsl[i], qsl[i + 1], int(seq_lens[i]), block_size, Hkv, d)
+            эталон = out3[:N].clone()
+            out3[:N].copy_(сверка)
+        r = self._decode_uniform(query, output, kv_cache, m, k0, q0)
+        if r is None:
+            return pre_rows
+        _MIX_DEC_N[0] += 1
+        if сверка is not None:
+            _MIX_DEC_CHECK[0] -= 1
+            дв = (out3[:N].float() - эталон.float()).abs()
+            масштаб = эталон.float().abs().max().clamp_min(1e-6)
+            print(f"[fa2_sm70 СМЕШАННЫЙ ДЕКОД] сверка: строк {k0} x q {q0}, max|diff| {float(дв.max()):.3e}, "
+                  f"отн. {float(дв.max() / масштаб):.3e}, ср. {float(дв.mean()):.3e}", file=__import__("sys").stderr, flush=True)
+        elif _MIX_DEC_N[0] in (1, 10, 100) or _MIX_DEC_N[0] % 10000 == 0:
+            print(f"[fa2_sm70 СМЕШАННЫЙ ДЕКОД] однородным путём: строк {k0} x q {q0} (вызовов {_MIX_DEC_N[0]})",
+                  file=__import__("sys").stderr, flush=True)
+        return pre_rows[k0:]
 
     def _decode_uniform(self, query, output, kv_cache, m, B, q: int = 1):
         """Ш1: однородный декод -- ни одного выделения, ни одного чтения хостом.
