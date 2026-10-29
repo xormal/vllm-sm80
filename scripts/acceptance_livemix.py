@@ -70,6 +70,7 @@ def main():
     stop = threading.Event()
     t0 = time.monotonic()
     phases = []          # (budget, start, end)
+    phases_wall = []     # (значение, время начала по часам) -- сверка с журналом памяти сервера
     clef_sent = [0]
     chat_events, chat_reqs, clef_reqs, errors = [], [], [], []
     lock = threading.Lock()
@@ -162,6 +163,7 @@ def main():
         for b in plan:
             target.write_text(str(b))
             start = time.monotonic() - t0
+            phases_wall.append((b, time.strftime("%H:%M:%S")))
             time.sleep(a.phase_seconds)
             phases.append((b, start, time.monotonic() - t0))
             print(f"фаза бюджет={b} {start:.0f}-{phases[-1][2]:.0f} с, ошибок пока {len(errors)}", flush=True)
@@ -199,6 +201,7 @@ def main():
                      "clef_lat_p50": percentile(d["clef_lat"], .5), "clef_lat_p95": percentile(d["clef_lat"], .95),
                      "ttft_p50": percentile(d["ttft"], .5), "ttft_p95": percentile(d["ttft"], .95)}
     out = {"args": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(a).items()}, "phases": phases,
+           "phases_wall": phases_wall,
            "summary": сводка, "errors": errors[:200], "error_count": len(errors),
            "clef_sent": clef_sent[0], "clef_finished": len(clef_reqs)}
     (a.output / "results.json").write_text(json.dumps(out, indent=2, ensure_ascii=False))

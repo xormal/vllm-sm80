@@ -178,7 +178,7 @@ if [ "${CUSTOM_AR:-0}" != "1" ]; then ARGS+=(--disable-custom-all-reduce); fi
 
 # Профилировщик torch (CUPTI-таймлайн ядер, без счётчиков): PROFILE_DIR=/abs/dir, затем /start_profile и /stop_profile
 if [ -n "${PROFILE_DIR:-}" ]; then
-  ARGS+=(--profiler-config "{\"profiler\":\"torch\",\"torch_profiler_dir\":\"$PROFILE_DIR\",\"torch_profiler_with_stack\":false,\"torch_profiler_record_shapes\":false}")
+  ARGS+=(--profiler-config "{\"profiler\":\"torch\",\"torch_profiler_dir\":\"$PROFILE_DIR\",\"torch_profiler_with_stack\":${PROFILE_STACK:-false},\"torch_profiler_record_shapes\":false}")
 fi
 
 if [ "${DRYRUN:-0}" = "1" ]; then
