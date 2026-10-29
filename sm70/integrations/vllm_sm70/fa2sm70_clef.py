@@ -93,6 +93,32 @@ _ГРАФ = os.environ.get("FA2SM70_CLEF_GRAPH", "0") == "1"
 _ГРАФ_МАКС = int(os.environ.get("FA2SM70_CLEF_GRAPH_MAX", "512"))
 _ГРАФ_ФАЙЛ = os.environ.get("FA2SM70_CLEF_GRAPH_FILE", "")
 _ГРАФ_ГОТОВ = [False]
+# [ПЛАВНОСТЬ 29.10] ГОЛОВА ВНЕ КРИТИЧЕСКОГО ПУТИ (FA2SM70_CLEF_HEAD_ASYNC=1): tap и голова (head_run: 9 ступеней весов
+# H2D ~234 МиБ + внимание по записи) идут на побочном потоке rank 0 после прохода; основной поток сразу берёт
+# следующий шаг, а TP-сосед не ждёт голову на ближайшем сведении (профиль окна 2: H2D головы 19 мс на шаг с концом
+# записи). Результат забирается без ожидания по событию в следующих шагах; ячейка головы освобождается только после
+# чтения результата (иначе новая запись затёрла бы накопители, пока их читает голова). Не совместима с графами has_clef.
+_ГОЛОВА_АСИНХ = os.environ.get("FA2SM70_CLEF_HEAD_ASYNC", "0") == "1"
+_ГОЛОВА_ФАЙЛ = os.environ.get("FA2SM70_CLEF_HEAD_ASYNC_FILE", "")   # "0"/"1" -- A/B в одном экземпляре
+_ГОЛОВА_ПЕРЕКЛ = {"t": 0.0, "вкл": True}
+_ЖДАТЬ_РЕЗУЛЬТАТ_С = float(os.environ.get("FA2SM70_CLEF_RESULT_WAIT_S",
+                                         "60" if (_ГОЛОВА_АСИНХ or _ГОЛОВА_ФАЙЛ) else "2"))
+
+
+def _голова_асинх():
+    if not _ГОЛОВА_АСИНХ:
+        return False
+    if _ГОЛОВА_ФАЙЛ:
+        сейчас = time.monotonic()
+        if сейчас - _ГОЛОВА_ПЕРЕКЛ["t"] >= 1.0:
+            _ГОЛОВА_ПЕРЕКЛ["t"] = сейчас
+            try:
+                with open(_ГОЛОВА_ФАЙЛ) as f:
+                    _ГОЛОВА_ПЕРЕКЛ["вкл"] = f.read(1) != "0"
+            except OSError:
+                _ГОЛОВА_ПЕРЕКЛ["вкл"] = True
+        return _ГОЛОВА_ПЕРЕКЛ["вкл"]
+    return True
 _ГРАФ_ПЕРЕКЛ = {"t": 0.0, "вкл": True}
 
 
@@ -144,6 +170,11 @@ class _Состояние:
         # запрос остаётся в runner.requests (ячейка цела), а после возврата его num_computed = 0
         # (skip_reading_prefix_cache): без сверки отвод сложил бы пройденные позиции в спаны второй раз.
         self.next = {}
+        # асинхронная голова: [(ячейка, ключ, n, событие)], ячейки с недочитанным результатом, к освобождению
+        self.ждут = []
+        self.в_голове = set()
+        self.освободить = set()
+        self.поток_головы = None
 
 
 _С = _Состояние()
@@ -399,6 +430,11 @@ def _приём(runner, rid, req, c):
     # [ПАМЯТЬ 26.10] без list(): array("i", ...) берёт последовательность как есть -- без полной копии промпта
     if "n" in c and (N != int(c["n"]) or _сумма(req.prompt_token_ids) != int(c["h"])):
         raise ValueError(f"запись в движке ({N} токенов) не равна записи эндпоинта ({c['n']})")
+    if not _С.free and _С.ждут:
+        # ячейки ждут асинхронную голову (только rank 0): дождаться самой ранней, а не отказывать -- отказ обязан
+        # быть одинаковым на обоих рангах TP, иначе поправка ляжет только на одном
+        _С.ждут[0][3].synchronize()
+        _собрать_результаты()
     if not _С.free:
         return None
     slot = _С.free.pop(0)
@@ -440,13 +476,12 @@ def _шаг(runner, so):
     """после _update_states: приём/уход запросов Clef и сегменты строк на этот шаг"""
     import numpy as np
     runner._clef_segs = None
+    _собрать_результаты()
     for rid in list(_С.slots):
         if rid in so.finished_req_ids or rid not in runner.requests:
             slot = _С.slots.pop(rid)[0]
             _С.next.pop(rid, None)
-            if _С.golova:
-                _С.ext.req_end(slot)
-            _С.free.append(slot)
+            _освободить_ячейку(slot)
     if _С.otkaz:
         _С.otkaz = {r for r in _С.otkaz if r in runner.requests and r not in so.finished_req_ids}
     segs, row0 = [], 0
@@ -466,9 +501,7 @@ def _шаг(runner, so):
                 # и принять запрос заново -- req_begin обнулит спаны; pos0 != 0 -- отказ ниже
                 slot = _С.slots.pop(rid)[0]
                 _лог(f"запрос {rid}: кусок с позиции {pos0}, а сложено до {_С.next.pop(rid, 0)} -- приём заново")
-                if _С.golova:
-                    _С.ext.req_end(slot)
-                _С.free.append(slot)
+                _освободить_ячейку(slot)
             if rid not in _С.slots:
                 try:
                     if pos0 != 0:
@@ -491,9 +524,66 @@ def _шаг(runner, so):
         runner._clef_segs = np.array(segs, dtype=np.int32)
 
 
+def _освободить_ячейку(slot):
+    """Ячейка головы -- в свободные; если её результат ещё считает голова на побочном потоке -- после чтения."""
+    if slot in _С.в_голове:
+        _С.освободить.add(slot)
+        return
+    if _С.golova:
+        _С.ext.req_end(slot)
+    _С.free.append(slot)
+
+
+def _собрать_результаты():
+    """Готовые результаты асинхронной головы -- в файлы (без ожидания GPU: только завершённые события)."""
+    if not _С.ждут:
+        return
+    ещё = []
+    for slot, key, n, ev in _С.ждут:
+        if not ev.query():
+            ещё.append((slot, key, n, ev))
+            continue
+        _записать(key, {"logits": _С.ext.result(slot).float().cpu().tolist(), "n": n})
+        _С.в_голове.discard(slot)
+        if slot in _С.освободить:
+            _С.освободить.discard(slot)
+            _освободить_ячейку(slot)
+    _С.ждут = ещё
+
+
 def _после_прохода(runner, segs, out):
     import torch
     hs = out[0] if isinstance(out, (tuple, list)) else out
+    if _С.golova and not _ГРАФ_ГОТОВ[0] and _голова_асинх():
+        if _С.поток_головы is None:
+            _С.поток_головы = torch.cuda.Stream(device=hs.device)
+        поб = _С.поток_головы
+        поб.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(поб):
+            _С.ext.tap(hs)
+        hs.record_stream(поб)
+        _С.ext.set_step(torch.empty(0, 5, dtype=torch.int32))
+        плохо = _С.ext.step_bad()
+        ev = None
+        for row0, n, slot, pos0, fin in segs.tolist():
+            if not fin:
+                continue
+            key = next((k for s, k, _ in _С.slots.values() if s == slot), None)
+            if key is None:
+                continue
+            if _С.ext.ready(slot) and not плохо:
+                if ev is None:
+                    ev = torch.cuda.Event()
+                    ev.record(поб)
+                _С.ждут.append((slot, key, pos0 + n, ev))
+                _С.в_голове.add(slot)
+            else:
+                _записать(key, {"error": f"голова не посчитана: {_С.ext.last_error()}"})
+        _собрать_результаты()
+        return
+    if _С.ждут:
+        torch.cuda.current_stream().wait_stream(_С.поток_головы)   # голова прошлых шагов -- до синхронного tap
+        _собрать_результаты()
     if _С.golova:
         _С.ext.tap(hs)
     _С.ext.set_step(torch.empty(0, 5, dtype=torch.int32))
@@ -881,7 +971,7 @@ def установить_сервер():
             async with _сем[0]:
                 async for _ in ec.generate(prompt, sp, request_id=f"systemone-{key}"):
                     pass
-                for _ in range(200):
+                for _ in range(max(1, int(_ЖДАТЬ_РЕЗУЛЬТАТ_С / 0.01))):
                     if os.path.exists(путь):
                         break
                     await asyncio.sleep(0.01)

@@ -135,3 +135,32 @@ def test_async_final_clef_chunk_in_flight_is_not_decode(monkeypatch):
     out2 = s.schedule()                                  # следующий шаг до результата первого
     assert "clefA" not in out2.num_scheduled_tokens
     assert out2.num_scheduled_tokens["clefB"] == 8000 - 192   # полный остаток, а не 512
+
+
+def test_adaptive_budget_only_with_backlog(monkeypatch):
+    """Порог несделанного prefill: малая очередь -- полный кусок, большая -- бюджет."""
+    monkeypatch.setattr(sched_mod, "_PREFILL_BUDGET_DECODING", 2048)
+    monkeypatch.setattr(sched_mod, "_PREFILL_BUDGET_BACKLOG", 12000)
+    s = _scheduler()
+    _decoding(s, 4)
+    s.add_request(create_requests(1, num_tokens=6000, max_tokens=1, req_ids=["small"])[0])
+    out = _step(s)
+    assert out.num_scheduled_tokens["small"] == 6000                 # 6000 < 12000: без бюджета
+    for r in create_requests(3, num_tokens=8000, max_tokens=1, req_ids=["b1", "b2", "b3"]):
+        s.add_request(r)
+    out = _step(s)                                                   # несделано 24000 >= 12000: бюджет
+    assert sum(v for k, v in out.num_scheduled_tokens.items() if k.startswith("b")) == 2048
+
+
+def test_budget_file_with_threshold(monkeypatch, tmp_path):
+    f = tmp_path / "budget"
+    f.write_text("1024:50000")
+    monkeypatch.setattr(sched_mod, "_PREFILL_BUDGET_FILE", str(f))
+    monkeypatch.setattr(sched_mod, "_ФАЙЛ_БЮДЖЕТА", {"t": 0.0, "v": None})
+    s = _scheduler()
+    _decoding(s, 2)
+    s.add_request(create_requests(1, num_tokens=30000, max_tokens=1, req_ids=["clef0"])[0])
+    assert _step(s).num_scheduled_tokens["clef0"] == 8192 - 2       # 30000 < 50000: без бюджета
+    f.write_text("1024:20000")
+    sched_mod._ФАЙЛ_БЮДЖЕТА["t"] = 0.0
+    assert _step(s).num_scheduled_tokens["clef0"] == 1024           # осталось 21810 >= 20000: бюджет

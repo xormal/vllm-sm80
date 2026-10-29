@@ -80,21 +80,30 @@ _PREFILL_BUDGET_DECODING = int(_os.environ.get("FA2SM80_PREFILL_BUDGET_DECODING"
 # раза в секунду и заменяет значение из окружения (пустой/битый файл -- значение из окружения). В бою не задаётся.
 _PREFILL_BUDGET_FILE = _os.environ.get("FA2SM80_PREFILL_BUDGET_FILE", "")
 _ФАЙЛ_БЮДЖЕТА = {"t": 0.0, "v": None}
+# [ПЛАВНОСТЬ 29.10] АДАПТИВНЫЙ БЮДЖЕТ (FA2SM80_PREFILL_BUDGET_BACKLOG, токенов; 0 -- бюджет при любом декоде). Бюджет
+# действует, только если НЕСДЕЛАННОГО prefill (running + waiting) не меньше порога: при полной очереди Clef шаги
+# короче (окно 6: бюджет 2048 -- паузы чатов p99 2.3 -> 0.8 с, без повторов выделения памяти), а при обычной нагрузке
+# крупные куски остаются (окно 1: постоянный бюджет там замедлял чаты 37 -> 23 чанка/с). В файле бюджета можно писать
+# "бюджет:порог" (A/B в одном экземпляре).
+_PREFILL_BUDGET_BACKLOG = int(_os.environ.get("FA2SM80_PREFILL_BUDGET_BACKLOG", "0"))
 
 
-def _бюджет_prefill() -> int:
+def _бюджет_prefill() -> tuple[int, int]:
+    """-> (бюджет, порог несделанного prefill)."""
     if not _PREFILL_BUDGET_FILE:
-        return _PREFILL_BUDGET_DECODING
+        return _PREFILL_BUDGET_DECODING, _PREFILL_BUDGET_BACKLOG
     сейчас = time.monotonic()
     if сейчас - _ФАЙЛ_БЮДЖЕТА["t"] >= 1.0:
         _ФАЙЛ_БЮДЖЕТА["t"] = сейчас
         try:
             with open(_PREFILL_BUDGET_FILE) as f:
-                _ФАЙЛ_БЮДЖЕТА["v"] = max(0, int(f.read().strip()))
+                части = f.read().strip().split(":")
+            _ФАЙЛ_БЮДЖЕТА["v"] = (max(0, int(части[0])),
+                                  max(0, int(части[1])) if len(части) > 1 else _PREFILL_BUDGET_BACKLOG)
         except (OSError, ValueError):
             _ФАЙЛ_БЮДЖЕТА["v"] = None
     v = _ФАЙЛ_БЮДЖЕТА["v"]
-    return _PREFILL_BUDGET_DECODING if v is None else v
+    return (_PREFILL_BUDGET_DECODING, _PREFILL_BUDGET_BACKLOG) if v is None else v
 
 
 def _в_префилле(request) -> bool:
@@ -397,9 +406,15 @@ class Scheduler(SchedulerInterface):
         # [ПЛАВНОСТЬ 29.10] Бюджет prefill-кусков этого шага (см. _PREFILL_BUDGET_DECODING).
         prefill_left = token_budget
         prefill_tokens: dict[str, int] = {}
-        бюджет = _бюджет_prefill()
+        бюджет, порог = _бюджет_prefill()
         if бюджет > 0 and any(_декодирует(r) for r in self.running):
-            prefill_left = min(token_budget, бюджет)
+            if порог > 0:
+                несделано = sum(r.num_tokens - r.num_computed_tokens for r in self.running if _в_префилле(r))
+                несделано += sum(r.num_tokens - r.num_computed_tokens for r in self.waiting)
+                if несделано >= порог:
+                    prefill_left = min(token_budget, бюджет)
+            else:
+                prefill_left = min(token_budget, бюджет)
 
         # First, schedule the RUNNING requests.
         req_index = 0

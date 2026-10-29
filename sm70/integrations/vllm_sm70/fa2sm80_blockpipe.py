@@ -42,6 +42,30 @@ if _FALLBACK_ROWS < 0:
 # сведение out_proj, крупные в середине -- GEMM на 2048 строк эффективнее (на 1024 строках ~184 TF против ~205),
 # убывающий хвост -- короче последнее сведение down, которое ждёт следующий слой. Пусто -- равные куски по ROWS.
 _PLAN = [int(v) for v in os.environ.get("FA2SM80_BLOCKPIPE_PLAN", "").split(",") if v.strip()]
+# [ПЛАВНОСТЬ 29.10] FA2SM80_BLOCKPIPE_PLAN_FILE=<путь>: "порог;кусок;план" (например "1024;512;256,1024,512,256")
+# перечитывается раз в секунду -- A/B нарезки в одном экземпляре (окно 7: на шагах ~2К токенов из-под счёта торчит
+# ~15 % обмена TP: равные куски по 1024 дают хвост из 40 строк, сведения последних кусков ждёт следующий слой).
+# Пустой/битый файл -- значения окружения. Перечитывается по СЧЁТЧИКУ ВЫЗОВОВ (раз в 2048), а не по времени: оба ранга
+# TP выполняют одни и те же вызовы в одном порядке и обязаны сменить нарезку на одном и том же вызове -- иначе размеры
+# кусков в обмене разойдутся.
+_PLAN_FILE = os.environ.get("FA2SM80_BLOCKPIPE_PLAN_FILE", "")
+_ПЛАН_ФАЙЛ = {"n": 0}
+_MIN0, _ROWS0, _PLAN0 = _MIN, _ROWS, list(_PLAN)
+
+
+def _план_из_файла():
+    """Обновить _MIN/_ROWS/_PLAN из файла (раз в 2048 вызовов, одинаково на обоих рангах)."""
+    global _MIN, _ROWS, _PLAN
+    _ПЛАН_ФАЙЛ["n"] += 1
+    if (_ПЛАН_ФАЙЛ["n"] - 1) % 2048:
+        return
+    try:
+        with open(_PLAN_FILE) as f:
+            ч = f.read().strip().split(";")
+        _MIN, _ROWS = int(ч[0]), int(ч[1])
+        _PLAN = [int(v) for v in (ч[2] if len(ч) > 2 else "").split(",") if v.strip()]
+    except (OSError, ValueError, IndexError):
+        _MIN, _ROWS, _PLAN = _MIN0, _ROWS0, list(_PLAN0)
 
 
 def _куски(M):
@@ -226,6 +250,8 @@ def установить():
         proj = L.linear_attn.out_proj if L.layer_type == "linear_attention" else L.self_attn.o_proj
         gup, dnp = L.mlp.gate_up_proj, L.mlp.down_proj
         M = core.shape[0]
+        if _PLAN_FILE and not torch.cuda.is_current_stream_capturing():
+            _план_из_файла()
         if M < _MIN or core.dim() != 2 or not (_w8(proj) and _w8(gup) and _w8(dnp)):
             out, ro = _прямо(L, core, residual)
             return (out, ro) if N2 is None else _след_прямо(N2, out, ro)

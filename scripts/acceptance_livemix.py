@@ -51,7 +51,8 @@ def main():
     a = p.parse_args()
     a.output.mkdir(parents=True, exist_ok=True)
     if a.phase_file is not None:
-        values, target = [x for x in a.phase_values.split(",") if x], a.phase_file
+        раздел = "|" if "|" in a.phase_values else ","      # значения с запятыми (план нарезки) -- через |
+        values, target = [x for x in a.phase_values.split(раздел) if x], a.phase_file
     else:
         values, target = a.budgets.split(","), a.budget_file
     plan = [b for _ in range(a.rounds) for b in values]
