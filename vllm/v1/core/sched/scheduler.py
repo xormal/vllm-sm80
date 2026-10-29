@@ -68,6 +68,46 @@ logger = init_logger(__name__)
 import os as _os
 _MM_DRAFT_SHIFT = _os.environ.get("FA2SM70_MM_DRAFT_SHIFT", "0") == "1"
 
+# [ПЛАВНОСТЬ 29.10] БЮДЖЕТ PREFILL НА ШАГ, ПОКА ЕСТЬ ДЕКОДИРУЮЩИЕ ЗАПРОСЫ (FA2SM80_PREFILL_BUDGET_DECODING, 0 -- выкл.).
+# Шаг с куском prefill 4-8К токенов идёт 1-2.5 с, и все декодирующие чаты ждут его целиком: 12.6 % межтокенных
+# интервалов живого кандидата > 1 с (29.10, /metrics). При декоде prefill-кускам (Clef, новые чаты, возобновлённые
+# после вытеснения) на шаг даётся не больше бюджета; decode-токены и общий max_num_batched_tokens не меняются.
+# Без декода -- прежнее поведение (полный бюджет шага). Prefill получает свою долю в каждом шаге -- голодания нет.
+# Границы кусков prefill и без этого зависят от нагрузки (общий бюджет минус decode-токены), поэтому новых видов
+# численных расхождений правка не вводит.
+_PREFILL_BUDGET_DECODING = int(_os.environ.get("FA2SM80_PREFILL_BUDGET_DECODING", "0"))
+# Для A/B в одном экземпляре сервера: FA2SM80_PREFILL_BUDGET_FILE=<путь> -- число в файле перечитывается не чаще
+# раза в секунду и заменяет значение из окружения (пустой/битый файл -- значение из окружения). В бою не задаётся.
+_PREFILL_BUDGET_FILE = _os.environ.get("FA2SM80_PREFILL_BUDGET_FILE", "")
+_ФАЙЛ_БЮДЖЕТА = {"t": 0.0, "v": None}
+
+
+def _бюджет_prefill() -> int:
+    if not _PREFILL_BUDGET_FILE:
+        return _PREFILL_BUDGET_DECODING
+    сейчас = time.monotonic()
+    if сейчас - _ФАЙЛ_БЮДЖЕТА["t"] >= 1.0:
+        _ФАЙЛ_БЮДЖЕТА["t"] = сейчас
+        try:
+            with open(_PREFILL_BUDGET_FILE) as f:
+                _ФАЙЛ_БЮДЖЕТА["v"] = max(0, int(f.read().strip()))
+        except (OSError, ValueError):
+            _ФАЙЛ_БЮДЖЕТА["v"] = None
+    v = _ФАЙЛ_БЮДЖЕТА["v"]
+    return _PREFILL_BUDGET_DECODING if v is None else v
+
+
+def _в_префилле(request) -> bool:
+    """Запрос ещё досчитывает prompt (или пересчитывает после вытеснения), а не декодирует."""
+    return request.num_computed_tokens < request.num_tokens - 1
+
+
+def _декодирует(request) -> bool:
+    """Декодирующий запрос, которому ещё генерировать сверх токенов в полёте. Запись Clef (max_tokens=1) с последним
+    куском в полёте (async scheduling: placeholder) сюда не попадает -- иначе бюджет включался бы без чатов."""
+    return (not _в_префилле(request)
+            and request.num_output_tokens + request.num_output_placeholders < request.max_tokens)
+
 
 class Scheduler(SchedulerInterface):
     def __init__(
@@ -354,6 +394,13 @@ class Scheduler(SchedulerInterface):
         # Начало шага: сбросить учёт блоков, закэшированных в предыдущем шаге.
         self.kv_cache_manager.new_step_starts()
 
+        # [ПЛАВНОСТЬ 29.10] Бюджет prefill-кусков этого шага (см. _PREFILL_BUDGET_DECODING).
+        prefill_left = token_budget
+        prefill_tokens: dict[str, int] = {}
+        бюджет = _бюджет_prefill()
+        if бюджет > 0 and any(_декодирует(r) for r in self.running):
+            prefill_left = min(token_budget, бюджет)
+
         # First, schedule the RUNNING requests.
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
@@ -383,6 +430,9 @@ class Scheduler(SchedulerInterface):
             if 0 < self.scheduler_config.long_prefill_token_threshold < num_new_tokens:
                 num_new_tokens = self.scheduler_config.long_prefill_token_threshold
             num_new_tokens = min(num_new_tokens, token_budget)
+            префилл = _в_префилле(request)
+            if префилл:
+                num_new_tokens = min(num_new_tokens, prefill_left)
 
             # Make sure the input position does not exceed the max model len.
             # This is necessary when using spec decoding.
@@ -456,6 +506,7 @@ class Scheduler(SchedulerInterface):
                             preempted_req_id = preempted_req.request_id
                             scheduled_running_reqs.remove(preempted_req)
                             token_budget += num_scheduled_tokens.pop(preempted_req_id)
+                            prefill_left += prefill_tokens.pop(preempted_req_id, 0)
                             req_to_new_blocks.pop(preempted_req_id)
                             scheduled_spec_decode_tokens.pop(preempted_req_id, None)
                             preempted_encoder_inputs = scheduled_encoder_inputs.pop(
@@ -489,6 +540,9 @@ class Scheduler(SchedulerInterface):
             req_to_new_blocks[request_id] = new_blocks
             num_scheduled_tokens[request_id] = num_new_tokens
             token_budget -= num_new_tokens
+            if префилл:
+                prefill_left -= num_new_tokens
+                prefill_tokens[request_id] = num_new_tokens
             req_index += 1
 
             # Speculative decode related.
@@ -665,7 +719,9 @@ class Scheduler(SchedulerInterface):
                         # we can stop the scheduling here.
                         break
 
-                    num_new_tokens = min(num_new_tokens, token_budget)
+                    num_new_tokens = min(num_new_tokens, token_budget, prefill_left)
+                    if num_new_tokens <= 0:
+                        break                    # бюджет prefill шага исчерпан (идёт декод)
                     assert num_new_tokens > 0
 
                     # Schedule encoder inputs.
@@ -793,6 +849,7 @@ class Scheduler(SchedulerInterface):
                 )
                 num_scheduled_tokens[request_id] = num_new_tokens
                 token_budget -= num_new_tokens
+                prefill_left -= num_new_tokens
                 request.status = RequestStatus.RUNNING
                 request.num_computed_tokens = num_computed_tokens
                 # Count the number of prefix cached tokens.
