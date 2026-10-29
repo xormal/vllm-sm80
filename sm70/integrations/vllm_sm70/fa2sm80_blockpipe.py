@@ -122,6 +122,11 @@ def установить():
         return False
     import torch
     from vllm.distributed import tensor_model_parallel_all_reduce
+    try:   # [ПАМЯТЬ 29.10] выход сведения с побочного потока -- из пула основного (FA2SM80_EXCH_OUT_MAIN)
+        from fa2sm70_exch_i12 import выход_на as _выход_на
+    except ImportError:
+        import contextlib as _cl
+        _выход_на = lambda _s: _cl.nullcontext()   # noqa: E731
     from vllm.utils.torch_utils import direct_register_custom_op
     from vllm.model_executor.models import qwen3_next as QN
 
@@ -300,7 +305,7 @@ def установить():
                 хук(core[r0:r1], y, [proj.scales], r0)
             ev = torch.cuda.Event()
             ev.record(осн)
-            with torch.cuda.stream(поб):
+            with torch.cuda.stream(поб), _выход_на(осн):
                 поб.wait_event(ev)
                 yr = tensor_model_parallel_all_reduce(y)
                 evr = torch.cuda.Event()
@@ -368,7 +373,7 @@ def установить():
                 хук(a, d, [dnp.scales], r0)
             ev = torch.cuda.Event()
             ev.record(осн)
-            with torch.cuda.stream(поб):
+            with torch.cuda.stream(поб), _выход_на(осн):
                 поб.wait_event(ev)
                 dr = tensor_model_parallel_all_reduce(d)
                 if след_куски:

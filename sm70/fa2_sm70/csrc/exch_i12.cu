@@ -178,6 +178,27 @@ torch::Tensor unpack_add_i12(torch::Tensor base, torch::Tensor pk, torch::Tensor
   return out;
 }
 
+// [ПАМЯТЬ 29.10] То же ядро, но выход -- готовый тензор вызывающего. Нужен обмену на побочном потоке
+// blockpipe: выход берётся из пула ОСНОВНОГО потока (record_stream), а не кэшируется побочным -- там
+// оседали сотни МиБ, недоступных основному потоку (снимок аллокатора: сегмент 220 МиБ без живых блоков),
+// отсюда повторы выделения со сбросом кэша и синхронизацией. Арифметика та же, результат побитно тот же.
+void unpack_add_i12_into(torch::Tensor base, torch::Tensor pk, torch::Tensor sc, torch::Tensor out) {
+  const c10::cuda::CUDAGuard guard(base.device());
+  CHK(base, torch::kHalf, "base"); CHK(pk, torch::kInt16, "packed"); CHK(sc, torch::kHalf, "scales");
+  CHK(out, torch::kHalf, "out");
+  const long n = base.numel();
+  TORCH_CHECK(n % G == 0, "unpack_add_i12_into: число элементов должно делиться на 128");
+  TORCH_CHECK(out.numel() == n && out.device() == base.device(), "unpack_add_i12_into: out не той формы");
+  const long ngrp = n / G;
+  TORCH_CHECK(pk.numel() == ngrp * 96 && sc.numel() == ngrp, "unpack_add_i12_into: несогласованные размеры");
+  const int thr = WPB * 32;
+  const long blocks = (ngrp + WPB - 1) / WPB;
+  unpack_add_i12_kernel<<<(int)blocks, thr, 0, at::cuda::getCurrentCUDAStream()>>>(
+      (const __half*)base.data_ptr(), (const unsigned short*)pk.data_ptr(),
+      (const __half*)sc.data_ptr(), (__half*)out.data_ptr(), ngrp);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 // =================================================================================================
 // ФУНДАМЕНТ ПЕРЕКРЫТИЯ: ПРЯМАЯ ЗАПИСЬ В ПАМЯТЬ СОСЕДА (задача 201, нативный ход).
 //
@@ -753,6 +774,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         pybind11::arg("x"), pybind11::arg("pk"), pybind11::arg("sc"), pybind11::arg("bits") = 12);
   m.def("pack_i12", &pack_i12, "упаковка fp16 -> знаковые 12 разрядов (группа 128, масштаб fp16)");
   m.def("unpack_add_i12", &unpack_add_i12, "base + разбор(12 разрядов)");
+  m.def("unpack_add_i12_into", &unpack_add_i12_into, "то же в готовый out");
   m.def("ipc_alloc", &ipc_alloc, "СВОЙ буфер под обмен (прямой cudaMalloc, мимо торча)",
         pybind11::arg("numel"), pybind11::arg("dtype"));
   m.def("ipc_handle", &ipc_handle, "ручка на СВОЙ буфер для соседа (начало выделения)");

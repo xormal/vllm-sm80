@@ -54,6 +54,30 @@ _БИТ = int(os.environ.get("FA2SM70_EXCH12_BITS", "12"))
 # чётности номера обмена: ранг дойдёт до обмена e+2, только увидев флаг соседа за e+1, а тот ставит его после
 # копии e+1, то есть после распаковки e (порядок потока) -- приёмник чётности e к этому времени дочитан.
 _CE = os.environ.get("FA2SM80_EXCH_CE", "0") == "1"
+# [ПАМЯТЬ 29.10] FA2SM80_EXCH_OUT_MAIN=1: выход сведения, запущенного с ПОБОЧНОГО потока blockpipe, берётся из пула
+# ОСНОВНОГО потока (record_stream на побочный) и пишется готовым буфером (unpack_add_i12_into). Иначе он кэшировался
+# побочным потоком: снимок аллокатора 29.10 -- сегмент 220 МиБ без живых блоков, недоступный основному; отсюда
+# повторы выделения (сброс кэша с синхронизацией устройства) и перекартирование страниц на каждом префилле.
+# Ядро и арифметика те же -- результат побитно тот же.
+_ВЫХОД_ОСН = os.environ.get("FA2SM80_EXCH_OUT_MAIN", "0") == "1"
+import threading as _threading
+_ПОТОК_ВЫХОДА = _threading.local()
+
+
+class выход_на:
+    """Контекст: сведения внутри берут выход из пула потока `осн` (blockpipe вокруг вызова на побочном потоке)."""
+
+    def __init__(self, осн):
+        self.осн = осн
+
+    def __enter__(self):
+        self.было = getattr(_ПОТОК_ВЫХОДА, "s", None)
+        _ПОТОК_ВЫХОДА.s = self.осн
+        return self
+
+    def __exit__(self, *a):
+        _ПОТОК_ВЫХОДА.s = self.было
+        return False
 _CE_МБ = int(os.environ.get("FA2SM80_EXCH_CE_MB", "72"))      # ёмкость приёмника на чётность
 
 if _рычаг("FA2SM70_EXCH12", "FA2SM70_ОБМЕН_I12") == "1":
@@ -128,6 +152,19 @@ if _рычаг("FA2SM70_EXCH12", "FA2SM70_ОБМЕН_I12") == "1":
             _ext = exch_ext()
         return _ext
 
+    def _распаковать(e, база, pk, sc, capturing):
+        """unpack_add_i12; с побочного потока blockpipe -- в выход из пула основного (см. _ВЫХОД_ОСН)."""
+        осн = getattr(_ПОТОК_ВЫХОДА, "s", None) if _ВЫХОД_ОСН and not capturing else None
+        if осн is not None and hasattr(e, "unpack_add_i12_into"):
+            тек = torch.cuda.current_stream()
+            if тек != осн:
+                with torch.cuda.stream(осн):
+                    out = torch.empty_like(база)
+                out.record_stream(тек)
+                e.unpack_add_i12_into(база, pk, sc, out)
+                return out
+        return e.unpack_add_i12(база, pk, sc)
+
     def _обёртка(старый):
         def _f(self, input_, *a, **k):
             n = input_.numel()
@@ -162,7 +199,7 @@ if _рычаг("FA2SM70_EXCH12", "FA2SM70_ОБМЕН_I12") == "1":
                     e.ar2_signal(st["p_flag"], par, val)                       # флаг у соседа после копии
                     e.ar2_wait(st["flag"], par, val, st["срыв"])               # жду половину соседа
                     ч = st["recv"][par * st["cap"]:par * st["cap"] + nb]
-                    out = e.unpack_add_i12(x, ч[:nb_pk].view(torch.int16), ч[nb_pk:nb].view(torch.float16))
+                    out = _распаковать(e, x, ч[:nb_pk].view(torch.int16), ч[nb_pk:nb].view(torch.float16), capturing)
                     st["n"] += 1
                     if st["n"] & 255 == 0 and int(st["срыв"][0].item()):
                         raise RuntimeError("обмен копировщиком: срыв ожидания флага соседа")
@@ -187,8 +224,8 @@ if _рычаг("FA2SM70_EXCH12", "FA2SM70_ОБМЕН_I12") == "1":
                 if r == ранг:
                     continue                       # СВОЯ часть -- точная, через провод не ехала
                 ч = все[r * nb:(r + 1) * nb]
-                out = e.unpack_add_i12(out, ч[:nb_pk].view(torch.int16),
-                                       ч[nb_pk:nb].view(torch.float16))
+                out = _распаковать(e, out, ч[:nb_pk].view(torch.int16),
+                                   ч[nb_pk:nb].view(torch.float16), capturing)
             С["n"] += 1
             С["ушло"] += nb_pk + nb_sc
             С["было_бы"] += n * 2
