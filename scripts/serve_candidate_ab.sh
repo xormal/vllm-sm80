@@ -6,7 +6,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/candidate_env.sh"
 : "${FA2SM80_PREFILL_BUDGET_FILE:?}" "${FA2SM80_STEP_TIMING:?}"
 export CANDIDATE_VARIANT=candidate
 export PY="$CANDIDATE_REPO/scripts/acceptance_steptime_python.sh"
-export CARDS=0,1 HOST=127.0.0.1 PORT=8086
+export CARDS=0,1 HOST=127.0.0.1 PORT="${AB_PORT:-8086}"   # AB_PORT -- порт, о котором агенты-потребители не знают
 export SERVED_NAMES="Qwen3.8-27B-ABLITERATED"
 export FA2SM70_CLEF=1 FA2SM80_SEL_DENSE_NB=1024 FA2SM70_EXCH12=1
 export FA2SM80_RESUME_ADMISSION=1 FA2SM70_GRAN_CONV_ALL=1

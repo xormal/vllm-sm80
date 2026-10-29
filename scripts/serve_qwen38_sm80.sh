@@ -211,6 +211,8 @@ names = ["decode_ext", "w8a16_ext", "w8a16_sm80_ext", "gdn_ext", "gdn_head_ext",
 import os
 if os.environ.get("FA2SM70_CLEF") == "1":
     names.append("clef_ext")
+if os.environ.get("FA2SM80_W8A8", "off") not in ("", "off") or os.environ.get("FA2SM80_W8A8_FILE"):
+    names.append("w8a8_sm80_ext")
 bad = 0
 for n in names:
     t = time.time()

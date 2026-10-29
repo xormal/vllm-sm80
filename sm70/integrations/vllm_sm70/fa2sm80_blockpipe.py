@@ -276,6 +276,13 @@ def установить():
                  f"с Clef {_С['clef']}, прямо {_С['прямо']})")
         import fa2sm80_w8 as W8
         dev = core.device
+        # [W8A8 29.10] весь шаг -- int8-активациями (режим all, или все строки одного рода): без распаковки fp16
+        A8 = W8._W8A8
+        план_все = A8.куски(0, M) if A8 is not None else None
+        a8_все = (план_все is not None and len(план_все) == 1 and план_все[0][2]
+                  and all(L_.fa2sm80_kn[0] % 128 == 0 and L_.fa2sm80_kn[1] % 128 == 0 for L_ in (proj, gup, dnp)))
+        if a8_все:
+            _С["w8a8_все"] = _С.get("w8a8_все", 0) + 1
         Ko, No = proj.fa2sm80_kn
         Kg, Ng = gup.fa2sm80_kn
         Kd, Nd = dnp.fa2sm80_kn
@@ -303,17 +310,33 @@ def установить():
             дкв = _ДЕКВАНТ_ПОТОК[dev.index] = torch.cuda.Stream(device=dev, priority=_ПРИОР_ДКВ)
         _С["вызов"] = _С.get("вызов", 0) + 1
         зп = _ЗАПАС.pop(dev.index, None)
-        if зп is not None and not (зп[0] == _С["вызов"] - 1 and зп[1] == key and not след_куски):
+        if зп is not None and not (зп[0] == _С["вызов"] - 1 and зп[1] == key and not след_куски and not a8_все):
             зп = None
         дкв.wait_stream(осн)
         with torch.cuda.stream(дкв):
-            Wg = _деквант(gup, W8._буфер_для(dev, Kg * Ng))
-            Wd = зп[3] if зп is not None else _деквант(dnp, _буфер_c(dev, Kd * Nd))
+            Wg = _деквант(gup, W8._буфер_для(dev, Kg * Ng)) if not a8_все else None
+            Wd = (зп[3] if зп is not None else _деквант(dnp, _буфер_c(dev, Kd * Nd))) if not a8_все else None
             ev_w = torch.cuda.Event()
             ev_w.record(дкв)
+
+        def _умн_слой(L_, xi, W_, r0_):
+            """Кусок строк [r0_, r0_+len) слоя W8: по плану W8A8 (весь шаг -- без плана), иначе fp16 по распакованному."""
+            if a8_все:
+                K_, N_ = L_.fa2sm80_kn
+                return A8.mm(xi, L_.fa2sm80_wf, L_.fa2sm80_meta, N_, W8._ТЮН[(K_, N_)]["nw"])
+            if A8 is not None:
+                пл = A8.куски(r0_, xi.shape[0])
+                if пл is not None and L_.fa2sm80_kn[0] % 128 == 0 and L_.fa2sm80_kn[1] % 128 == 0:
+                    K_, N_ = L_.fa2sm80_kn
+                    return A8.смешанный(xi, L_.fa2sm80_wf, L_.fa2sm80_meta, K_, N_, W8._ТЮН[(K_, N_)]["nw"], пл,
+                                        lambda a_, o_: умн(a_, W_, o_) if CG.включён()
+                                        else torch.mm(a_, W_.t(), out=o_))
+            return умн(xi, W_)
         # буфер B -- сразу под наибольшее (out_proj, затем вход W8 следующего слоя): без перевыделения под живым тензором
         кнB = [Ko * No] + [p.fa2sm80_kn[0] * p.fa2sm80_kn[1] for p in прос if след_куски and getattr(p, "fa2sm80_kn", None)]
-        if зп is not None:
+        if a8_все:
+            Wo = None
+        elif зп is not None:
             осн.wait_event(зп[4])
             Wo = зп[2]
             _С["запас"] = _С.get("запас", 0) + 1
@@ -326,7 +349,7 @@ def установить():
 
         def _out(i):
             r0, r1 = куски[i]
-            y = умн(core[r0:r1], Wo)
+            y = _умн_слой(proj, core[r0:r1], Wo, r0)
             if хук is not None:
                 хук(core[r0:r1], y, [proj.scales], r0)
             ev = torch.cuda.Event()
@@ -356,8 +379,9 @@ def установить():
             дкв.wait_event(ev_o)
             with torch.cuda.stream(дкв):
                 for p in прос:
-                    Wn.append(_деквант(p, _буфер_b(dev, max(кнB))) if getattr(p, "fa2sm80_kn", None) is not None
-                              else p.weight)
+                    Wn.append((None if a8_все and p.fa2sm80_kn[0] % 128 == 0 and p.fa2sm80_kn[1] % 128 == 0
+                               else _деквант(p, _буфер_b(dev, max(кнB))))
+                              if getattr(p, "fa2sm80_kn", None) is not None else p.weight)
                 ev_w2 = torch.cuda.Event()
                 ev_w2.record(дкв)
             ждём_w2 = [True]
@@ -373,7 +397,11 @@ def установить():
                 ждём_w2[0] = False
             h2 = torch.empty((r1_ - r0_, No), dtype=torch.float16, device=dev)
             норма(dr_, ro[r0_:r1_], n2.weight.data, n2.variance_epsilon, h2, ro2[r0_:r1_])
-            for W_, y_ in zip(Wn, выходы2):
+            for p_, W_, y_ in zip(прос, Wn, выходы2):
+                if W_ is None:            # вход W8 следующего слоя -- int8-активациями (весь шаг W8A8)
+                    K_, N_ = p_.fa2sm80_kn
+                    A8.mm(h2, p_.fa2sm80_wf, p_.fa2sm80_meta, N_, W8._ТЮН[(K_, N_)]["nw"], y_[r0_:r1_])
+                    continue
                 if CG.включён() and W_.shape[0] >= _УЗКО:
                     try:
                         умн(h2, W_, y_[r0_:r1_])
@@ -389,12 +417,12 @@ def установить():
             осн.wait_event(evr)
             h = torch.empty((r1 - r0, No), dtype=torch.float16, device=dev)
             норма(yr, residual[r0:r1], nw.weight.data, nw.variance_epsilon, h, ro[r0:r1])
-            g = умн(h, Wg)
+            g = _умн_слой(gup, h, Wg, r0)
             if хук is not None:
                 хук(h, g, [gup.scales], r0)
             a = torch.empty((r1 - r0, Ng // 2), dtype=torch.float16, device=dev)
             torch.ops._C.silu_and_mul(a, g)
-            d = умн(a, Wd)
+            d = _умн_слой(dnp, a, Wd, r0)
             if хук is not None:
                 хук(a, d, [dnp.scales], r0)
             ev = torch.cuda.Event()
@@ -412,7 +440,7 @@ def установить():
                 dr.record_stream(осн)
                 сведённые_d[i] = (dr, evd)
         N3 = _РЕЕСТР.get(getattr(L, "_fa2_bp_next", ""))
-        if _DQ_ВПЕРЁД and not след_куски and N3 is not None:
+        if _DQ_ВПЕРЁД and not след_куски and not a8_все and N3 is not None:
             proj3 = N3.linear_attn.out_proj if N3.layer_type == "linear_attention" else N3.self_attn.o_proj
             dnp3 = N3.mlp.down_proj
             if (_w8(proj3) and _w8(dnp3) and proj3.fa2sm80_kn == proj.fa2sm80_kn

@@ -84,6 +84,7 @@ _QOMAX, _QNMAX = 448, 64
 _SALT = "fa2sm70-clef"
 
 _АКТИВЕН = [False]
+_СЕГМЕНТЫ = [None]    # [(row0, n, slot, pos0, fin)] прохода с Clef -- строки для FA2SM80_W8A8=clef|llm
 # [ПЛАВНОСТЬ 29.10] ГРАФОБЕЗОПАСНАЯ ПОПРАВКА (FA2SM70_CLEF_GRAPH=1): шаги с Clef до FA2SM70_CLEF_GRAPH_MAX токенов идут
 # кусочными графами семейства has_clef (cudagraph_dispatcher) вместо force_eager; поправка -- clef.cu delta_graph
 # (строки Clef через постоянные буферы на GPU). FA2SM70_CLEF_GRAPH_FILE=<путь>: "0" в файле -- прежний путь
@@ -175,6 +176,8 @@ class _Состояние:
         self.в_голове = set()
         self.освободить = set()
         self.поток_головы = None
+        self.поток_копии = None
+        self.сборщик = None
 
 
 _С = _Состояние()
@@ -534,21 +537,93 @@ def _освободить_ячейку(slot):
     _С.free.append(slot)
 
 
+# RLock: тот же замок держит захват графа (ленивые графы цикла MTP) -- см. _замок_захвата
+_ЗАМОК_ГОЛОВЫ = __import__("threading").RLock()
+_ПОПЫТОК_ЗАПИСИ = 500       # ~1 с повторов (тик сборщика 2 мс), затем ошибка в ответ
+
+
+def _замок_захвата():
+    """Захват графа и CUDA-вызовы сборщика взаимно исключены. Синхронизирующая копия из другого потока ломает
+    глобальный захват МОЛЧА, а захват графа цикла MTP (eagle) к тому же ставит на процесс sync_debug_mode "error":
+    .cpu() сборщика в этот миг бросал «called a synchronizing CUDA operation» (окно 10: HTTP 500 записи Clef)."""
+    import torch
+    G = torch.cuda.graphs.graph
+    if getattr(G, "_fa2_clef_lock", False):
+        return
+    вход, выход = G.__enter__, G.__exit__
+
+    def __enter__(self):
+        _ЗАМОК_ГОЛОВЫ.acquire()
+        try:
+            return вход(self)
+        except BaseException:
+            _ЗАМОК_ГОЛОВЫ.release()
+            raise
+
+    def __exit__(self, *a):
+        try:
+            return выход(self, *a)
+        finally:
+            _ЗАМОК_ГОЛОВЫ.release()
+
+    G.__enter__, G.__exit__ = __enter__, __exit__
+    G._fa2_clef_lock = True
+
+
+def _записать_результат(slot, key, n):
+    """Результат готовой головы (событие завершено) -> файл. Копия на хост -- на своём неблокирующем потоке."""
+    import torch
+    if _С.поток_копии is None:
+        _С.поток_копии = torch.cuda.Stream(device=_С.поток_головы.device)
+    with torch.cuda.stream(_С.поток_копии):
+        r = _С.ext.result(slot).cpu()
+    _записать(key, {"logits": r.float().tolist(), "n": n})
+
+
 def _собрать_результаты():
-    """Готовые результаты асинхронной головы -- в файлы (без ожидания GPU: только завершённые события)."""
+    """Готовые результаты асинхронной головы -- в файлы; ячейки записанных -- в свободные (основной поток)."""
     if not _С.ждут:
         return
-    ещё = []
-    for slot, key, n, ev in _С.ждут:
-        if not ev.query():
-            ещё.append((slot, key, n, ev))
+    with _ЗАМОК_ГОЛОВЫ:
+        ещё = []
+        for item in _С.ждут:
+            slot, key, n, ev, записан = item
+            if not записан[0]:
+                if not ev.query():
+                    ещё.append(item)
+                    continue
+                _записать_результат(slot, key, n)
+                записан[0] = True
+            _С.в_голове.discard(slot)
+            if slot in _С.освободить:
+                _С.освободить.discard(slot)
+                _освободить_ячейку(slot)
+        _С.ждут = ещё
+
+
+def _сборщик_голов():
+    """Фон rank 0: пока движок простаивает (шагов нет), результаты всё равно пишутся -- API ждёт файл."""
+    import torch
+    torch.cuda.set_device(_С.поток_головы.device)
+    while True:
+        time.sleep(0.002)
+        if not _С.ждут:
             continue
-        _записать(key, {"logits": _С.ext.result(slot).float().cpu().tolist(), "n": n})
-        _С.в_голове.discard(slot)
-        if slot in _С.освободить:
-            _С.освободить.discard(slot)
-            _освободить_ячейку(slot)
-    _С.ждут = ещё
+        with _ЗАМОК_ГОЛОВЫ:
+            for slot, key, n, ev, записан in _С.ждут:
+                if записан[0]:
+                    continue
+                try:
+                    if not ev.query():
+                        continue
+                    _записать_результат(slot, key, n)
+                    записан[0] = True
+                except Exception as e:  # noqa: BLE001
+                    # режим sync_debug "error" чужого захвата (вне самого захвата) -- повторить на следующем тике
+                    записан[1] += 1
+                    if записан[1] >= _ПОПЫТОК_ЗАПИСИ:
+                        _записать(key, {"error": f"голова: {e}"})
+                        записан[0] = True
 
 
 def _после_прохода(runner, segs, out):
@@ -557,6 +632,10 @@ def _после_прохода(runner, segs, out):
     if _С.golova and not _ГРАФ_ГОТОВ[0] and _голова_асинх():
         if _С.поток_головы is None:
             _С.поток_головы = torch.cuda.Stream(device=hs.device)
+        if _С.сборщик is None:
+            _замок_захвата()
+            _С.сборщик = __import__("threading").Thread(target=_сборщик_голов, name="clef-head-collect", daemon=True)
+            _С.сборщик.start()
         поб = _С.поток_головы
         поб.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(поб):
@@ -575,8 +654,9 @@ def _после_прохода(runner, segs, out):
                 if ev is None:
                     ev = torch.cuda.Event()
                     ev.record(поб)
-                _С.ждут.append((slot, key, pos0 + n, ev))
-                _С.в_голове.add(slot)
+                with _ЗАМОК_ГОЛОВЫ:
+                    _С.ждут.append((slot, key, pos0 + n, ev, [False, 0]))
+                    _С.в_голове.add(slot)
             else:
                 _записать(key, {"error": f"голова не посчитана: {_С.ext.last_error()}"})
         _собрать_результаты()
@@ -653,10 +733,12 @@ def установить_воркер():
                                      for r0, n in segs[:, :2]]) if len(segs) else np.zeros(0, np.int32)
             _С.ext.graph_set_rows(torch.from_numpy(строки))
         _АКТИВЕН[0] = True
+        _СЕГМЕНТЫ[0] = segs
         try:
             out = _fwd(self, *a, **kw)
         finally:
             _АКТИВЕН[0] = False
+            _СЕГМЕНТЫ[0] = None
         _после_прохода(self, segs, out)
         return out
 

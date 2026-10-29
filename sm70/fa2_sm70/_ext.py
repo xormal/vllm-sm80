@@ -331,6 +331,18 @@ def w8a16_sm80_ext():
     return _w8a16_sm80
 
 
+_w8a8_sm80 = None
+
+
+def w8a8_sm80_ext():
+    """W8A8 для Ampere (FA2SM80_W8A8): int8-активации по группам 128 x упакованные веса w8a16_sm80, mma.m16n8k32."""
+    global _w8a8_sm80
+    if _w8a8_sm80 is None:
+        _common()
+        _w8a8_sm80 = _build("fa2sm80_w8a8", "w8a8_sm80.cu", ["-O3", "-std=c++17", "-Xptxas", "-v"])
+    return _w8a8_sm80
+
+
 _cg_sm80 = None
 
 

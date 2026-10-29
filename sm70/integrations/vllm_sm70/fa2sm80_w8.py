@@ -54,6 +54,10 @@ _W8SW = os.environ.get("FA2SM80_W8SW", "0") == "1"
 _W8SW_ТАБЛ = {(4, 4): (2, 2), (4, 8): (2, 2), (2, 4): (2, 4)}   # словарь (N=124160) -- прежним: не быстрее
 _W8SW_СВЕРКА = int(os.environ.get("FA2SM80_W8SW_CHECK", "0"))
 _W8SW_СВЕРЕНО = {}
+# [W8A8 29.10] FA2SM80_W8A8=off|clef|llm|all -- int8-активации на больших M (fa2sm80_w8a8); off -- модуль не трогается
+import fa2sm80_w8a8 as _W8A8
+if not _W8A8.включён():
+    _W8A8 = None
 
 
 # FA2SM80_W8A8_SIM_G=G: масштаб на строку И группу из G каналов K (G=128 -- группы весов), иначе на строку.
@@ -451,6 +455,15 @@ def установить():
                         return y
             return ext.w8a16_sm80_mm(x, wf, meta, N, sp, т["nw"], wa, st)
         _С["большое"] += 1
+        if _W8A8 is not None and K % 128 == 0 and N % 128 == 0 and K * N <= _БУФ_МАКС:
+            план = _W8A8.куски(0, m)
+            if план is not None:
+                return _W8A8.смешанный(x, wf, meta, K, N, т["nw"], план,
+                                       lambda xi, oi: oi.copy_(_большое(ext, xi, wf, meta, т, K, N)))
+        return _большое(ext, x, wf, meta, т, K, N)
+
+    def _большое(ext, x, wf, meta, т, K: int, N: int):
+        m = x.shape[0]
         if m <= _ПРЯМОЙ_ММАКС and N % 128 == 0:
             # прямой Ampere-GEMM (cp.async 3 стадии + деквант в регистрах): при M=256 быстрее деквант+cuBLAS
             # (замер bench_w8_large: 61-89 TF против 47-71), при M>=1024 пока медленнее (~100 против ~167 TF)
