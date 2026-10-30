@@ -1,7 +1,7 @@
 # vLLM-SM80: kernel changes against vLLM-SM70
 
 Base: [`xormal/vllm-sm70`](https://github.com/xormal/vllm-sm70) at `8a59d8fb8` (2026-10-19). Target: 2× NVIDIA A100
-PG199 32 GB (`sm_80`, 96 SMs, 1275 MHz, HBM ~1.32 TB/s), tensor parallel 2 over PCIe (GPU0↔GPU1 P2P ~11 GB/s through
+PG199 32 GB (`sm_80`, 96 SMs, 1275 MHz, 32 MB L2, 4096-bit HBM2: 1,438 GB/s peak, ~1.27 TB/s measured copy), tensor parallel 2 over PCIe (GPU0↔GPU1 P2P ~11 GB/s through
 the host bridge). Kernels live in `sm70/fa2_sm70/csrc/`, are built by `sm70/fa2_sm70/_ext.py` with
 `TORCH_CUDA_ARCH_LIST=8.0` (adds `-DFA2_SM80=1`), and are wired in through `sm70/integrations/vllm_sm70/`.
 

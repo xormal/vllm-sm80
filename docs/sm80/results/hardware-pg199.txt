@@ -1,0 +1,93 @@
+# NVIDIA DRIVE-PG199-PROD, GPU0 и GPU1 сервера, 2026-10-31
+# 1) driver API без контекста (cuInit + cuDeviceGetAttribute), scratchpad devattr.py
+GPU0: NVIDIA DRIVE-PG199-PROD total_mem 31.55 GiB (33873002496 B)
+   MULTIPROCESSOR_COUNT = 96
+   CLOCK_RATE_kHz = 1260000
+   MEMORY_CLOCK_RATE_kHz = 1404000
+   GLOBAL_MEMORY_BUS_WIDTH_bit = 4096
+   L2_CACHE_SIZE_B = 33554432
+   MAX_THREADS_PER_MULTIPROCESSOR = 2048
+   COMPUTE_CAPABILITY_MAJOR = 8
+   COMPUTE_CAPABILITY_MINOR = 0
+   MAX_SHARED_MEMORY_PER_MULTIPROCESSOR_B = 167936
+   MAX_REGISTERS_PER_MULTIPROCESSOR = 65536
+   MAX_SHARED_MEMORY_PER_BLOCK_OPTIN_B = 166912
+   MAX_PERSISTING_L2_CACHE_SIZE_B = 20971520
+   ECC_ENABLED = 1
+   PCI_BUS_ID = 23
+   PCI_DEVICE_ID = 0
+   MULTI_GPU_BOARD = 0
+   SINGLE_TO_DOUBLE_PRECISION_PERF_RATIO = 2
+   MAX_BLOCKS_PER_MULTIPROCESSOR = 32
+   ASYNC_ENGINE_COUNT = 8
+   UNIFIED_ADDRESSING = 1
+   => пик памяти (clock x2 x bus/8) 1438 GB/s; FP16 tensor dense (SM x 1024 FMA x2 x clock) 247.7 TFLOPS
+GPU1: NVIDIA DRIVE-PG199-PROD total_mem 31.55 GiB (33873002496 B)
+   MULTIPROCESSOR_COUNT = 96
+   CLOCK_RATE_kHz = 1260000
+   MEMORY_CLOCK_RATE_kHz = 1404000
+   GLOBAL_MEMORY_BUS_WIDTH_bit = 4096
+   L2_CACHE_SIZE_B = 33554432
+   MAX_THREADS_PER_MULTIPROCESSOR = 2048
+   COMPUTE_CAPABILITY_MAJOR = 8
+   COMPUTE_CAPABILITY_MINOR = 0
+   MAX_SHARED_MEMORY_PER_MULTIPROCESSOR_B = 167936
+   MAX_REGISTERS_PER_MULTIPROCESSOR = 65536
+   MAX_SHARED_MEMORY_PER_BLOCK_OPTIN_B = 166912
+   MAX_PERSISTING_L2_CACHE_SIZE_B = 20971520
+   ECC_ENABLED = 1
+   PCI_BUS_ID = 75
+   PCI_DEVICE_ID = 0
+   MULTI_GPU_BOARD = 0
+   SINGLE_TO_DOUBLE_PRECISION_PERF_RATIO = 2
+   MAX_BLOCKS_PER_MULTIPROCESSOR = 32
+   ASYNC_ENGINE_COUNT = 8
+   UNIFIED_ADDRESSING = 1
+   => пик памяти (clock x2 x bus/8) 1438 GB/s; FP16 tensor dense (SM x 1024 FMA x2 x clock) 247.7 TFLOPS
+
+# 2) nvidia-smi -q (выдержка, GPU0)
+  Product Name                                       : NVIDIA DRIVE-PG199-PROD
+  Product Architecture                               : Ampere
+  MIG Mode
+  Current                                        : Disabled
+  VBIOS Version                                      : 92.00.79.00.01
+  Board Part Number                                  : 900-6G199-0000-C00
+  GPU Part Number                                    : 20BB-550-A1
+  PCIe Generation
+  Max                                    : 3
+  Current                                : 3
+  Device Current                         : 3
+  Device Max                             : 4
+  Host Max                               : 4
+  Link Width
+  Max                                    : 16x
+  Current                                : 16x
+  Total                                          : 32768 MiB
+  Total                                          : 16384 MiB
+  Total                                          : 0 MiB
+  ECC Mode
+  Current                                        : Enabled
+  Max                                        : 512 bank(s)
+  GPU Shutdown Temp                              : 110 C
+  Instantaneous Power Draw                       : 294.34 W
+  Current Power Limit                            : N/A
+  Instantaneous Power Draw                       : N/A
+  Instantaneous Power Draw                       : N/A
+  Current Power Limit                            : N/A
+  Graphics                                       : 1155 MHz
+  SM                                             : 1155 MHz
+  Memory                                         : 1404 MHz
+  Max Clocks
+  Graphics                                       : 1275 MHz
+  SM                                             : 1275 MHz
+  Memory                                         : 1404 MHz
+  Max Customer Boost Clocks
+  Graphics                                       : 1260 MHz
+
+# 3) PCIe GPU1
+  PCIe Generation
+  Max                                    : 4
+  Current                                : 3
+  Device Current                         : 3
+  Device Max                             : 4
+  Host Max                               : 4

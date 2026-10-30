@@ -68,17 +68,39 @@ the longest pause p99 0.35–0.45 s. Longer prompts prefill slower as attention 
 |---|---|---|---|---|---|
 | SMs | 108 | 108 | 108 | 108 | **96** |
 | Max SM clock | 1410 MHz | 1410 MHz | 1410 MHz | 1410 MHz | **1275 MHz** |
-| FP16 tensor, dense | 312 TFLOPS | 312 TFLOPS | 312 TFLOPS | 312 TFLOPS | **≈251 TFLOPS** (cuBLAS reaches 216) |
-| Memory | 40 GB HBM2 | 40 GB HBM2 | 80 GB HBM2e | 80 GB HBM2e | **32 GB** |
-| Memory bandwidth | 1,555 GB/s | 1,555 GB/s | 1,935 GB/s | 2,039 GB/s | **≈1,270 GB/s** measured (fp16 copy) |
-| Interconnect | PCIe 4.0, NVLink bridge | NVLink 600 GB/s | PCIe 4.0, NVLink bridge | NVLink 600 GB/s | **PCIe 3.0 x16** in this host, GPU0↔GPU1 ≈11 GB/s through the host bridge |
-| Max TDP | 250 W | 400 W | 300 W | 400 W | — |
+| FP16 tensor, dense | 312 TFLOPS | 312 TFLOPS | 312 TFLOPS | 312 TFLOPS | **248–251 TFLOPS** (cuBLAS reaches 216) |
+| Memory | 40 GB HBM2 | 40 GB HBM2 | 80 GB HBM2e | 80 GB HBM2e | **32 GB** HBM2 |
+| Memory bandwidth | 1,555 GB/s | 1,555 GB/s | 1,935 GB/s | 2,039 GB/s | **1,438 GB/s** peak, ≈1,270 GB/s measured copy |
+| Interconnect | PCIe 4.0, NVLink bridge | NVLink 600 GB/s | PCIe 4.0, NVLink bridge | NVLink 600 GB/s | **no NVLink**; PCIe 4.0 card, link trained at 3.0 x16 in this host |
+| Max TDP | 250 W | 400 W | 300 W | 400 W | not reported |
 
-The PG199 is the automotive (DRIVE) board of the A100. On these cards CUDA reports 96 SMs, `nvidia-smi` a 1275 MHz
-SM and a 1404 MHz memory clock, and copies reach about 1.27 TB/s (third-party spec aggregators list 108 SMs and
-1.87 TB/s for this board, which does not match what the hardware reports). Against a data-center A100 that is
-about 80 % of the compute, 62–82 % of the memory bandwidth, 20–60 % less memory per card and no NVLink: the
-tensor-parallel exchange of every layer goes over PCIe 3.0 through the host.
+### Against an A100 40 GB, as the hardware reports it
+
+Values for the PG199 come from the driver (`cuDeviceGetAttribute`) and `nvidia-smi -q` on both cards of the
+deployment; the A100 40 GB column is the datasheet.
+
+| | A100 40 GB (PCIe) | DRIVE A100 PROD (PG199) | |
+|---|---|---|---|
+| GPU | GA100, compute capability 8.0 | GA100 (PCI device `20BB`, GPU part `20BB-550-A1`), compute capability 8.0 | same chip and SM |
+| SMs / FP32 cores / tensor cores | 108 / 6,912 / 432 | **96 / 6,144 / 384** | −11 % |
+| SM clock | 1410 MHz boost | **1275 MHz max, 1260 MHz customer boost**; 1140–1200 MHz observed under our load | −10 % |
+| FP16 / BF16 tensor, dense | 312 TFLOPS | **248–251 TFLOPS** | −20 % |
+| INT8 tensor, dense | 624 TOPS | **≈500 TOPS** | −20 % |
+| FP32 / FP64 | 19.5 / 9.7 TFLOPS | **≈15.7 / 7.8 TFLOPS** | −20 % |
+| L2 cache | 40 MB | **32 MB** (persisting up to 20 MB) | −20 % |
+| Shared memory / registers per SM | 164 KB / 64 K | 164 KB / 64 K | same |
+| Memory | 40 GB HBM2, 5 stacks, 5120-bit, 1215 MHz | **32 GB HBM2, 4 stacks, 4096-bit, 1404 MHz**; 31.55 GiB usable with ECC on | −20 % capacity |
+| Peak memory bandwidth | 1,555 GB/s | **1,438 GB/s** (≈1,270 GB/s measured fp16 copy) | −8 % peak |
+| PCIe | 4.0 x16 | 4.0 x16 capable; **3.0 x16** trained in this host (slot/riser) | half the host bandwidth |
+| NVLink | bridge, 600 GB/s | **none**: GPU0↔GPU1 ≈11 GB/s through the host bridge | |
+| Power | 250 W TDP | limit not reported; 126–160 W drawn under our load, shutdown at 110 °C | |
+| Board | PCIe card | DRIVE board `900-6G199-0000-C00`, VBIOS 92.00.79.00.01 | |
+
+So the per-SM machinery is the A100's; there is less of it (96 SMs, 32 MB L2), it runs slower (1275 vs 1410 MHz),
+with a narrower memory (4 HBM stacks) and no NVLink. Third-party spec aggregators list 108 SMs and 1.87 TB/s for
+this board, which does not match what the hardware reports. Against a data-center A100 the pair has about 80 % of
+the compute, 70–92 % of the peak memory bandwidth (1,438 against 1,555–2,039 GB/s), 20–60 % less memory per card, and the tensor-parallel exchange of
+every layer goes over PCIe 3.0 through the host.
 
 Sources: [NVIDIA A100 80 GB datasheet](https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet-nvidia-us-2188504-web.pdf)
 (312 TFLOPS, 1,935 / 2,039 GB/s, 300 / 400 W, NVLink bridge), [A100 specifications summary](https://www.thundercompute.com/blog/nvidia-a100-specs-full-guide)
@@ -86,7 +108,7 @@ Sources: [NVIDIA A100 80 GB datasheet](https://www.nvidia.com/content/dam/en-zz/
 [DFlash 2 drafter for Qwen3.8-27B](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2),
 [DFlash 2 on a single A100](https://www.mindstudio.ai/blog/dflash-2-speculative-decoding-qwen),
 [DFlash/DFlash2 in vLLM](https://docs.nvidia.com/nemo/speech/nightly/speechlm2/vllm_dflash.html). PG199 figures:
-measured on the deployment.
+driver attributes, `nvidia-smi -q` and measurements on the deployment ([`docs/sm80/results/hardware-pg199.txt`](docs/sm80/results/hardware-pg199.txt)).
 
 ## What was done
 
