@@ -1,3 +1,29 @@
+# vLLM-SM80
+
+**The vLLM-SM70 stack ported to NVIDIA Ampere (A100, `sm_80`)** — the code that serves Qwen3.8-27B (GPTQ-Int8, 262K
+context) plus Clef on two A100 PG199 32 GB cards (A100 production since 2026-10-25; this configuration since
+2026-10-31). Fork of
+[xormal/vllm-sm70](https://github.com/xormal/vllm-sm70) (common base `8a59d8fb8`, branch `sm70`).
+
+* **[Kernel changes against vLLM-SM70](docs/sm80/KERNELS.md)** — native Ampere attention (FA2 prefill on the int8 KV
+  pool, 103.5 TFLOP/s; int8 decode), GPTQ-int8 W8A16 kernels, vLLM Marlin with zero points for asymmetric GPTQ and a
+  new Marlin dequant (34 ms vs 89.6 ms per step, bitwise), GDN/conv/sparse-select ports, host-memory TP reduction,
+  CUDA-graph-safe varlen paths.
+* **[Load tests and metrics](docs/sm80/LOAD_TESTS.md)** of the running configuration, with raw results in
+  [`docs/sm80/results/`](docs/sm80/results/).
+
+| 2× A100 32 GB, TP2 | |
+|---|---|
+| Decode, 1 / 4 / 8 / 16 streams | 114–134 / 92 / 57–60 / 52 tok/s per stream |
+| Prefill, 8K prompts | 5.2 K tok/s |
+| Clef alone (2000-token records) | 4.1 K input tok/s |
+| 4 chats + saturated Clef | 32–33 tok/s per chat, longest gap p99 0.35–0.39 s (was 20 tok/s, 0.58 s) |
+| Accuracy | Clef 34/35 vs the V100 reference, LLM fingerprint 160/160 |
+
+The original vLLM-SM70 description follows.
+
+---
+
 # vLLM-SM70
 
 **English** · [Русский](README.ru.md)
