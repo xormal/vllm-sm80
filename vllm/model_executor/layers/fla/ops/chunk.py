@@ -108,6 +108,30 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
         return o.to(q.dtype), final_state
 
 
+# [ОДИН ГРАФ 30.10] FA2SM80_GDN_DEVMETA=1 -- метаданные чанков префилла GDN ядром на карте (gdn_meta), без хоста;
+# FA2SM80_GDN_DEVMETA_FILE=<файл> -- "0"/"1" из файла раз в секунду (A/B в одном экземпляре; выход побитно тот же).
+import os as _os_dm
+import time as _time_dm
+_DEVMETA = _os_dm.environ.get("FA2SM80_GDN_DEVMETA", "0") == "1"
+_DEVMETA_ФАЙЛ = _os_dm.environ.get("FA2SM80_GDN_DEVMETA_FILE", "")
+_DM = {"t": 0.0, "вкл": _DEVMETA}
+
+
+def _devmeta_вкл():
+    if _DEVMETA_ФАЙЛ:
+        сейчас = _time_dm.monotonic()
+        if сейчас - _DM["t"] >= 1.0:
+            _DM["t"] = сейчас
+            try:
+                with open(_DEVMETA_ФАЙЛ) as f:
+                    _DM["вкл"] = f.read(1) == "1"
+            except OSError:
+                _DM["вкл"] = _DEVMETA
+    elif _os_dm.environ.get("FA2SM80_GDN_DEVMETA") is not None:
+        _DM["вкл"] = _os_dm.environ.get("FA2SM80_GDN_DEVMETA") == "1"     # стенд меняет окружение на лету
+    return _DM["вкл"]
+
+
 @torch.compiler.disable
 def chunk_gated_delta_rule(
     q: torch.Tensor,
@@ -214,9 +238,31 @@ def chunk_gated_delta_rule(
             from .wy_fast import recompute_w_u_fwd
             _scale = k.shape[-1] ** -0.5 if scale is None else scale
             _qn, _kn = (l2norm_fwd(q), l2norm_fwd(k)) if use_qk_l2norm_in_kernel else (q, k)
+            _ext = _fa2_gdn.gdn_ext()
+            if _devmeta_вкл():
+                # [ОДИН ГРАФ 30.10] метаданные чанков -- одно ядро на карте (gdn_meta), ни одного обращения к хосту:
+                # NTmax = T/64 + N известна из форм, строки после настоящего NT -- заглушки (чанк за концом
+                # последней последовательности: наши ядра выходят по rows <= 0, Triton пишет только по маске)
+                _N = cu_seqlens.numel() - 1
+                _ntmax = q.shape[1] // 64 + _N
+                _cu32, _co, _ci = _ext.gdn_meta(cu_seqlens, 64, _ntmax)
+                # Triton -- с исходным cu_seqlens и индексами его типа (те же специализации и автотюн, что
+                # у prepare_chunk_*), наши kkt/tril -- int32
+                _ciT, _coT = ((_ci, _co) if cu_seqlens.dtype == torch.int32
+                              else (_ci.to(cu_seqlens.dtype), _co.to(cu_seqlens.dtype)))
+                _gg = chunk_local_cumsum(g, chunk_size=64, cu_seqlens=cu_seqlens, chunk_indices=_ciT)
+                _A = _ext.gdn_kkt(_kn.contiguous(), beta.contiguous(), _gg, _cu32, _ci, v.shape[-2])
+                _A = _ext.gdn_solve_tril(_A, _cu32, _ci).to(_kn.dtype)
+                _w, _u = recompute_w_u_fwd(k=_kn, v=v, beta=beta, A=_A, g_cumsum=_gg, cu_seqlens=cu_seqlens,
+                                           chunk_indices=_ciT)
+                _h, _vn, _ht = chunk_gated_delta_rule_fwd_h(
+                    k=_kn, w=_w, u=_u, g=_gg, initial_state=initial_state,
+                    output_final_state=output_final_state, cu_seqlens=cu_seqlens, chunk_offsets=_coT, NT=_ntmax)
+                _o = chunk_fwd_o(q=_qn, k=_kn, v=_vn, h=_h, g=_gg, scale=_scale, cu_seqlens=cu_seqlens,
+                                 chunk_indices=_ciT)
+                return _o.to(q.dtype), _ht
             _gg = chunk_local_cumsum(g, chunk_size=64, cu_seqlens=cu_seqlens)
             _cu32, _ci, _co, _nt = _fa2_gdn._chunk_meta(cu_seqlens)
-            _ext = _fa2_gdn.gdn_ext()
             _A = _ext.gdn_kkt(_kn.contiguous(), beta.contiguous(), _gg, _cu32, _ci, v.shape[-2])
             _A = _ext.gdn_solve_tril(_A, _cu32, _ci).to(_kn.dtype)
             _w, _u = recompute_w_u_fwd(k=_kn, v=v, beta=beta, A=_A, g_cumsum=_gg, cu_seqlens=cu_seqlens)

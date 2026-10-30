@@ -99,6 +99,31 @@ _ПРИОР_ДКВ = int(os.environ.get("FA2SM80_BLOCKPIPE_DQ_PRIO", "0"))      
 _DQ_ВПЕРЁД = os.environ.get("FA2SM80_BLOCKPIPE_DQ_AHEAD", "0") == "1"
 _ЗАПАС = {}           # dev.index -> (номер вызова, ключ слоя, Wo, Wd, событие)
 _С = {"конвейер": 0, "прямо": 0, "clef": 0}
+# [ФРИЗЫ 30.10] ПОСТОЯННЫЕ БУФЕРЫ КУСКОВ (FA2SM80_BLOCKPIPE_BUFS=1). Аудит распределителя окна 23: ~5200 выделений на
+# смешанный шаг, у конвейера блока -- по 7 на кусок (y, yr, h, g, a, d, dr) x 8 кусков x 64 слоя, ГБ оборота за шаг;
+# при тесной памяти -- повторы выделения (сброс кэша с синхронизацией) в 9 шагах из 20 и перекартирование страниц.
+# Пути совмещены: h, g, a, h2 живут только на основном потоке внутри куска -- ОДИН буфер на карту на все куски и слои;
+# y и d читает сведение на побочном потоке -- кольцо по номеру куска (в следующем вызове безопасно: вызов кончается
+# осн.wait_stream(поб)); сведение пишет В ТОТ ЖЕ y/d (exch_i12.в_выход) или прямо в срез выхода вызова -- без yr/dr
+# и без копии. Арифметика та же -- выход побитно тот же. В захвате графа -- прежний путь.
+_БУФЫ_ВКЛ = os.environ.get("FA2SM80_BLOCKPIPE_BUFS", "0") == "1"
+# [ФРИЗЫ 30.10] КОНВЕЙЕР НА СРЕДНИХ M (FA2SM80_BLOCKPIPE_M8_MIN=N, 0 -- выкл.): при весах в раскладке Marlin
+# (FA2SM80_W8_MARLIN) шаги с N <= M < FA2SM80_BLOCKPIPE_MIN строк тоже идут конвейером -- куски по
+# FA2SM80_BLOCKPIPE_M8_ROWS строк, умножения кусков -- marlin8 прямо по весам (деквант и его потоки не нужны): обмен
+# TP куска прячется за умножениями следующих. Окно 20: на шаге с куском Clef ~440 токенов обмен шёл подряд с счётом
+# (62 мс из 273). В захвате графа -- прежний путь.
+_M8_MIN = int(os.environ.get("FA2SM80_BLOCKPIPE_M8_MIN", "0"))
+_M8_ROWS = int(os.environ.get("FA2SM80_BLOCKPIPE_M8_ROWS", "256"))
+_БУФЫ = {}            # (карта, имя, номер куска) -> плоский fp16-буфер (растёт только вверх)
+
+
+def _раб(dev, имя, i, rows, n):
+    import torch
+    ключ = (dev.index, имя, i)
+    б = _БУФЫ.get(ключ)
+    if б is None or б.numel() < rows * n:
+        б = _БУФЫ[ключ] = torch.empty(rows * n, dtype=torch.float16, device=dev)
+    return б[: rows * n].view(rows, n)
 
 
 def _лог(msg):
@@ -151,21 +176,27 @@ def установить():
     except ImportError:
         import contextlib as _cl
         _выход_на = lambda _s: _cl.nullcontext()   # noqa: E731
+    import contextlib as _ctx
+    try:   # [ФРИЗЫ 30.10] сведение в готовый тензор (постоянные буферы кусков)
+        from fa2sm70_exch_i12 import в_выход as _в_выход
+    except ImportError:
+        _в_выход = None
     from vllm.utils.torch_utils import direct_register_custom_op
     from vllm.model_executor.models import qwen3_next as QN
 
     def _clef_в_шаге():
         кл = sys.modules.get("fa2sm70_clef")
-        return кл is not None and bool(getattr(кл, "_АКТИВЕН", [False])[0])
+        if кл is None:
+            return False
+        f = getattr(кл, "шаг_с_поправкой", None)     # [ОДИН ГРАФ 30.10] и захват/повтор графа has_clef
+        return bool(f()) if f is not None else bool(getattr(кл, "_АКТИВЕН", [False])[0])
 
     def _w8(layer):
         return getattr(layer, "fa2sm80_kn", None) is not None and getattr(layer, "bias", None) is None
 
     def _деквант(layer, buf):
         import fa2sm80_w8 as W8
-        K, N = layer.fa2sm80_kn
-        т = W8._ТЮН[(K, N)]
-        return W8._расш().w8a16_sm80_dequant(layer.fa2sm80_wf, layer.fa2sm80_meta, N, K, т["nw"], buf)
+        return W8.деквант_слоя(layer, buf)        # [ФРИЗЫ 30.10] любая раскладка (наша или Marlin)
 
     def _буфер_b(dev, n):
         b = _БУФ_B.get(dev)
@@ -252,7 +283,11 @@ def установить():
         M = core.shape[0]
         if _PLAN_FILE and not torch.cuda.is_current_stream_capturing():
             _план_из_файла()
-        if M < _MIN or core.dim() != 2 or not (_w8(proj) and _w8(gup) and _w8(dnp)):
+        import fa2sm80_w8 as W8
+        m8 = (_M8_MIN > 0 and _M8_MIN <= M < _MIN and core.dim() == 2
+              and not torch.cuda.is_current_stream_capturing()
+              and all(W8.марлин_ли(L_) for L_ in (proj, gup, dnp)))
+        if (M < _MIN and not m8) or core.dim() != 2 or not (_w8(proj) and _w8(gup) and _w8(dnp)):
             out, ro = _прямо(L, core, residual)
             return (out, ro) if N2 is None else _след_прямо(N2, out, ro)
         хук = None
@@ -278,11 +313,27 @@ def установить():
         dev = core.device
         # [W8A8 29.10] весь шаг -- int8-активациями (режим all, или все строки одного рода): без распаковки fp16
         A8 = W8._W8A8
+        if any(W8.марлин_ли(L_) for L_ in (proj, gup, dnp)):
+            A8 = None              # [ревизия] W8A8 и v3 читают НАШУ раскладку -- весам Marlin их пути закрыты
         план_все = A8.куски(0, M) if A8 is not None else None
         a8_все = (план_все is not None and len(план_все) == 1 and план_все[0][2]
                   and all(L_.fa2sm80_kn[0] % 128 == 0 and L_.fa2sm80_kn[1] % 128 == 0 for L_ in (proj, gup, dnp)))
         if a8_все:
             _С["w8a8_все"] = _С.get("w8a8_все", 0) + 1
+        # [GEMM 30.10] v3 (FA2SM80_W8_G3): умножения кусков -- ядром v3 прямо по упакованным весам; распаковка в fp16 на
+        # третьем потоке, её буферы (B, C, общий) и запас распаковки вперёд не нужны
+        # v3 -- только если по замеру при загрузке он выигрывает в корзине куска у ВСЕХ трёх слоёв (стенд окна 17: на
+        # кусках 1024-2048 строк v3 медленнее распаковки + GEMM, 107-130 TF против 135-194)
+        _бк = W8._g3_корзина(max(b - a for a, b in _куски(M))) if M > 0 else 0
+        if m8:
+            a8_все = False
+            _С["m8"] = _С.get("m8", 0) + 1
+        g3 = (not m8 and not a8_все and A8 is None and W8.g3_вкл()
+              and not any(W8.марлин_ли(L_) for L_ in (proj, gup, dnp))
+              and all(_бк in ((W8._ТЮН.get(L_.fa2sm80_kn, {}).get("g3") or {}).get("win") or {})
+                      for L_ in (proj, gup, dnp)))
+        if g3:
+            _С["g3"] = _С.get("g3", 0) + 1
         Ko, No = proj.fa2sm80_kn
         Kg, Ng = gup.fa2sm80_kn
         Kd, Nd = dnp.fa2sm80_kn
@@ -294,7 +345,7 @@ def установить():
             поб = _ПОБОЧНЫЙ[dev.index] = torch.cuda.Stream(device=dev, priority=-1)
         out = torch.empty((M, Nd), dtype=torch.float16, device=dev) if not след_куски else None
         ro = torch.empty((M, No), dtype=torch.float32, device=dev)
-        куски = _куски(M)
+        куски = ([(r0, min(M, r0 + _M8_ROWS)) for r0 in range(0, M, _M8_ROWS)] if m8 else _куски(M))
         if след_куски:
             ro2 = torch.empty((M, No), dtype=torch.float32, device=dev)
             выходы2 = [torch.empty((M, p.fa2sm80_kn[1] if getattr(p, "fa2sm80_kn", None) is not None else p.weight.shape[0]),
@@ -302,7 +353,12 @@ def установить():
             n2 = N2.input_layernorm
         # 1) out_proj по кускам, сведение каждого -- на побочном потоке
         import fa2sm80_cg as CG
-        умн = CG.mm if CG.включён() else (lambda x_, w_: torch.mm(x_, w_.t()))
+        умн = CG.mm if CG.включён() else (
+            lambda x_, w_, o_=None: torch.mm(x_, w_.t()) if o_ is None else torch.mm(x_, w_.t(), out=o_))
+        # постоянные буферы -- только где умножение пишет в out_ (пути W8A8/v3 его не берут)
+        буф = (_БУФЫ_ВКЛ and _в_выход is not None and not torch.cuda.is_current_stream_capturing()
+               and not g3 and A8 is None)
+        _нет = _ctx.nullcontext
         # Распаковка весов MLP -- на третьем потоке с самого начала: память (распаковка) параллельно тензорным умножениям
         # out_proj. Ждёт всё, что было на основном потоке до операции (буфер A мог читать предыдущий слой).
         дкв = _ДЕКВАНТ_ПОТОК.get(dev.index)
@@ -310,17 +366,25 @@ def установить():
             дкв = _ДЕКВАНТ_ПОТОК[dev.index] = torch.cuda.Stream(device=dev, priority=_ПРИОР_ДКВ)
         _С["вызов"] = _С.get("вызов", 0) + 1
         зп = _ЗАПАС.pop(dev.index, None)
-        if зп is not None and not (зп[0] == _С["вызов"] - 1 and зп[1] == key and not след_куски and not a8_все):
+        if зп is not None and not (зп[0] == _С["вызов"] - 1 and зп[1] == key and not след_куски and not a8_все and not g3
+                                   and not m8):
             зп = None
-        дкв.wait_stream(осн)
-        with torch.cuda.stream(дкв):
-            Wg = _деквант(gup, W8._буфер_для(dev, Kg * Ng)) if not a8_все else None
-            Wd = (зп[3] if зп is not None else _деквант(dnp, _буфер_c(dev, Kd * Nd))) if not a8_все else None
-            ev_w = torch.cuda.Event()
-            ev_w.record(дкв)
+        if g3 or m8:
+            Wg = Wd = ev_w = None
+        else:
+            дкв.wait_stream(осн)
+            with torch.cuda.stream(дкв):
+                Wg = _деквант(gup, W8._буфер_для(dev, Kg * Ng)) if not a8_все else None
+                Wd = (зп[3] if зп is not None else _деквант(dnp, _буфер_c(dev, Kd * Nd))) if not a8_все else None
+                ev_w = torch.cuda.Event()
+                ev_w.record(дкв)
 
-        def _умн_слой(L_, xi, W_, r0_):
+        def _умн_слой(L_, xi, W_, r0_, out_=None):
             """Кусок строк [r0_, r0_+len) слоя W8: по плану W8A8 (весь шаг -- без плана), иначе fp16 по распакованному."""
+            if m8:
+                return W8.марлин_слой(L_, xi, out_)
+            if g3:
+                return W8.g3_слой(L_, xi)
             if a8_все:
                 K_, N_ = L_.fa2sm80_kn
                 return A8.mm(xi, L_.fa2sm80_wf, L_.fa2sm80_meta, N_, W8._ТЮН[(K_, N_)]["nw"])
@@ -331,10 +395,10 @@ def установить():
                     return A8.смешанный(xi, L_.fa2sm80_wf, L_.fa2sm80_meta, K_, N_, W8._ТЮН[(K_, N_)]["nw"], пл,
                                         lambda a_, o_: умн(a_, W_, o_) if CG.включён()
                                         else torch.mm(a_, W_.t(), out=o_))
-            return умн(xi, W_)
+            return умн(xi, W_) if out_ is None else умн(xi, W_, out_)
         # буфер B -- сразу под наибольшее (out_proj, затем вход W8 следующего слоя): без перевыделения под живым тензором
         кнB = [Ko * No] + [p.fa2sm80_kn[0] * p.fa2sm80_kn[1] for p in прос if след_куски and getattr(p, "fa2sm80_kn", None)]
-        if a8_все:
+        if a8_все or g3 or m8:
             Wo = None
         elif зп is not None:
             осн.wait_event(зп[4])
@@ -349,12 +413,12 @@ def установить():
 
         def _out(i):
             r0, r1 = куски[i]
-            y = _умн_слой(proj, core[r0:r1], Wo, r0)
+            y = _умн_слой(proj, core[r0:r1], Wo, r0, _раб(dev, "y", i, r1 - r0, No) if буф else None)
             if хук is not None:
                 хук(core[r0:r1], y, [proj.scales], r0)
             ev = torch.cuda.Event()
             ev.record(осн)
-            with torch.cuda.stream(поб), _выход_на(осн):
+            with torch.cuda.stream(поб), _выход_на(осн), (_в_выход(y) if буф else _нет()):
                 поб.wait_event(ev)
                 yr = tensor_model_parallel_all_reduce(y)
                 evr = torch.cuda.Event()
@@ -370,7 +434,8 @@ def установить():
         for i in range(min(вперёд, len(куски))):
             _out(i)
         # 2) веса MLP распакованы на третьем потоке -- дождаться
-        осн.wait_event(ev_w)
+        if ev_w is not None:
+            осн.wait_event(ev_w)
         if след_куски:
             # вход W8 следующего слоя -- в буфер B после умножений out_proj (порядок основного потока), на третьем потоке
             ev_o = torch.cuda.Event()
@@ -379,6 +444,12 @@ def установить():
             дкв.wait_event(ev_o)
             with torch.cuda.stream(дкв):
                 for p in прос:
+                    if g3 and getattr(p, "fa2sm80_kn", None) is not None and W8._ТЮН.get(p.fa2sm80_kn, {}).get("g3"):
+                        Wn.append("g3")
+                        continue
+                    if m8 and W8.марлин_ли(p):
+                        Wn.append("m8")
+                        continue
                     Wn.append((None if a8_все and p.fa2sm80_kn[0] % 128 == 0 and p.fa2sm80_kn[1] % 128 == 0
                                else _деквант(p, _буфер_b(dev, max(кнB))))
                               if getattr(p, "fa2sm80_kn", None) is not None else p.weight)
@@ -395,9 +466,16 @@ def установить():
             if ждём_w2[0]:
                 осн.wait_event(ev_w2)
                 ждём_w2[0] = False
-            h2 = torch.empty((r1_ - r0_, No), dtype=torch.float16, device=dev)
+            h2 = (_раб(dev, "h2", 0, r1_ - r0_, No) if буф
+                  else torch.empty((r1_ - r0_, No), dtype=torch.float16, device=dev))
             норма(dr_, ro[r0_:r1_], n2.weight.data, n2.variance_epsilon, h2, ro2[r0_:r1_])
             for p_, W_, y_ in zip(прос, Wn, выходы2):
+                if isinstance(W_, str):   # вход W8 следующего слоя -- v3 / marlin8 по упакованным весам
+                    if W_ == "m8":
+                        W8.марлин_слой(p_, h2, y_[r0_:r1_])
+                    else:
+                        W8.g3_слой(p_, h2, y_[r0_:r1_])
+                    continue
                 if W_ is None:            # вход W8 следующего слоя -- int8-активациями (весь шаг W8A8)
                     K_, N_ = p_.fa2sm80_kn
                     A8.mm(h2, p_.fa2sm80_wf, p_.fa2sm80_meta, N_, W8._ТЮН[(K_, N_)]["nw"], y_[r0_:r1_])
@@ -415,32 +493,35 @@ def установить():
                 _out(i + вперёд)
             yr, evr = сведённые.pop(i), готово.pop(i)
             осн.wait_event(evr)
-            h = torch.empty((r1 - r0, No), dtype=torch.float16, device=dev)
+            h = (_раб(dev, "h", 0, r1 - r0, No) if буф
+                 else torch.empty((r1 - r0, No), dtype=torch.float16, device=dev))
             норма(yr, residual[r0:r1], nw.weight.data, nw.variance_epsilon, h, ro[r0:r1])
-            g = _умн_слой(gup, h, Wg, r0)
+            g = _умн_слой(gup, h, Wg, r0, _раб(dev, "g", 0, r1 - r0, Ng) if буф else None)
             if хук is not None:
                 хук(h, g, [gup.scales], r0)
-            a = torch.empty((r1 - r0, Ng // 2), dtype=torch.float16, device=dev)
+            a = (_раб(dev, "a", 0, r1 - r0, Ng // 2) if буф
+                 else torch.empty((r1 - r0, Ng // 2), dtype=torch.float16, device=dev))
             torch.ops._C.silu_and_mul(a, g)
-            d = _умн_слой(dnp, a, Wd, r0)
+            d = _умн_слой(dnp, a, Wd, r0, _раб(dev, "d", i, r1 - r0, Nd) if буф else None)
             if хук is not None:
                 хук(a, d, [dnp.scales], r0)
             ev = torch.cuda.Event()
             ev.record(осн)
-            with torch.cuda.stream(поб), _выход_на(осн):
+            цель = (d if след_куски else out[r0:r1]) if буф else None
+            with torch.cuda.stream(поб), _выход_на(осн), (_в_выход(цель) if цель is not None else _нет()):
                 поб.wait_event(ev)
                 dr = tensor_model_parallel_all_reduce(d)
                 if след_куски:
                     evd = torch.cuda.Event()
                     evd.record(поб)
-                else:
+                elif dr.data_ptr() != out[r0:r1].data_ptr():
                     out[r0:r1].copy_(dr)
             d.record_stream(поб)
             if след_куски:
                 dr.record_stream(осн)
                 сведённые_d[i] = (dr, evd)
         N3 = _РЕЕСТР.get(getattr(L, "_fa2_bp_next", ""))
-        if _DQ_ВПЕРЁД and not след_куски and not a8_все and N3 is not None:
+        if _DQ_ВПЕРЁД and not след_куски and not a8_все and not g3 and not m8 and N3 is not None:
             proj3 = N3.linear_attn.out_proj if N3.layer_type == "linear_attention" else N3.self_attn.o_proj
             dnp3 = N3.mlp.down_proj
             if (_w8(proj3) and _w8(dnp3) and proj3.fa2sm80_kn == proj.fa2sm80_kn

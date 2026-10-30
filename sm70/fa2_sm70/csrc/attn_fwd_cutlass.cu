@@ -1104,7 +1104,7 @@ std::tuple<torch::Tensor, torch::Tensor> attn_fwd_volta_i8_paged(
                 reinterpret_cast<__half*>(O.data_ptr<at::Half>()), lse.data_ptr<float>(),
                 Kc.data_ptr<int8_t>(), Vc.data_ptr<int8_t>(), Kst.data_ptr<float>(), Vst.data_ptr<float>(),
                 vOff.data_ptr<long>(), vScl.data_ptr<long>(), Sq, Sk, H, Hkv, sc, lse_dim,
-                sI8, sC8, sStr8, sGrp8, sSub8);
+                sI8, sC8, sStr8, sGrp8, sSub8, nullptr);
             C10_CUDA_KERNEL_LAUNCH_CHECK();
             return std::make_tuple(O, lse.narrow(2, 0, Sq).contiguous());
         }
@@ -1806,6 +1806,119 @@ std::tuple<torch::Tensor, torch::Tensor> attn_fwd_volta_e5m2_nosc(
     return attn_fwd_volta_i8(Q, Kb.view(torch::kChar), none, Vb.view(torch::kChar), none, scale, causal, 2);
 }
 
+#if defined(FA2_SM80) && FA2_SM80
+// =====================================================================================================
+// [ОДИН ГРАФ 30.10] PREFILL ВНИМАНИЯ ОДНИМ ВЫЗОВОМ НА СЛОЙ, МЕТАДАННЫЕ НА УСТРОЙСТВЕ.
+// Прежде: на каждую строку prefill и каждый слой -- таблицы страниц шестью torch-операциями (форма зависит от Sk)
+// и свой запуск ядра. Здесь одно ядро-построитель на шаг (общее для всех слоёв: зависит только от строк шага)
+// пишет карту плиток и таблицы страниц всех строк в буферы ФИКСИРОВАННОЙ ёмкости, а fwd_i8_paged_sm80 в режиме vl
+// берёт свою строку из карты. Никаких синхронизаций и форм, зависящих от данных: годится для захвата в граф.
+// Входы построителя (на устройстве): q0s[R] -- первый токен строки в Q, sqs[R] -- её длина (0 -- строка запаса),
+// sk[R] -- длина контекста, ridx[R] -- строка таблицы блоков; bt -- таблица блоков движка [строк, max_blocks].
+// Строки не обязаны идти подряд: токены между ними (чужие строки) плитками не покрываются.
+// Формулы страниц -- буква в букву как у attn_fwd_volta_i8_paged.
+// =====================================================================================================
+__global__ void paged_varlen_meta_kernel(const int* __restrict__ q0s, const int* __restrict__ sqs,
+                                         const int* __restrict__ sk,
+                                         const int* __restrict__ ridx, const int* __restrict__ bt, long bt_stride,
+                                         int R, int bs, long kstride, int Hkv, int ntmax, int pgcap,
+                                         int* __restrict__ tiles, long* __restrict__ vOff, long* __restrict__ vScl,
+                                         int* __restrict__ err) {
+  extern __shared__ int sm_vl[];                           // tbase[R+1], pbase[R+1]
+  int* tbase = sm_vl;
+  int* pbase = sm_vl + R + 1;
+  constexpr int BQv = fa2sm80_pf::BQ, Dv = fa2sm80_pf::D;
+  if (threadIdx.x == 0) {
+    int t = 0, pg = 0;
+    for (int i = 0; i < R; ++i) {
+      tbase[i] = t; pbase[i] = pg;
+      const int sq = sqs[i];
+      if (sq > 0) { t += (sq + BQv - 1) / BQv; pg += (sk[i] + 15) / 16; }
+    }
+    tbase[R] = t; pbase[R] = pg;
+    if (err != nullptr) err[0] = (t > ntmax ? 1 : 0) | (pg > pgcap ? 2 : 0);
+  }
+  __syncthreads();
+  const int nt = min(tbase[R], ntmax), np = min(pbase[R], pgcap);
+  for (int i = threadIdx.x; i < ntmax; i += blockDim.x) {
+    int* m = tiles + 6 * (long)i;
+    if (i >= nt) { m[0] = 0; m[1] = 0; m[2] = 0; m[3] = 0; m[4] = 0; m[5] = 0; continue; }
+    int r = 0;
+    while (r + 1 < R && tbase[r + 1] <= i) ++r;
+    m[0] = q0s[r]; m[1] = (i - tbase[r]) * BQv; m[2] = sqs[r]; m[3] = sk[r]; m[4] = pbase[r]; m[5] = 0;
+  }
+  for (int j = threadIdx.x; j < np; j += blockDim.x) {
+    int r = 0;
+    while (r + 1 < R && pbase[r + 1] <= j) ++r;
+    const long tok0 = (long)(j - pbase[r]) * 16;
+    const long pgIdx = tok0 / bs;
+    const long page = (long)bt[(long)ridx[r] * bt_stride + pgIdx];
+    const long intra = tok0 - pgIdx * bs;
+    vOff[j] = page * kstride + intra * ((long)Hkv * Dv);
+    vScl[j] = (page * bs + intra) * Hkv;
+  }
+}
+
+std::vector<torch::Tensor> paged_varlen_meta(torch::Tensor q0s, torch::Tensor sqs, torch::Tensor sk, torch::Tensor ridx,
+                                             torch::Tensor block_table, int64_t bs, int64_t kstride, int64_t Hkv,
+                                             int64_t ntmax, int64_t pgcap) {
+  const c10::cuda::CUDAGuard device_guard(q0s.device());
+  TORCH_CHECK(q0s.scalar_type() == torch::kInt32 && sqs.scalar_type() == torch::kInt32 && sk.scalar_type() == torch::kInt32 &&
+              ridx.scalar_type() == torch::kInt32 && block_table.scalar_type() == torch::kInt32,
+              "varlen meta: int32");
+  TORCH_CHECK(q0s.is_cuda() && q0s.is_contiguous() && sqs.is_contiguous() && sk.is_contiguous() && ridx.is_contiguous() &&
+              block_table.stride(1) == 1, "varlen meta: плотные тензоры на устройстве");
+  const int R = (int)sk.numel();
+  TORCH_CHECK(q0s.numel() == R && sqs.numel() == R && ridx.numel() == R && R >= 1 && R <= 4096, "varlen meta: R");
+  TORCH_CHECK(bs % 16 == 0, "varlen meta: страница кратна 16");
+  auto i32 = torch::dtype(torch::kInt32).device(q0s.device());
+  auto i64 = torch::dtype(torch::kLong).device(q0s.device());
+  auto tiles = torch::empty({ntmax, 6}, i32);
+  auto vOff = torch::empty({std::max<int64_t>(pgcap, 1)}, i64);
+  auto vScl = torch::empty({std::max<int64_t>(pgcap, 1)}, i64);
+  auto err = torch::empty({1}, i32);
+  paged_varlen_meta_kernel<<<1, 256, (size_t)2 * (R + 1) * sizeof(int), at::cuda::getCurrentCUDAStream()>>>(
+      q0s.data_ptr<int>(), sqs.data_ptr<int>(), sk.data_ptr<int>(), ridx.data_ptr<int>(), block_table.data_ptr<int>(),
+      (long)block_table.stride(0), R, (int)bs, (long)kstride, (int)Hkv, (int)ntmax, (int)pgcap,
+      tiles.data_ptr<int>(), vOff.data_ptr<long>(), vScl.data_ptr<long>(), err.data_ptr<int>());
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  return {tiles, vOff, vScl, err};
+}
+
+// Q [T, H, 256] fp16 плотный, Out [T, H*256] (или [T, H, 256]) fp16 плотный; сетка (ntmax, H) фиксирована.
+void attn_fwd_i8_paged_varlen(torch::Tensor Q, torch::Tensor Kc, torch::Tensor Vc, torch::Tensor Kst,
+                              torch::Tensor Vst, torch::Tensor tiles, torch::Tensor vOff, torch::Tensor vScl,
+                              double scale, bool causal, torch::Tensor Out) {
+  const c10::cuda::CUDAGuard device_guard(Q.device());
+  namespace P = fa2sm80_pf;
+  TORCH_CHECK(Q.scalar_type() == torch::kFloat16 && Q.is_contiguous() && Q.dim() == 3 && Q.size(2) == P::D,
+              "varlen: Q [T, H, 256] fp16 плотный");
+  TORCH_CHECK(Out.scalar_type() == torch::kFloat16 && Out.is_contiguous() && Out.numel() == Q.numel(),
+              "varlen: Out той же длины, плотный fp16");
+  TORCH_CHECK(Kc.scalar_type() == torch::kChar && Kc.size(3) == P::D && Kc.stride(3) == 1 &&
+              Kc.stride(2) == P::D && Kc.stride(1) == (long)Kc.size(2) * P::D && Vc.stride(0) == Kc.stride(0),
+              "varlen: раскладка пула как у постраничного пути");
+  TORCH_CHECK(Kst.scalar_type() == torch::kFloat32 && Vst.scalar_type() == torch::kFloat32, "varlen: масштабы fp32");
+  TORCH_CHECK(tiles.scalar_type() == torch::kInt32 && tiles.dim() == 2 && tiles.size(1) == 6, "varlen: карта плиток");
+  const int H = (int)Q.size(1), Hkv = (int)Kc.size(2), ntmax = (int)tiles.size(0);
+  TORCH_CHECK(H % Hkv == 0 && ntmax >= 1, "varlen: GQA");
+  const size_t sh80 = sizeof(P::Smem);
+  auto k80 = causal ? P::fwd_i8_paged_sm80<true> : P::fwd_i8_paged_sm80<false>;
+  static bool _a80[2] = {false, false};
+  if (!_a80[causal]) {
+    C10_CUDA_CHECK(cudaFuncSetAttribute(k80, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)sh80));
+    _a80[causal] = true;
+  }
+  const float sc = (float)scale * 1.4426950408889634f;
+  k80<<<dim3(ntmax, H), P::NT, sh80, at::cuda::getCurrentCUDAStream()>>>(
+      reinterpret_cast<const __half*>(Q.data_ptr<at::Half>()), reinterpret_cast<__half*>(Out.data_ptr<at::Half>()),
+      nullptr, Kc.data_ptr<int8_t>(), Vc.data_ptr<int8_t>(), Kst.data_ptr<float>(), Vst.data_ptr<float>(),
+      vOff.data_ptr<long>(), vScl.data_ptr<long>(), 0, 0, H, Hkv, sc, 0, nullptr, nullptr, 0, 1, 0,
+      tiles.data_ptr<int>());
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+#endif
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("attn_fwd_vsplit", &attn_fwd_vsplit,
           "sm70 cutlass FMHA, d=256 via two head_dim_value=128 passes (output stays in registers)",
@@ -1835,6 +1948,19 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           pybind11::arg("SINK") = 2, pybind11::arg("WIN") = 8, pybind11::arg("REC") = 2,
           pybind11::arg("kbarPool") = c10::nullopt, pybind11::arg("beta") = 0.0,
           pybind11::arg("gamma") = 0.0, pybind11::arg("devPool") = c10::nullopt);
+#if defined(FA2_SM80) && FA2_SM80
+    m.def("paged_varlen_meta", &paged_varlen_meta,
+          "[ОДИН ГРАФ] карта плиток и таблицы страниц всех строк prefill на устройстве -> (tiles, vOff, vScl, err)",
+          pybind11::arg("q0s"), pybind11::arg("sqs"), pybind11::arg("sk"), pybind11::arg("ridx"),
+          pybind11::arg("block_table"),
+          pybind11::arg("bs"), pybind11::arg("kstride"), pybind11::arg("Hkv"), pybind11::arg("ntmax"),
+          pybind11::arg("pgcap"));
+    m.def("attn_fwd_i8_paged_varlen", &attn_fwd_i8_paged_varlen,
+          "[ОДИН ГРАФ] prefill всех строк одним вызовом (fwd_i8_paged_sm80 в режиме vl), сетка (ntmax, H)",
+          pybind11::arg("Q"), pybind11::arg("Kc"), pybind11::arg("Vc"), pybind11::arg("Kst"), pybind11::arg("Vst"),
+          pybind11::arg("tiles"), pybind11::arg("vOff"), pybind11::arg("vScl"), pybind11::arg("scale"),
+          pybind11::arg("causal"), pybind11::arg("Out"));
+#endif
     m.def("attn_fwd_volta_i8_paged", &attn_fwd_volta_i8_paged,
           "sm70 prefill: K/V straight from the paged int8 pool (task 163, one HBM pass)",
           pybind11::arg("Q"), pybind11::arg("Kc"), pybind11::arg("Vc"),

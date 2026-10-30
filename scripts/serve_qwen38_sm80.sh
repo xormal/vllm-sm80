@@ -183,7 +183,7 @@ fi
 
 if [ "${DRYRUN:-0}" = "1" ]; then
   say "resolved environment:"
-  env | grep -E '^(FA2SM70_|VLLM_|CUDA_|NCCL_|PYTORCH_|TORCH_|CC=|CXX=|PYTHONPATH=)' | sort | sed 's/^/    /'
+  env | grep -E '^(FA2SM70_|FA2SM80_|VLLM_|CUDA_|NCCL_|PYTORCH_|TORCH_|CC=|CXX=|PYTHONPATH=)' | sort | sed 's/^/    /'
   say "command: $PY ${ARGS[*]}"
   exit 0
 fi

@@ -181,6 +181,7 @@ def chunk_local_cumsum_scalar(
     cu_seqlens: torch.Tensor | None = None,
     head_first: bool = False,
     output_dtype: torch.dtype | None = torch.float,
+    chunk_indices: torch.Tensor | None = None,
 ) -> torch.Tensor:
     if head_first:
         B, H, T = g.shape
@@ -190,9 +191,11 @@ def chunk_local_cumsum_scalar(
         "chunk_size must be a power of 2"
     )
     BT = chunk_size
-    chunk_indices = (
-        prepare_chunk_indices(cu_seqlens, BT) if cu_seqlens is not None else None
-    )
+    # [ОДИН ГРАФ 30.10] chunk_indices с устройства (gdn_meta: заглушки до NTmax) -- без обращения к хосту
+    if chunk_indices is None:
+        chunk_indices = (
+            prepare_chunk_indices(cu_seqlens, BT) if cu_seqlens is not None else None
+        )
     NT = triton.cdiv(T, BT) if cu_seqlens is None else len(chunk_indices)
     g_org, g = g, torch.empty_like(g, dtype=output_dtype or g.dtype)
     grid = (NT, B * H)
@@ -218,17 +221,19 @@ def chunk_local_cumsum_vector(
     cu_seqlens: torch.Tensor | None = None,
     head_first: bool = False,
     output_dtype: torch.dtype | None = torch.float,
+    chunk_indices: torch.Tensor | None = None,
 ) -> torch.Tensor:
     if head_first:
         B, H, T, S = g.shape
     else:
         B, T, H, S = g.shape
     BT = chunk_size
-    chunk_indices = (
-        prepare_chunk_indices(cu_seqlens, chunk_size)
-        if cu_seqlens is not None
-        else None
-    )
+    if chunk_indices is None:
+        chunk_indices = (
+            prepare_chunk_indices(cu_seqlens, chunk_size)
+            if cu_seqlens is not None
+            else None
+        )
     NT = triton.cdiv(T, BT) if cu_seqlens is None else len(chunk_indices)
     assert chunk_size == 2 ** (chunk_size.bit_length() - 1), (
         "chunk_size must be a power of 2"
@@ -280,13 +285,14 @@ def chunk_local_cumsum(
         assert g.shape[0] == 1, (
             "Only batch size 1 is supported when cu_seqlens are provided"
         )
+    ci = kwargs.get("chunk_indices")
     if len(g.shape) == 3:
         return chunk_local_cumsum_scalar(
-            g, chunk_size, reverse, cu_seqlens, head_first, output_dtype
+            g, chunk_size, reverse, cu_seqlens, head_first, output_dtype, ci
         )
     elif len(g.shape) == 4:
         return chunk_local_cumsum_vector(
-            g, chunk_size, reverse, cu_seqlens, head_first, output_dtype
+            g, chunk_size, reverse, cu_seqlens, head_first, output_dtype, ci
         )
     else:
         raise ValueError(

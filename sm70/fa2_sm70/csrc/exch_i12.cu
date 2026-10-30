@@ -94,10 +94,12 @@ __global__ void pack_i12_kernel(const __half* __restrict__ x, unsigned short* __
 }
 
 // out = base + разбор(packed)*scale
-__global__ void unpack_add_i12_kernel(const __half* __restrict__ base,
+// base и out могут совпадать (сведение на месте, fa2sm70_exch_i12.в_выход): у них нет __restrict__ -- нить читает свой
+// элемент до записи того же элемента.
+__global__ void unpack_add_i12_kernel(const __half* base,
                                       const unsigned short* __restrict__ pk,
                                       const __half* __restrict__ sc,
-                                      __half* __restrict__ out, long ngrp) {
+                                      __half* out, long ngrp) {
   const int lane = threadIdx.x & 31;
   const long g = (long)blockIdx.x * WPB + (threadIdx.x >> 5);
   if (g >= ngrp) return;
@@ -545,6 +547,41 @@ static void ar2_all_reduce_out(at::Tensor y, at::Tensor out, at::Tensor recv,
 }
 
 // ---------------------------------------------------------------------------------------------
+// [ОДИН ГРАФ 30.10] ПЕРЕВОЗКА 12-РАЗРЯДНОГО ОБМЕНА КОПИРОВЩИКОМ В CUDA-ГРАФЕ. Eager-путь (fa2sm70_exch_i12, _CE)
+// держит номер и чётность приёмника на хосте: в захвате они запеклись бы, поэтому при захвате обмен шёл NCCL-сбором.
+// Здесь номер -- на устройстве (растёт на каждом повторе, у обоих рангов одинаково: графы и eager-вызовы у них одни),
+// приёмник ОДИН, а гонку «перезаписал, пока сосед складывает» закрывает встречный флаг «дочитано» (как у
+// ar2_all_reduce_out). Порядок в потоке: дождаться «дочитано» прошлого обмена -> номер+1 -> копия соседу движком
+// копирования (как у eager-пути) -> флаг соседу -> дождаться свой флаг -> [разбор из своего приёмника] -> «дочитано».
+// Свои приёмник, флаги и номер -- отдельно от eager-пути: тот не меняется.
+static void ce_graph_send(at::Tensor own, int64_t peer_recv_ptr, at::Tensor my_ack, int64_t peer_flag_ptr,
+                          at::Tensor seq, at::Tensor срыв) {
+  TORCH_CHECK(own.is_cuda() && own.is_contiguous() && seq.scalar_type() == at::kInt && my_ack.scalar_type() == at::kInt &&
+              срыв.scalar_type() == at::kInt, "ce_graph_send: формы/типы");
+  auto st = at::cuda::getCurrentCUDAStream();
+  ar2_wait_free_kernel<<<1, 1, 0, st>>>((const int*)my_ack.data_ptr(), (const int*)seq.data_ptr(), (int*)срыв.data_ptr());
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  ar2_bump_kernel<<<1, 1, 0, st>>>((int*)seq.data_ptr());
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  const size_t nb = (size_t)own.numel() * (size_t)own.element_size();
+  C10_CUDA_CHECK(cudaMemcpyAsync((void*)peer_recv_ptr, own.data_ptr(), nb, cudaMemcpyDeviceToDevice, st));
+  ar2_signal_seq_kernel<<<1, 1, 0, st>>>((int*)peer_flag_ptr, (const int*)seq.data_ptr());
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+static void ce_graph_wait(at::Tensor my_flag, at::Tensor seq, at::Tensor срыв) {
+  auto st = at::cuda::getCurrentCUDAStream();
+  ar2_wait_seq_kernel<<<1, 1, 0, st>>>((const int*)my_flag.data_ptr(), (const int*)seq.data_ptr(), (int*)срыв.data_ptr());
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+static void ce_graph_ack(int64_t peer_ack_ptr, at::Tensor seq) {
+  auto st = at::cuda::getCurrentCUDAStream();
+  ar2_ack_kernel<<<1, 1, 0, st>>>((int*)peer_ack_ptr, (const int*)seq.data_ptr());
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+// ---------------------------------------------------------------------------------------------
 // AR1: ВСЁ СВЕДЕНИЕ ОДНИМ ЯДРОМ (путь A100). У AR2 шесть запусков на сведение (ожидание «дочитано»,
 // счётчик, отправка, ожидание флага, сложение, «дочитано» соседу) -- в графе это шесть узлов по
 // ~2 мкс плюс две полные задержки PCIe между ними. Здесь тот же протокол внутри одного ядра:
@@ -792,6 +829,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "счётчик запусков обмена, переживающий граф; reset=true обнуляет",
         pybind11::arg("reset") = false);
   m.def("ar2_copy", &ar2_copy, "движком копирования: кусок -> память соседа");
+  m.def("ce_graph_send", &ce_graph_send, "[граф] дождаться «дочитано», номер+1, копия соседу, флаг соседу");
+  m.def("ce_graph_wait", &ce_graph_wait, "[граф] дождаться свой флаг (номер на устройстве)");
+  m.def("ce_graph_ack", &ce_graph_ack, "[граф] «дочитано» соседу");
   m.def("ar2_signal", &ar2_signal, "поставить флаг готовности куска У СОСЕДА",
         pybind11::arg("peer_flag_ptr"), pybind11::arg("idx"), pybind11::arg("val"));
   m.def("ar2_wait", &ar2_wait, "ждать флаг куска (с потолком по тактам)",

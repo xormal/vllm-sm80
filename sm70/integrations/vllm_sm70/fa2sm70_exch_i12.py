@@ -78,7 +78,53 @@ class выход_на:
     def __exit__(self, *a):
         _ПОТОК_ВЫХОДА.s = self.было
         return False
+
+
+class в_выход:
+    """[ФРИЗЫ 30.10] Контекст: сведение внутри пишет результат В ГОТОВЫЙ тензор `out` (тот же numel, подряд) --
+    в т. ч. на месте входа (out = вход: ядро читает элемент до записи того же элемента). Конвейер блока так
+    сводит куски в свои постоянные буферы и прямо в срез выхода вызова: без выделения под каждый кусок (аудит окна 23:
+    распаковка сведения -- 344 выделения и 3.8 ГБ на смешанный шаг) и без копии `out[r0:r1].copy_(dr)`."""
+
+    def __init__(self, out):
+        self.out = out
+
+    def __enter__(self):
+        self.было = getattr(_ПОТОК_ВЫХОДА, "out", None)
+        _ПОТОК_ВЫХОДА.out = self.out
+        return self
+
+    def __exit__(self, *a):
+        _ПОТОК_ВЫХОДА.out = self.было
+        return False
 _CE_МБ = int(os.environ.get("FA2SM80_EXCH_CE_MB", "72"))      # ёмкость приёмника на чётность
+# [ОДИН ГРАФ 30.10] FA2SM70_EXCH_CE_GRAPH=1: в ЗАХВАТЕ CUDA-графа обмен идёт тем же копировщиком (ce_graph_*: номер на
+# устройстве, один приёмник и встречный флаг «дочитано»), а не NCCL-сбором. Свой приёмник FA2SM70_EXCH_CE_GRAPH_MB
+# (умолчание 24: кусок шага 2112 x 5120 в 12 разрядах -- 16.4 МБ) и свои флаги; поднимается вместе с eager-путём
+# (первый большой обмен -- проход профилирования, до захвата). Без флага -- прежний путь.
+_CE_ГРАФ = os.environ.get("FA2SM70_EXCH_CE_GRAPH", "0") == "1"
+_CE_ГРАФ_МБ = int(os.environ.get("FA2SM70_EXCH_CE_GRAPH_MB", "24"))
+# [БЕЗ ХОСТА 30.10] Проверка срыва ожидания флага соседа (раз в 256 обменов) была .item() -- полная синхронизация:
+# профиль окна 12 -- 18-81 мс главного потока, CPU не готовит следующий шаг, пока GPU не опустеет. При уровне >= 1
+# в FA2SM70_NOSYNC_FILE (или FA2SM70_NOSYNC_ACC2=1) -- неблокирующий снимок в закреплённую память и чтение на
+# СЛЕДУЮЩЕЙ проверке, если событие снимка уже прошло: срыв ловится с задержкой <= 256 обменов, отказ тот же.
+_БХ_ФАЙЛ = os.environ.get("FA2SM70_NOSYNC_FILE", "")
+_БХ = {"t": 0.0, "ур": 1 if os.environ.get("FA2SM70_NOSYNC_ACC2", "0") == "1" else 0}
+
+
+def _без_хоста_уровень():
+    if _БХ_ФАЙЛ:
+        import time as _t
+        сейчас = _t.monotonic()
+        if сейчас - _БХ["t"] >= 1.0:
+            _БХ["t"] = сейчас
+            try:
+                with open(_БХ_ФАЙЛ) as f:
+                    v = f.read(1)
+                _БХ["ур"] = int(v) if v.isdigit() else 0
+            except OSError:
+                pass
+    return _БХ["ур"]
 
 if _рычаг("FA2SM70_EXCH12", "FA2SM70_ОБМЕН_I12") == "1":
     import torch
@@ -123,6 +169,12 @@ if _рычаг("FA2SM70_EXCH12", "FA2SM70_ОБМЕН_I12") == "1":
             flag = e.ipc_alloc(2, torch.int32)
             мои = {"r": (bytes(e.ipc_handle(recv)), e.ipc_offset(recv)),
                    "f": (bytes(e.ipc_handle(flag)), e.ipc_offset(flag))}
+            гр = _CE_ГРАФ and hasattr(e, "ce_graph_send")
+            if гр:
+                recv_g = e.ipc_alloc(_CE_ГРАФ_МБ << 20, torch.uint8)
+                fl_g = e.ipc_alloc(2, torch.int32)                 # [0] -- флаг «данные у тебя», [1] -- «дочитано»
+                мои["rg"] = (bytes(e.ipc_handle(recv_g)), e.ipc_offset(recv_g))
+                мои["fg"] = (bytes(e.ipc_handle(fl_g)), e.ipc_offset(fl_g))
             мир, ранг = сам.world_size, сам.rank
             собрано = [None] * мир
             собрано[ранг] = мои
@@ -136,9 +188,16 @@ if _рычаг("FA2SM70_EXCH12", "FA2SM70_ОБМЕН_I12") == "1":
                   "срыв": torch.zeros(2, dtype=torch.int32, device=recv.device),
                   "p_recv": e.ipc_open(чуж["r"][0], чуж["r"][1]),
                   "p_flag": e.ipc_open(чуж["f"][0], чуж["f"][1])}
+            if гр and "rg" in чуж:
+                p_fg = e.ipc_open(чуж["fg"][0], чуж["fg"][1])
+                st.update({"cap_g": _CE_ГРАФ_МБ << 20, "recv_g": recv_g, "fl_g": fl_g,
+                           "seq_g": torch.zeros(1, dtype=torch.int32, device=recv.device),
+                           "p_recv_g": e.ipc_open(чуж["rg"][0], чуж["rg"][1]),
+                           "p_flag_g": p_fg, "p_ack_g": p_fg + 4})
             dist.barrier(group=сам.cpu_group)
             _CE_СОСТ[ключ] = st
-            print(f"[fa2_sm70 ОБМЕН-12бит] перевозка КОПИРОВЩИКОМ по P2P: приёмник 2 x {_CE_МБ} МиБ",
+            print(f"[fa2_sm70 ОБМЕН-12бит] перевозка КОПИРОВЩИКОМ по P2P: приёмник 2 x {_CE_МБ} МиБ"
+                  + (f"; в графе -- копировщиком, приёмник {_CE_ГРАФ_МБ} МиБ" if "cap_g" in st else ""),
                   file=sys.stderr, flush=True)
         except Exception as ex:  # noqa: BLE001
             print(f"[fa2_sm70 ОБМЕН-12бит] копировщик не поднят ({ex}) -- NCCL", file=sys.stderr, flush=True)
@@ -154,6 +213,12 @@ if _рычаг("FA2SM70_EXCH12", "FA2SM70_ОБМЕН_I12") == "1":
 
     def _распаковать(e, база, pk, sc, capturing):
         """unpack_add_i12; с побочного потока blockpipe -- в выход из пула основного (см. _ВЫХОД_ОСН)."""
+        цель = getattr(_ПОТОК_ВЫХОДА, "out", None)
+        if (цель is not None and not capturing and цель.numel() == база.numel() and цель.is_contiguous()
+                and цель.dtype == база.dtype and hasattr(e, "unpack_add_i12_into")):
+            e.unpack_add_i12_into(база, pk, sc, цель)
+            С["в_выход"] = С.get("в_выход", 0) + 1
+            return цель
         осн = getattr(_ПОТОК_ВЫХОДА, "s", None) if _ВЫХОД_ОСН and not capturing else None
         if осн is not None and hasattr(e, "unpack_add_i12_into"):
             тек = torch.cuda.current_stream()
@@ -164,6 +229,21 @@ if _рычаг("FA2SM70_EXCH12", "FA2SM70_ОБМЕН_I12") == "1":
                 e.unpack_add_i12_into(база, pk, sc, out)
                 return out
         return e.unpack_add_i12(база, pk, sc)
+
+    def _срыв_асинх(st):
+        """Прошлый снимок флага срыва -- если его копия уже прошла (event.query без ожидания); затем новый снимок."""
+        ev = st.get("срыв_ev")
+        if ev is not None:
+            if not ev.query():
+                return                                  # прошлый снимок ещё едет -- проверим через 256 обменов
+            if int(st["срыв_h"][0]):
+                raise RuntimeError("обмен копировщиком: срыв ожидания флага соседа")
+        if "срыв_h" not in st:
+            st["срыв_h"] = torch.zeros(2, dtype=torch.int32, pin_memory=True)
+        st["срыв_h"].copy_(st["срыв"], non_blocking=True)
+        ev = torch.cuda.Event()
+        ev.record()
+        st["срыв_ev"] = ev
 
     def _обёртка(старый):
         def _f(self, input_, *a, **k):
@@ -189,6 +269,17 @@ if _рычаг("FA2SM70_EXCH12", "FA2SM70_ОБМЕН_I12") == "1":
             pk = свой[:nb_pk].view(torch.int16)
             sc = свой[nb_pk:nb].view(torch.float16)
             e.pack_i12_into(x, pk, sc, _БИТ)
+            if _CE and мир == 2 and capturing and _CE_ГРАФ:
+                # [ОДИН ГРАФ 30.10] захват: копировщик с номером на устройстве; состояние поднято ДО захвата
+                st = _CE_СОСТ.get(ключ)
+                if st is not None and "cap_g" in st and nb <= st["cap_g"]:
+                    e.ce_graph_send(свой[:nb], st["p_recv_g"], st["fl_g"][1:2], st["p_flag_g"], st["seq_g"], st["срыв"])
+                    e.ce_graph_wait(st["fl_g"][0:1], st["seq_g"], st["срыв"])
+                    ч = st["recv_g"][:nb]
+                    out = _распаковать(e, x, ч[:nb_pk].view(torch.int16), ч[nb_pk:nb].view(torch.float16), capturing)
+                    e.ce_graph_ack(st["p_ack_g"], st["seq_g"])
+                    С["граф"] = С.get("граф", 0) + 1
+                    return out.view_as(input_)
             if _CE and мир == 2 and not capturing:
                 st = _ce(self)
                 if st is not None and nb <= st["cap"]:
@@ -201,8 +292,11 @@ if _рычаг("FA2SM70_EXCH12", "FA2SM70_ОБМЕН_I12") == "1":
                     ч = st["recv"][par * st["cap"]:par * st["cap"] + nb]
                     out = _распаковать(e, x, ч[:nb_pk].view(torch.int16), ч[nb_pk:nb].view(torch.float16), capturing)
                     st["n"] += 1
-                    if st["n"] & 255 == 0 and int(st["срыв"][0].item()):
-                        raise RuntimeError("обмен копировщиком: срыв ожидания флага соседа")
+                    if st["n"] & 255 == 0:
+                        if _без_хоста_уровень() >= 1:
+                            _срыв_асинх(st)
+                        elif int(st["срыв"][0].item()):
+                            raise RuntimeError("обмен копировщиком: срыв ожидания флага соседа")
                     С["n"] += 1
                     С["ушло"] += nb
                     С["было_бы"] += n * 2

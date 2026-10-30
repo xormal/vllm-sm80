@@ -832,6 +832,80 @@ torch::Tensor gdn_rec_gating(torch::Tensor A_log, torch::Tensor a, torch::Tensor
 // Явный признак присутствия: гейт врезки проверяет ИМЕННО его, а не факт импорта модуля.
 int64_t gdn_scan_available() { return 1; }
 
+// ---------------------------------------------------------------------------------------------
+// [ОДИН ГРАФ 30.10] МЕТАДАННЫЕ ЧАНКОВ НА УСТРОЙСТВЕ -- без единого обращения к хосту.
+//
+// Прежде на КАЖДОМ из 48 слоёв GDN индексы чанков строились на хосте: fla prepare_chunk_indices
+// (`.tolist()` длин) в chunk_local_cumsum, recompute_w_u, fwd_h, fwd_o и наш _chunk_meta
+// (`cu_seqlens.tolist()` для кэша по содержимому) -- несколько синхронизаций карта->хост на слой, и шаг
+// с такими слоями не захватывается в CUDA-граф.
+//
+// Здесь всё -- одним блоком на карте. Размеры известны хосту БЕЗ чтения значений: N = len(cu)-1 и
+// T (форма q), а верхняя граница числа чанков NTmax = T/BT + N (сумма ceil(L_i/BT) <= floor(T/BT) + N).
+// Выход:
+//   cu32 [N+1]     -- cu_seqlens в int32;
+//   co   [N+1]     -- смещения чанков последовательностей (prepare_chunk_offsets);
+//   ci   [NTmax,2] -- (последовательность, локальный чанк), как prepare_chunk_indices, а строки после
+//                     настоящего NT -- (N-1, nc_{N-1}): первый чанк ЗА концом последней последовательности.
+//                     На нём наши kkt/solve_tril выходят по уже имеющейся проверке rows <= 0, а ядра Triton
+//                     читают и пишут только по маске (boundary_check) -- исходники и автотюн Triton не меняются.
+// ---------------------------------------------------------------------------------------------
+template <typename IT>
+__global__ void gdn_meta_kernel(const IT* __restrict__ cu, int N, int bt, int ntmax, int* __restrict__ cu32,
+                                int* __restrict__ co, int* __restrict__ ci) {
+  extern __shared__ int s_co[];                       // [N+1] включительные суммы чанков
+  const int tid = threadIdx.x;
+  for (int i = tid; i < N; i += blockDim.x) {
+    const int a = (int)cu[i], b = (int)cu[i + 1];
+    s_co[i + 1] = (b - a + bt - 1) / bt;
+    cu32[i] = a;
+  }
+  if (tid == 0) { s_co[0] = 0; cu32[N] = (int)cu[N]; }
+  __syncthreads();
+  if (tid == 0)                                       // N -- десятки: последовательный свод дешевле сети
+    for (int i = 1; i <= N; ++i) s_co[i] += s_co[i - 1];
+  __syncthreads();
+  for (int i = tid; i <= N; i += blockDim.x) co[i] = s_co[i];
+  const int nt = s_co[N], tail = s_co[N] - s_co[N - 1];
+  for (int j = tid; j < ntmax; j += blockDim.x) {
+    int sq = N - 1, lc = tail;                        // заглушка: за концом последней последовательности
+    if (j < nt) {
+      int lo = 0, hi = N;                             // последний i с s_co[i] <= j (пустые пропускаются)
+      while (hi - lo > 1) {
+        const int mid = (lo + hi) >> 1;
+        if (s_co[mid] <= j) lo = mid; else hi = mid;
+      }
+      sq = lo;
+      lc = j - s_co[lo];
+    }
+    ci[2 * j] = sq;
+    ci[2 * j + 1] = lc;
+  }
+}
+
+std::vector<torch::Tensor> gdn_meta(torch::Tensor cu_seqlens, int64_t bt, int64_t ntmax) {
+  const c10::cuda::CUDAGuard guard(cu_seqlens.device());
+  TORCH_CHECK(cu_seqlens.is_cuda() && cu_seqlens.dim() == 1 && cu_seqlens.numel() >= 2 && cu_seqlens.is_contiguous(),
+              "gdn_meta: cu_seqlens [N+1] CUDA");
+  TORCH_CHECK(cu_seqlens.scalar_type() == torch::kInt || cu_seqlens.scalar_type() == torch::kLong,
+              "gdn_meta: cu_seqlens int32/int64");
+  const int N = (int)cu_seqlens.numel() - 1;
+  TORCH_CHECK(bt > 0 && ntmax >= 1, "gdn_meta: bt/ntmax");
+  const auto i32 = torch::dtype(torch::kInt).device(cu_seqlens.device());
+  auto cu32 = torch::empty({N + 1}, i32), co = torch::empty({N + 1}, i32), ci = torch::empty({ntmax, 2}, i32);
+  auto st = at::cuda::getCurrentCUDAStream();
+  const size_t sh = sizeof(int) * (size_t)(N + 1);
+  TORCH_CHECK(sh <= 48 * 1024, "gdn_meta: N слишком велико");
+  if (cu_seqlens.scalar_type() == torch::kInt)
+    gdn_meta_kernel<int><<<1, 256, sh, st>>>(cu_seqlens.data_ptr<int>(), N, (int)bt, (int)ntmax,
+                                             cu32.data_ptr<int>(), co.data_ptr<int>(), ci.data_ptr<int>());
+  else
+    gdn_meta_kernel<int64_t><<<1, 256, sh, st>>>(cu_seqlens.data_ptr<int64_t>(), N, (int)bt, (int)ntmax,
+                                                 cu32.data_ptr<int>(), co.data_ptr<int>(), ci.data_ptr<int>());
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  return {cu32, co, ci};
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------------------------
@@ -943,6 +1017,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         pybind11::arg("beta"), pybind11::arg("initial_state"), pybind11::arg("cu_seqlens"),
         pybind11::arg("chunk_indices"), pybind11::arg("chunk_offsets"), pybind11::arg("scale"),
         pybind11::arg("out_bf16"), pybind11::arg("output_final_state") = true);
+  m.def("gdn_meta", &gdn_meta, "метаданные чанков на устройстве: (cu32, co, ci с заглушками до NTmax)",
+        pybind11::arg("cu_seqlens"), pybind11::arg("bt"), pybind11::arg("ntmax"));
   m.def("gdn_kkt", &gdn_kkt, "beta*K*K^T внутри чанка (замена chunk_scaled_dot_kkt_fwd)");
   m.def("gdn_solve_tril", &gdn_solve_tril, "(I+A)^{-1} по чанкам (замена solve_tril)");
   m.def("gdn_wu", &gdn_wu, "w,u чанкового представления WY (замена recompute_w_u_fwd)");

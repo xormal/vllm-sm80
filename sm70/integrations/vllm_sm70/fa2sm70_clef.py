@@ -102,6 +102,8 @@ _ГРАФ_ГОТОВ = [False]
 _ГОЛОВА_АСИНХ = os.environ.get("FA2SM70_CLEF_HEAD_ASYNC", "0") == "1"
 _ГОЛОВА_ФАЙЛ = os.environ.get("FA2SM70_CLEF_HEAD_ASYNC_FILE", "")   # "0"/"1" -- A/B в одном экземпляре
 _ГОЛОВА_ПЕРЕКЛ = {"t": 0.0, "вкл": True}
+# [ОДИН ГРАФ 30.10] FA2SM70_CLEF_HEAD_ASYNC_GRAPH=1: асинхронная голова и при графах has_clef (tap -- на основном потоке).
+_ГОЛОВА_С_ГРАФАМИ = os.environ.get("FA2SM70_CLEF_HEAD_ASYNC_GRAPH", "0") == "1"
 _ЖДАТЬ_РЕЗУЛЬТАТ_С = float(os.environ.get("FA2SM70_CLEF_RESULT_WAIT_S",
                                          "60" if (_ГОЛОВА_АСИНХ or _ГОЛОВА_ФАЙЛ) else "2"))
 
@@ -120,23 +122,41 @@ def _голова_асинх():
                 _ГОЛОВА_ПЕРЕКЛ["вкл"] = True
         return _ГОЛОВА_ПЕРЕКЛ["вкл"]
     return True
-_ГРАФ_ПЕРЕКЛ = {"t": 0.0, "вкл": True}
+# [БЕЗ ХОСТА 30.10] Приём записи без cudaStreamSynchronize в req_begin (clef.cu, sync=false: закреплённый буфер ячейки +
+# событие): FA2SM70_NOSYNC_ACC2=1 или уровень >= 1 в FA2SM70_NOSYNC_FILE (A/B в одном экземпляре).
+_БХ_ФАЙЛ = os.environ.get("FA2SM70_NOSYNC_FILE", "")
+_БХ = {"t": 0.0, "ур": 1 if os.environ.get("FA2SM70_NOSYNC_ACC2", "0") == "1" else 0}
+
+
+def _без_хоста_уровень():
+    if _БХ_ФАЙЛ:
+        сейчас = time.monotonic()
+        if сейчас - _БХ["t"] >= 1.0:
+            _БХ["t"] = сейчас
+            try:
+                with open(_БХ_ФАЙЛ) as f:
+                    v = f.read(1)
+                _БХ["ур"] = int(v) if v.isdigit() else 0
+            except OSError:
+                pass
+    return _БХ["ур"]
 
 
 def _граф_включён():
     if not _ГРАФ_ГОТОВ[0]:
         return False
     if _ГРАФ_ФАЙЛ:
-        сейчас = time.monotonic()
-        if сейчас - _ГРАФ_ПЕРЕКЛ["t"] >= 1.0:
-            _ГРАФ_ПЕРЕКЛ["t"] = сейчас
-            try:
-                with open(_ГРАФ_ФАЙЛ) as f:
-                    _ГРАФ_ПЕРЕКЛ["вкл"] = f.read(1) != "0"
-            except OSError:
-                _ГРАФ_ПЕРЕКЛ["вкл"] = True
-        return _ГРАФ_ПЕРЕКЛ["вкл"]
+        # [ФРИЗЫ 30.10] значение, согласованное между рангами TP на шаге планировщика (fa2sm70_fullmix): граф и eager
+        # ходят разными протоколами обмена -- расхождение рангов вело к ожиданию до срыва
+        import fa2sm70_fullmix as _FMx
+        return _FMx.значение_файла(_ГРАФ_ФАЙЛ) != "0"
     return True
+
+
+def шаг_с_поправкой():
+    """[ОДИН ГРАФ 30.10] Для конвейеров (blockpipe/rowpipe): поправка Clef в этом проходе нужна -- eager-шаг со строками
+    Clef или шаг семейства has_clef (в т.ч. ЗАХВАТ графа, где строк ещё нет, но вызовы поправки обязаны попасть в граф)."""
+    return bool(_АКТИВЕН[0]) or (_ГРАФ_ГОТОВ[0] and _шаг_графовый())
 
 
 def _шаг_графовый():
@@ -171,12 +191,13 @@ class _Состояние:
         # запрос остаётся в runner.requests (ячейка цела), а после возврата его num_computed = 0
         # (skip_reading_prefix_cache): без сверки отвод сложил бы пройденные позиции в спаны второй раз.
         self.next = {}
-        # асинхронная голова: [(ячейка, ключ, n, событие)], ячейки с недочитанным результатом, к освобождению
+        # асинхронная голова: [(ячейка, ключ, n, событие, хост-копия результата, [записан, попыток])] -- до публикации
         self.ждут = []
-        self.в_голове = set()
-        self.освободить = set()
+        # [ФРИЗЫ 30.10] последнее событие работы карты по ячейке (tap, голова, копия результата на хост -- побочный
+        # поток): новый req_begin (основной поток) ставится ПОСЛЕ него ожиданием на карте -- без ожидания хоста.
+        # Иначе он обнулил бы накопители и переписал данные запроса под ещё идущим tap прежней записи.
+        self.tap_ev = {}
         self.поток_головы = None
-        self.поток_копии = None
         self.сборщик = None
 
 
@@ -195,6 +216,12 @@ _MOD = {"self_attn.qkv_proj": 0, "linear_attn.in_proj_qkvz": 0, "linear_attn.in_
 
 def _хук(x, y, ключи):
     if _ГРАФ_ГОТОВ[0] and _шаг_графовый():
+        from fa2sm70_clef_hook import row_window_offset
+        offset = row_window_offset()
+        if offset is not None and hasattr(_С.ext, "delta_keyed_graph_range"):
+            # [ОДИН ГРАФ 30.10] окно строк в графе: строки по маске шага, не по списку
+            _С.ext.delta_keyed_graph_range(x.reshape(-1, x.shape[-1]), y.view(-1, y.shape[-1]), ключи, offset)
+            return
         _С.ext.delta_keyed_graph(x.reshape(-1, x.shape[-1]), y.view(-1, y.shape[-1]), ключи)
         return
     if not _АКТИВЕН[0]:
@@ -208,10 +235,15 @@ def _хук(x, y, ключи):
 
 
 def _хук_диап(x, y, ключи, r0):
-    if not _АКТИВЕН[0]:
-        return
     from fa2sm70_clef_hook import row_window_offset
     offset = row_window_offset()
+    if _ГРАФ_ГОТОВ[0] and _шаг_графовый() and hasattr(_С.ext, "delta_keyed_graph_range"):
+        # [ОДИН ГРАФ 30.10] кусок конвейера в шаге has_clef (захват и повтор): маска строк шага на карте
+        _С.ext.delta_keyed_graph_range(x.reshape(-1, x.shape[-1]), y.view(-1, y.shape[-1]), ключи,
+                                       int(r0) + (offset if offset is not None else 0))
+        return
+    if not _АКТИВЕН[0]:
+        return
     _С.ext.delta_keyed_range(x.reshape(-1, x.shape[-1]), y.view(-1, y.shape[-1]), ключи,
                             int(r0) + (offset if offset is not None else 0))
 
@@ -433,21 +465,23 @@ def _приём(runner, rid, req, c):
     # [ПАМЯТЬ 26.10] без list(): array("i", ...) берёт последовательность как есть -- без полной копии промпта
     if "n" in c and (N != int(c["n"]) or _сумма(req.prompt_token_ids) != int(c["h"])):
         raise ValueError(f"запись в движке ({N} токенов) не равна записи эндпоинта ({c['n']})")
-    if not _С.free and _С.ждут:
-        # ячейки ждут асинхронную голову (только rank 0): дождаться самой ранней, а не отказывать -- отказ обязан
-        # быть одинаковым на обоих рангах TP, иначе поправка ляжет только на одном
-        _С.ждут[0][3].synchronize()
-        _собрать_результаты()
+    # [ФРИЗЫ 30.10] ячейки освобождаются сразу и на обоих рангах (повтор упорядочен на карте, см. ниже) -- ожидания
+    # хоста здесь нет: декод не останавливается; списки свободных ячеек рангов TP совпадают (отказ симметричен).
+    # [ревизия] проверки по данным запроса -- ТОЖЕ на обоих рангах и до выдачи ячейки: отказ только на ранге 0 (у ранга 1
+    # ячейка уже выдана) развёл бы сегменты шага у рангов -> разные пути и число сведений -> зависание
+    spans, counts, types = c["spans"], c["counts"], c["types"]
+    Qn, Qo = len(counts), sum(counts)
+    if N > _NMAX or Qn > _QNMAX or Qo > _QOMAX or len(spans) != Qn + Qo or not counts or max(counts) > 256:
+        raise ValueError(f"запрос вне пределов: N={N} Qn={Qn} Qo={Qo}")
+    for s, (a, b) in enumerate(spans):
+        if not (0 <= a < b <= N):
+            raise ValueError(f"спан {s} [{a},{b}) вне [0,{N})")
     if not _С.free:
         return None
     slot = _С.free.pop(0)
     _С.slots[rid] = (slot, c.get("key", rid), N)
     if not _С.golova:
         return slot
-    spans, counts, types = c["spans"], c["counts"], c["types"]
-    Qn, Qo = len(counts), sum(counts)
-    if N > _NMAX or Qn > _QNMAX or Qo > _QOMAX or len(spans) != Qn + Qo or max(counts) > 256:
-        raise ValueError(f"запрос вне пределов: N={N} Qn={Qn} Qo={Qo}")
     # [ПАМЯТЬ 26.10] постоянный буфер вместо torch.full((N,)) на каждую запись (до 136 КБ -- у порога mmap glibc,
     # источник дыр). req_begin копирует из обычной памяти (cudaMemcpyAsync с pageable забирает данные до возврата),
     # значит буфер свободен сразу после вызова. Содержимое то же: -1 и номера спанов.
@@ -464,7 +498,15 @@ def _приём(runner, rid, req, c):
     qoff = torch.tensor([0] + list(torch.tensor(counts).cumsum(0).tolist()), dtype=torch.int32)
     ids = req.prompt_token_ids   # [ПАМЯТЬ 26.10] без list(): нужны только срезы спанов
     lex = torch.stack([_С.lm_head.mean(ids[a:b]) for a, b in spans[Qn:]]).half()
-    _С.ext.req_begin(slot, N, spanid, inv_len, qidx, qoff, torch.tensor(types, dtype=torch.int32), lex)
+    ev = _С.tap_ev.get(slot)
+    if ev is not None:
+        # прежняя запись ячейки (tap/голова/копия результата на побочном потоке) -- до обнуления накопителей и данных:
+        # ожидание на КАРТЕ, хост не ждёт
+        torch.cuda.current_stream().wait_event(ev)
+    if _без_хоста_уровень() >= 1 and "sync" in (getattr(_С.ext.req_begin, "__doc__", "") or ""):
+        _С.ext.req_begin(slot, N, spanid, inv_len, qidx, qoff, torch.tensor(types, dtype=torch.int32), lex, False)
+    else:
+        _С.ext.req_begin(slot, N, spanid, inv_len, qidx, qoff, torch.tensor(types, dtype=torch.int32), lex)
     return slot
 
 
@@ -528,10 +570,9 @@ def _шаг(runner, so):
 
 
 def _освободить_ячейку(slot):
-    """Ячейка головы -- в свободные; если её результат ещё считает голова на побочном потоке -- после чтения."""
-    if slot in _С.в_голове:
-        _С.освободить.add(slot)
-        return
+    """Ячейка головы -- сразу в свободные (на обоих рангах одинаково). Её незавершённая работа на побочном потоке
+    (tap, голова, копия результата) упорядочена с новым приёмом ожиданием на карте (_приём: wait_event по tap_ev);
+    результат уже копируется на хост в собственный буфер записи -- ячейка ему не нужна."""
     if _С.golova:
         _С.ext.req_end(slot)
     _С.free.append(slot)
@@ -540,6 +581,9 @@ def _освободить_ячейку(slot):
 # RLock: тот же замок держит захват графа (ленивые графы цикла MTP) -- см. _замок_захвата
 _ЗАМОК_ГОЛОВЫ = __import__("threading").RLock()
 _ПОПЫТОК_ЗАПИСИ = 500       # ~1 с повторов (тик сборщика 2 мс), затем ошибка в ответ
+# [ФРИЗЫ 30.10] Список готовящихся результатов -- под своим коротким замком. Публикация (копия на хост, сериализация,
+# запись файла) -- только в сборщике и ВНЕ замков: основной поток не ждёт ни .cpu(), ни диск, ни сборщика.
+_ЗАМОК_СПИСКА = __import__("threading").Lock()
 
 
 def _замок_захвата():
@@ -570,35 +614,13 @@ def _замок_захвата():
     G._fa2_clef_lock = True
 
 
-def _записать_результат(slot, key, n):
-    """Результат готовой головы (событие завершено) -> файл. Копия на хост -- на своём неблокирующем потоке."""
-    import torch
-    if _С.поток_копии is None:
-        _С.поток_копии = torch.cuda.Stream(device=_С.поток_головы.device)
-    with torch.cuda.stream(_С.поток_копии):
-        r = _С.ext.result(slot).cpu()
-    _записать(key, {"logits": r.float().tolist(), "n": n})
-
-
 def _собрать_результаты():
-    """Готовые результаты асинхронной головы -- в файлы; ячейки записанных -- в свободные (основной поток)."""
+    """Основной поток: только учёт -- записанные сборщиком результаты снимаются из списка. Ни копий, ни файлов,
+    ни ожидания."""
     if not _С.ждут:
         return
-    with _ЗАМОК_ГОЛОВЫ:
-        ещё = []
-        for item in _С.ждут:
-            slot, key, n, ev, записан = item
-            if not записан[0]:
-                if not ev.query():
-                    ещё.append(item)
-                    continue
-                _записать_результат(slot, key, n)
-                записан[0] = True
-            _С.в_голове.discard(slot)
-            if slot in _С.освободить:
-                _С.освободить.discard(slot)
-                _освободить_ячейку(slot)
-        _С.ждут = ещё
+    with _ЗАМОК_СПИСКА:
+        _С.ждут = [item for item in _С.ждут if not item[5][0]]
 
 
 def _сборщик_голов():
@@ -609,27 +631,43 @@ def _сборщик_голов():
         time.sleep(0.002)
         if not _С.ждут:
             continue
-        with _ЗАМОК_ГОЛОВЫ:
-            for slot, key, n, ev, записан in _С.ждут:
-                if записан[0]:
+        with _ЗАМОК_СПИСКА:
+            работа = [it for it in _С.ждут if not it[5][0]]
+        try:
+            _опубликовать(работа)
+        finally:
+            # [ревизия] последние ссылки на закреплённую хост-копию и событие могут быть здесь: их освобождение -- тоже
+            # вызовы CUDA (кэш закреплённой памяти отмечает событие, cudaEventDestroy) -- под замком захвата
+            with _ЗАМОК_ГОЛОВЫ:
+                работа = None
+
+
+def _опубликовать(работа):
+    """Сборщик: готовые результаты (событие прошло) -- в файлы. Ссылки на элементы держит вызывающий список."""
+    for item in работа:
+        slot, key, n, ev, хост, записан = item
+        try:
+            # CUDA-вызовы сборщика -- опрос события (здесь) и освобождение хост-копии/события (у вызывающего) -- под
+            # замком захвата: вызов из другой нити во время глобального захвата графа срывает захват (окно 24:
+            # ev.query() вне замка -> захват графа цикла MTP сорван, пул захвата испорчен, OOM, движок упал).
+            # Результат уже на хосте (копия на побочном потоке сразу за головой); сериализация и диск -- вне замков.
+            with _ЗАМОК_ГОЛОВЫ:
+                if not ev.query():
                     continue
-                try:
-                    if not ev.query():
-                        continue
-                    _записать_результат(slot, key, n)
-                    записан[0] = True
-                except Exception as e:  # noqa: BLE001
-                    # режим sync_debug "error" чужого захвата (вне самого захвата) -- повторить на следующем тике
-                    записан[1] += 1
-                    if записан[1] >= _ПОПЫТОК_ЗАПИСИ:
-                        _записать(key, {"error": f"голова: {e}"})
-                        записан[0] = True
+            _записать(key, {"logits": хост.float().tolist(), "n": n})
+            записан[0] = True
+        except Exception as e:  # noqa: BLE001
+            # режим sync_debug "error" чужого захвата (вне самого захвата) -- повторить на следующем тике
+            записан[1] += 1
+            if записан[1] >= _ПОПЫТОК_ЗАПИСИ:
+                _записать(key, {"error": f"голова: {e}"})
+                записан[0] = True
 
 
 def _после_прохода(runner, segs, out):
     import torch
     hs = out[0] if isinstance(out, (tuple, list)) else out
-    if _С.golova and not _ГРАФ_ГОТОВ[0] and _голова_асинх():
+    if _С.golova and (not _ГРАФ_ГОТОВ[0] or _ГОЛОВА_С_ГРАФАМИ) and _голова_асинх():
         if _С.поток_головы is None:
             _С.поток_головы = torch.cuda.Stream(device=hs.device)
         if _С.сборщик is None:
@@ -637,13 +675,24 @@ def _после_прохода(runner, segs, out):
             _С.сборщик = __import__("threading").Thread(target=_сборщик_голов, name="clef-head-collect", daemon=True)
             _С.сборщик.start()
         поб = _С.поток_головы
-        поб.wait_stream(torch.cuda.current_stream())
-        with torch.cuda.stream(поб):
-            _С.ext.tap(hs)
-        hs.record_stream(поб)
+        if _ГРАФ_ГОТОВ[0] and hasattr(_С.ext, "run_pending_heads"):
+            # [ОДИН ГРАФ 30.10] hs может быть статическим выходом графа (следующий повтор его перезапишет): tap -- на
+            # основном потоке, только сбор строк Clef в накопители; [ФРИЗЫ 30.10] головы концов записей -- на побочном
+            _С.ext.tap(hs, False)
+            поб.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(поб):
+                _С.ext.run_pending_heads()
+        elif _ГРАФ_ГОТОВ[0]:
+            _С.ext.tap(hs)                     # прежняя сборка clef.cu: голова внутри tap (на основном потоке)
+            поб.wait_stream(torch.cuda.current_stream())
+        else:
+            поб.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(поб):
+                _С.ext.tap(hs)
+            hs.record_stream(поб)
         _С.ext.set_step(torch.empty(0, 5, dtype=torch.int32))
         плохо = _С.ext.step_bad()
-        ev = None
+        готовые = []
         for row0, n, slot, pos0, fin in segs.tolist():
             if not fin:
                 continue
@@ -651,18 +700,30 @@ def _после_прохода(runner, segs, out):
             if key is None:
                 continue
             if _С.ext.ready(slot) and not плохо:
-                if ev is None:
-                    ev = torch.cuda.Event()
-                    ev.record(поб)
-                with _ЗАМОК_ГОЛОВЫ:
-                    _С.ждут.append((slot, key, pos0 + n, ev, [False, 0]))
-                    _С.в_голове.add(slot)
+                # результат -- на хост сразу за головой, на том же побочном потоке: ячейка (E.result) свободна для
+                # следующей записи, как только поток прошёл копию; сборщик читает только хост
+                r = _С.ext.result(slot)
+                хост = torch.empty(r.shape, dtype=r.dtype, pin_memory=True)
+                with torch.cuda.stream(поб):
+                    хост.copy_(r, non_blocking=True)
+                готовые.append((slot, key, pos0 + n, хост))
             else:
                 _записать(key, {"error": f"голова не посчитана: {_С.ext.last_error()}"})
+        ev_шага = torch.cuda.Event()           # tap, головы и копии результатов шага прошли
+        ev_шага.record(поб)
+        for _r0, _n, _slot, _p0, _fin in segs.tolist():
+            _С.tap_ev[_slot] = ev_шага
+        if готовые:
+            with _ЗАМОК_СПИСКА:
+                for slot, key, n_, хост in готовые:
+                    _С.ждут.append((slot, key, n_, ev_шага, хост, [False, 0]))
         _собрать_результаты()
         return
+    if _С.поток_головы is not None:
+        # [ФРИЗЫ 30.10] tap и головы прошлых шагов на побочном потоке (в т. ч. промежуточных кусков, у которых нет
+        # записи в ждут) -- до синхронного tap на основном: общий E.ws_hn и накопители. Ожидание на карте.
+        torch.cuda.current_stream().wait_stream(_С.поток_головы)
     if _С.ждут:
-        torch.cuda.current_stream().wait_stream(_С.поток_головы)   # голова прошлых шагов -- до синхронного tap
         _собрать_результаты()
     if _С.golova:
         _С.ext.tap(hs)

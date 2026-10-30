@@ -86,12 +86,18 @@ _ФАЙЛ_БЮДЖЕТА = {"t": 0.0, "v": None}
 # крупные куски остаются (окно 1: постоянный бюджет там замедлял чаты 37 -> 23 чанка/с). В файле бюджета можно писать
 # "бюджет:порог" (A/B в одном экземпляре).
 _PREFILL_BUDGET_BACKLOG = int(_os.environ.get("FA2SM80_PREFILL_BUDGET_BACKLOG", "0"))
+# [ПЛАВНОСТЬ 30.10] ЧЕРЕДОВАНИЕ (FA2SM80_DECODE_INTERLEAVE=K, 0 -- выкл.): после шага, в котором при декоде шёл кусок
+# prefill, следующие K шагов -- только декод (кускам prefill бюджет 0). Окно 21: при c>=4 потоках Clef каждый шаг несёт
+# кусок ~2000 токенов (~0.6 с), и чат получает один шаг MTP за 0.6 с (~6 ток/с на поток; без Clef -- 60-190). Шаг
+# чистого декода -- полный граф, 25-50 мс: K=2 даёт чатам ~2.5x шагов в секунду ценой ~15 % пропускной Clef. Голодания
+# нет: через K шагов prefill снова получает свой бюджет. В файле бюджета -- третье поле: "бюджет:порог:K".
+_DECODE_INTERLEAVE = int(_os.environ.get("FA2SM80_DECODE_INTERLEAVE", "0"))
 
 
-def _бюджет_prefill() -> tuple[int, int]:
-    """-> (бюджет, порог несделанного prefill)."""
+def _бюджет_prefill() -> tuple[int, int, int]:
+    """-> (бюджет, порог несделанного prefill, шагов чистого декода после шага с prefill)."""
     if not _PREFILL_BUDGET_FILE:
-        return _PREFILL_BUDGET_DECODING, _PREFILL_BUDGET_BACKLOG
+        return _PREFILL_BUDGET_DECODING, _PREFILL_BUDGET_BACKLOG, _DECODE_INTERLEAVE
     сейчас = time.monotonic()
     if сейчас - _ФАЙЛ_БЮДЖЕТА["t"] >= 1.0:
         _ФАЙЛ_БЮДЖЕТА["t"] = сейчас
@@ -99,11 +105,25 @@ def _бюджет_prefill() -> tuple[int, int]:
             with open(_PREFILL_BUDGET_FILE) as f:
                 части = f.read().strip().split(":")
             _ФАЙЛ_БЮДЖЕТА["v"] = (max(0, int(части[0])),
-                                  max(0, int(части[1])) if len(части) > 1 else _PREFILL_BUDGET_BACKLOG)
+                                  max(0, int(части[1])) if len(части) > 1 else _PREFILL_BUDGET_BACKLOG,
+                                  max(0, int(части[2])) if len(части) > 2 else _DECODE_INTERLEAVE)
         except (OSError, ValueError):
             _ФАЙЛ_БЮДЖЕТА["v"] = None
     v = _ФАЙЛ_БЮДЖЕТА["v"]
-    return (_PREFILL_BUDGET_DECODING, _PREFILL_BUDGET_BACKLOG) if v is None else v
+    return (_PREFILL_BUDGET_DECODING, _PREFILL_BUDGET_BACKLOG, _DECODE_INTERLEAVE) if v is None else v
+
+
+# [ОДИН ГРАФ 30.10] FA2SM70_FULL_MIX=1 и режим mamba 'all': кусок префилла НЕ пересекает границу блока состояния
+# (кончается ровно на ней). Тогда префилл GDN -- всегда один varlen-скан без промежуточных записей, и смешанный шаг
+# годится под полный граф (fa2sm70_fullmix). Цена -- лишний короткий кусок раз в блок (16384 токенов).
+_ВЫРАВН_БЛОК = _os.environ.get("FA2SM70_FULL_MIX", "0") == "1"
+
+
+def _до_границы(n, computed, B):
+    """n, урезанное так, чтобы computed + n не перешло следующую границу блока B (B <= 0 -- без изменений)."""
+    if B <= 0 or n <= 0:
+        return n
+    return min(n, (computed // B + 1) * B - computed)
 
 
 def _в_префилле(request) -> bool:
@@ -300,6 +320,16 @@ class Scheduler(SchedulerInterface):
         self.need_mamba_block_aligned_split = (
             self.has_mamba_layers and self.cache_config.mamba_cache_mode == "align"
         )
+        self._блок_mamba_all = 0
+        self._только_декод = 0                   # осталось шагов чистого декода (_DECODE_INTERLEAVE)
+        if _бюджет_prefill()[2] > 0:
+            logger.info("[fa2_sm70 ЧЕРЕДОВАНИЕ] после шага с prefill при декоде -- %d шагов чистого декода",
+                        _бюджет_prefill()[2])
+        if _ВЫРАВН_БЛОК and self.has_mamba_layers and self.cache_config.mamba_cache_mode == "all":
+            for _g in kv_cache_config.kv_cache_groups:
+                if isinstance(_g.kv_cache_spec, MambaSpec):
+                    self._блок_mamba_all = int(_g.kv_cache_spec.block_size)
+                    break
         self.perf_metrics: ModelMetrics | None = None
         if self.log_stats and vllm_config.observability_config.enable_mfu_metrics:
             self.perf_metrics = ModelMetrics(vllm_config)
@@ -406,8 +436,10 @@ class Scheduler(SchedulerInterface):
         # [ПЛАВНОСТЬ 29.10] Бюджет prefill-кусков этого шага (см. _PREFILL_BUDGET_DECODING).
         prefill_left = token_budget
         prefill_tokens: dict[str, int] = {}
-        бюджет, порог = _бюджет_prefill()
-        if бюджет > 0 and any(_декодирует(r) for r in self.running):
+        бюджет, порог, чередование = _бюджет_prefill()
+        декод_есть = any(_декодирует(r) for r in self.running)
+        шёл_префилл = False
+        if бюджет > 0 and декод_есть:
             if порог > 0:
                 несделано = sum(r.num_tokens - r.num_computed_tokens for r in self.running if _в_префилле(r))
                 несделано += sum(r.num_tokens - r.num_computed_tokens for r in self.waiting)
@@ -415,6 +447,11 @@ class Scheduler(SchedulerInterface):
                     prefill_left = min(token_budget, бюджет)
             else:
                 prefill_left = min(token_budget, бюджет)
+        if not декод_есть:
+            self._только_декод = 0                # [ревизия] без декода счётчик не копится до следующего декода
+        elif чередование > 0 and self._только_декод > 0:
+            prefill_left = 0
+            self._только_декод -= 1
 
         # First, schedule the RUNNING requests.
         req_index = 0
@@ -454,6 +491,8 @@ class Scheduler(SchedulerInterface):
             num_new_tokens = min(
                 num_new_tokens, self.max_model_len - 1 - request.num_computed_tokens
             )
+            if префилл and self._блок_mamba_all:
+                num_new_tokens = _до_границы(num_new_tokens, request.num_computed_tokens, self._блок_mamba_all)
 
             # Schedule encoder inputs.
             encoder_inputs_to_schedule = None
@@ -558,6 +597,7 @@ class Scheduler(SchedulerInterface):
             if префилл:
                 prefill_left -= num_new_tokens
                 prefill_tokens[request_id] = num_new_tokens
+                шёл_префилл = True
             req_index += 1
 
             # Speculative decode related.
@@ -735,6 +775,8 @@ class Scheduler(SchedulerInterface):
                         break
 
                     num_new_tokens = min(num_new_tokens, token_budget, prefill_left)
+                    if self._блок_mamba_all:
+                        num_new_tokens = _до_границы(num_new_tokens, num_computed_tokens, self._блок_mamba_all)
                     if num_new_tokens <= 0:
                         break                    # бюджет prefill шага исчерпан (идёт декод)
                     assert num_new_tokens > 0
@@ -865,6 +907,7 @@ class Scheduler(SchedulerInterface):
                 num_scheduled_tokens[request_id] = num_new_tokens
                 token_budget -= num_new_tokens
                 prefill_left -= num_new_tokens
+                шёл_префилл = True
                 request.status = RequestStatus.RUNNING
                 request.num_computed_tokens = num_computed_tokens
                 # Count the number of prefix cached tokens.
@@ -943,6 +986,8 @@ class Scheduler(SchedulerInterface):
         self.prev_step_scheduled_req_ids.clear()
         self.prev_step_scheduled_req_ids.update(num_scheduled_tokens.keys())
 
+        if чередование > 0 and декод_есть and шёл_префилл:
+            self._только_декод = чередование
         scheduler_output = SchedulerOutput(
             scheduled_new_reqs=new_reqs_data,
             scheduled_cached_reqs=cached_reqs_data,

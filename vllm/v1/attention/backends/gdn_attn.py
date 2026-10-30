@@ -256,6 +256,45 @@ def _выбор(т, маска, преф, брать_спек: bool):
 
 _ДЕЛИТЬ_ОБЩЕЕ = _os.environ.get("FA2SM70_GDN_SHARE", "1") == "1"
 
+# [ФРИЗЫ 30.10] Постоянный arange(int64) на карте -- индексы токенов спекуляции/не-спекуляции видами, без
+# выделения памяти и без синхронизации. Трасса окна 20 (боевой профиль): в КАЖДОМ смешанном шаге одна
+# cudaStreamSynchronize -- `torch.repeat_interleave(spec_sequence_masks, query_lens)` без output_size (размер выхода
+# торч берёт с карты), плюс argsort с выделениями. Пока процессор ждёт карту посреди построителя, следующий шаг не
+# запускается заранее -- карта простаивает всё время подготовки шага. При префиксной маске (спекулятивные строки
+# первыми -- обычный случай) argsort(stable) даёт ровно [Ns..L) и [0..Ns): это срезы arange, значения тождественны.
+_АР: dict = {}
+_ИНДЕКСЫ_ВИДОМ = _os.environ.get("FA2SM70_GDN_IDX_VIEW", "0") == "1"     # до A/B -- выключено
+_ИВ_ФАЙЛ = _os.environ.get("FA2SM70_GDN_IDX_VIEW_FILE", "")                # A/B в одном экземпляре: "0"/"1"
+# [ФРИЗЫ 30.10] num_computed_tokens не-спекулятивных строк -- на процессоре из тех же входов, что у карты
+# (seq_lens - query_lens по _seq_lens_cpu и query_start_loc_cpu раннера), вместо .to("cpu") (синхронизация на каждом
+# шаге с префиллом). Для не-спекулятивных строк (префилл, заполнители) процессорные входы точны: поправки принятия MTP
+# касаются только спекулятивных. FA2SM70_GDN_NCOMP_CHECK=N -- первые N шагов сверка с картой (с синхронизацией).
+_NCOMP_CPU = _os.environ.get("FA2SM70_GDN_NCOMP_CPU", "0") == "1"
+_NCOMP_СВЕРКА = [int(_os.environ.get("FA2SM70_GDN_NCOMP_CHECK", "0"))]
+_ИВ = {"t": 0.0, "вкл": _ИНДЕКСЫ_ВИДОМ}
+
+
+def _индексы_видом() -> bool:
+    if not _ИВ_ФАЙЛ:
+        return _ИНДЕКСЫ_ВИДОМ
+    t = _time.monotonic()
+    if t - _ИВ["t"] >= 1.0:
+        _ИВ["t"] = t
+        try:
+            with open(_ИВ_ФАЙЛ) as f:
+                _ИВ["вкл"] = f.read(1) == "1"
+        except OSError:
+            _ИВ["вкл"] = _ИНДЕКСЫ_ВИДОМ
+    return _ИВ["вкл"]
+
+
+def _ар_токенов(n: int, device) -> torch.Tensor:
+    t = _АР.get(str(device))
+    if t is None or t.numel() < n:
+        t = torch.arange(max(n, 1 << 14), dtype=torch.int64, device=device)
+        _АР[str(device)] = t
+    return t
+
 
 def _общий_ключ(m, num_accepted_tokens):
     """Ключ шага. ВНИМАНИЕ: id() безопасен ТОЛЬКО пока объект жив.
@@ -311,8 +350,37 @@ def _отставить_gdn(*т):
                 _ПЕНСИЯ_GDN.append(x)
 
 
+try:  # [ОДИН ГРАФ 30.10] полный граф смешанного шага (sm70/integrations/vllm_sm70/fa2sm70_fullmix.py)
+    import fa2sm70_fullmix as _FM
+except ImportError:  # pragma: no cover
+    _FM = None
+
+
 class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]):
     _cudagraph_support = AttentionCGSupport.UNIFORM_BATCH
+
+    def _fm_буферы(self, device):
+        """[ОДИН ГРАФ 30.10] Постоянные буферы полей, которые смешанный шаг прежде отдавал СВЕЖИМИ тензорами. Ёмкость --
+        потолок строк планировщика. Общие у групп (зависят только от длин) -- через _общий_буфер; таблицы состояний --
+        свои у группы (self.spec_state_indices_tensor / self.non_spec_state_indices_tensor, уже постоянные)."""
+        R = max(int(self._потолок_запросов or 0), 1)
+        return {
+            "b_first": _общий_буфер("fm_blk_first", (R,), torch.int32, device),
+            "ncomp": _общий_буфер("fm_ncomp_ns", (R,), torch.int32, device),
+            "hinit": _общий_буфер("fm_has_init", (R,), torch.bool, device),
+            "b_comp": _общий_буфер("fm_blk_last_comp", (R,), torch.int32, device),
+            "b_last": _общий_буфер("fm_blk_last_sched", (R,), torch.int32, device),
+            "nsqsl": _общий_буфер("fm_nonspec_qsl", (R + 1,), torch.int32, device),
+            "sqsl": _общий_буфер("fm_spec_qsl", (R + 1,), torch.int32, device),
+            "nacc": _общий_буфер("fm_nacc", (R,), torch.int32, device),
+        }
+
+    @staticmethod
+    def _fm_в(буф, src, n):
+        """Первые n строк src -> постоянный буфер (копия на карте, тот же поток); вид на буфер."""
+        if n > 0 and src is not None and src.data_ptr() != буф.data_ptr():
+            буф[:n].copy_(src[:n].to(буф.dtype))
+        return буф[:n]
 
     reorder_batch_threshold: int = 1
 
@@ -447,6 +515,9 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             "nonspec_qsl", (self.decode_cudagraph_max_bs + 1,), torch.int32, device)
         self.num_accepted_tokens = _вб(
             "nacc", (self.decode_cudagraph_max_bs,), torch.int32, device)
+        # индексы токенов -- заранее, вне захвата графов (см. _ар_токенов)
+        _ар_токенов(vllm_config.scheduler_config.max_num_batched_tokens
+                    + self.decode_cudagraph_max_bs * (self.num_spec + 1), device)
 
     # [FA2/SM70 25.08] ВЫКЛЮЧЕНО ПО ПРОВАЛУ ГЕЙТА. Механизм написан (см. update_block_table ниже) и
     # даёт правильную форму, но гейт «17*23» вернул «39» вместо «391» -- ТИХАЯ ПОРЧА, а не отказ.
@@ -644,6 +715,26 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
                 новое.non_spec_query_start_loc = self.non_spec_query_start_loc[: _bs + 1]
                 новое.non_spec_query_start_loc[_д + 1 :].fill_(_хв)
 
+        _fm = _FM.ШАГ[0] if _FM is not None else None
+        if _fm is not None and mamba_all and non_spec_state is not None:
+            if spec_state is None:
+                spec_state = non_spec_state[:0, : self.num_spec + 1]   # шаг без спекуляции: D = 0
+            # [ОДИН ГРАФ 30.10] таблицы состояний ЭТОЙ группы -- в её постоянные буферы (общие поля уже упакованы в build)
+            _D, _Dm = int(_fm[1]), int(_fm[2])
+            _ns = int(non_spec_state.shape[0])
+            _R = _D + _ns
+            _sst = self.spec_state_indices_tensor
+            if _D > 0:
+                _sst[:_D].copy_(spec_state[:_D])
+            _sst[_D:_Dm].fill_(PAD_SLOT_ID)
+            spec_state = _sst[:_Dm]
+            _nss = self.non_spec_state_indices_tensor
+            _nss[:_D].fill_(PAD_SLOT_ID)
+            _nss[_D:_R].copy_(non_spec_state[:_ns])
+            non_spec_state = _nss[:_R]
+            if (_ГРАН_КОНВ or _ГРАН_КОНВ_ВСЕГДА) and getattr(новое, "spec_conv_блоки", None) is not None:
+                self._conv_блоки_буф[_D:_Dm].fill_(PAD_SLOT_ID)
+                новое.spec_conv_блоки = self._conv_блоки_буф[:_Dm, :int(новое.spec_conv_блоки.shape[1])]
         новое.spec_state_indices_tensor = spec_state
         новое.non_spec_state_indices_tensor = non_spec_state
         return новое
@@ -918,13 +1009,21 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
                 non_spec_query_start_loc = None
                 non_spec_query_start_loc_cpu = None
             else:
-                spec_token_masks = torch.repeat_interleave(
-                    spec_sequence_masks, query_lens
-                )
-                index = torch.argsort(spec_token_masks, stable=True)
                 num_non_spec_tokens = num_prefill_tokens + num_decode_tokens
-                non_spec_token_indx = index[:num_non_spec_tokens]
-                spec_token_indx = index[num_non_spec_tokens:]
+                _Ns = int(query_start_loc_cpu[_преф_спек]) if _преф_спек is not None else -1
+                _L = int(query_start_loc_cpu[-1] - query_start_loc_cpu[0])
+                if (_индексы_видом() and _ОДНОРОДН and _преф_спек is not None
+                        and _L - _Ns == num_non_spec_tokens):
+                    _ар = _ар_токенов(_L, query_start_loc.device)
+                    non_spec_token_indx = _ар[_Ns:_L]
+                    spec_token_indx = _ар[:_Ns]
+                else:
+                    spec_token_masks = torch.repeat_interleave(
+                        spec_sequence_masks, query_lens
+                    )
+                    index = torch.argsort(spec_token_masks, stable=True)
+                    non_spec_token_indx = index[:num_non_spec_tokens]
+                    spec_token_indx = index[num_non_spec_tokens:]
 
                 _spec_src = aligned_spec_table if mamba_all else block_table_tensor
                 spec_state_indices_tensor = (
@@ -1150,8 +1249,26 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
             else:
                 num_computed_tokens_ns = context_lens_tensor
             if num_prefills > 0:
-                # Синхронизация ТОЛЬКО когда в батче есть префилл (см. поле выше).
-                num_computed_tokens_ns_cpu = num_computed_tokens_ns.to("cpu")
+                _слк = getattr(m, "_seq_lens_cpu", None)
+                if _NCOMP_CPU and _слк is not None and query_start_loc_cpu is not None:
+                    _ctx_c = _слк - (query_start_loc_cpu[1:] - query_start_loc_cpu[:-1])
+                    if spec_sequence_masks is None:
+                        _нс_c = _ctx_c
+                    elif _преф_спек is not None:
+                        _нс_c = _ctx_c[_преф_спек:]
+                    else:
+                        _нс_c = _ctx_c[~spec_sequence_masks_cpu[: _ctx_c.shape[0]]]
+                    if _NCOMP_СВЕРКА[0] > 0:
+                        _NCOMP_СВЕРКА[0] -= 1
+                        _эт = num_computed_tokens_ns.to("cpu")
+                        if not torch.equal(_эт.to(_нс_c.dtype), _нс_c[: _эт.shape[0]]) or _эт.shape[0] != _нс_c.shape[0]:
+                            print(f"[fa2_sm70 GDN] СВЕРКА ncomp: процессор {_нс_c.tolist()[:8]} != карта {_эт.tolist()[:8]}",
+                                  flush=True)
+                            _нс_c = _эт                  # при расхождении -- значение карты
+                    num_computed_tokens_ns_cpu = _нс_c
+                else:
+                    # Синхронизация ТОЛЬКО когда в батче есть префилл (см. поле выше).
+                    num_computed_tokens_ns_cpu = num_computed_tokens_ns.to("cpu")
 
         _гф("В индексы блоков (mamba all)", _тВ)
         _тГ = _time.perf_counter()
@@ -1280,9 +1397,14 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
                     # то есть обе координаты заведомо внутри строки.
                     _Bк = self.kv_cache_spec.block_size
                     if spec_sequence_masks is not None and int(num_spec_decodes) != int(m.num_reqs):
-                        _мк = spec_sequence_masks[: context_lens_tensor.shape[0]]
-                        _ctxк = context_lens_tensor[_мк]
-                        _seqк = m.seq_lens[_мк]
+                        if _ОДНОРОДН and _преф_спек is not None:
+                            # [ФРИЗЫ 30.10] префиксная маска -- срезы вместо выборки (nonzero = синхронизация)
+                            _ctxк = context_lens_tensor[:_преф_спек]
+                            _seqк = m.seq_lens[:_преф_спек]
+                        else:
+                            _мк = spec_sequence_masks[: context_lens_tensor.shape[0]]
+                            _ctxк = context_lens_tensor[_мк]
+                            _seqк = m.seq_lens[_мк]
                     else:
                         _ctxк, _seqк = context_lens_tensor, m.seq_lens
                     _nк = min(int(spec_state_indices_tensor.shape[0]), int(_ctxк.shape[0]),
@@ -1331,7 +1453,8 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
                                 self.kv_cache_spec, "align")
                             if (spec_sequence_masks is not None
                                     and int(num_spec_decodes) != int(m.num_reqs)):
-                                _таб_к = _таб_к[spec_sequence_masks[: _таб_к.shape[0]]]
+                                _таб_к = (_таб_к[:_преф_спек] if (_ОДНОРОДН and _преф_спек is not None)
+                                          else _таб_к[spec_sequence_masks[: _таб_к.shape[0]]])
                             _вш_к = min(_шир_сп, int(_таб_к.shape[1]),
                                         int(self._conv_блоки_буф.shape[1]))
                             if _вш_к <= 0 or int(_таб_к.shape[0]) < _nк:
@@ -1347,7 +1470,8 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
                                 _свер = aligned_block_table
                                 if (spec_sequence_masks is not None
                                         and int(num_spec_decodes) != int(m.num_reqs)):
-                                    _свер = _свер[spec_sequence_masks[: _свер.shape[0]]]
+                                    _свер = (_свер[:_преф_спек] if (_ОДНОРОДН and _преф_спек is not None)
+                                             else _свер[spec_sequence_masks[: _свер.shape[0]]])
                                 if int(_свер.shape[0]) >= _nк and int(_свер.shape[1]) > 0:
                                     _цель = _таб_к[:_nк].gather(1, _зап_отн.unsqueeze(1)).squeeze(1)
                                     _ок = (_цель == _свер[:_nк, 0])
@@ -1395,7 +1519,11 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
                 and spec_state_indices_tensor is not None
                 and num_accepted_tokens is not None):
             _Bг = self.kv_cache_spec.block_size
-            if spec_sequence_masks is not None:
+            if spec_sequence_masks is not None and _ОДНОРОДН and _преф_спек is not None:
+                _полн = block_table_tensor[:_преф_спек]      # [ФРИЗЫ 30.10] префиксная маска -- срезы
+                _ctxг = context_lens_tensor[:_преф_спек]
+                _seqг = m.seq_lens[:_преф_спек]
+            elif spec_sequence_masks is not None:
                 _мс = spec_sequence_masks[: block_table_tensor.shape[0]]
                 _полн = block_table_tensor[_мс]
                 _ctxг = context_lens_tensor[_мс]
@@ -1576,6 +1704,82 @@ class GDNAttentionMetadataBuilder(AttentionMetadataBuilder[GDNAttentionMetadata]
                               f"A_зап={int(_A_зап[0])} всего={_СЧЁТ['подстановок']}",
                               file=_sys.stderr, flush=True)
 
+        _fm = _FM.ШАГ[0] if _FM is not None else None
+        if _fm is not None and mamba_all:
+            # [ОДИН ГРАФ 30.10] шаг полного графа (граф не зависит от состава): D настоящих спекулятивных строк, Dmax --
+            # ёмкость графа; спекулятивные строки D..Dmax-1 -- PAD и нулевой длины, обычные -- ВСЕ R строк в абсолютных
+            # координатах токенов (спекулятивные среди них нулевой длины, заполнители тоже). Каждое поле, которое читает
+            # граф, -- в постоянный буфер фиксированного адреса и формы.
+            _D, _Dm = int(_fm[1]), int(_fm[2])
+            _R = int(m.num_reqs)
+            _ns = _R - _D
+            if (int(num_spec_decodes) != _D or _D > _Dm or (_D > 0) != (spec_sequence_masks is not None)
+                    or non_spec_query_start_loc is None or non_spec_state_indices_tensor is None):
+                raise RuntimeError(f"fullmix: раскладка шага не та (спекулятивных {int(num_spec_decodes)}, ждали {_D})")
+            _dev = query_start_loc.device
+            _P = self._fm_буферы(_dev)
+            _k1 = self.num_spec + 1
+            _Ns = _k1 * _D
+            if _Dm > 0:
+                _sst = self.spec_state_indices_tensor
+                if _D > 0:
+                    _sst[:_D].copy_(spec_state_indices_tensor[:_D])
+                _sst[_D:_Dm].fill_(PAD_SLOT_ID)
+                spec_state_indices_tensor = _sst[:_Dm]
+                _sq = _P["sqsl"]
+                torch.clamp(torch.arange(_Dm + 1, device=_dev, dtype=torch.int32) * _k1, max=_Ns, out=_sq[:_Dm + 1])
+                spec_query_start_loc = _sq[:_Dm + 1]
+                _na = _P["nacc"]
+                if _D > 0:
+                    _na[:_D].copy_(num_accepted_tokens[:_D].to(_na.dtype))
+                _na[_D:_Dm].fill_(1)
+                num_accepted_tokens = _na[:_Dm]
+                for _имя in ("_nacc_ssm_буф", "_nacc_conv_буф"):
+                    _бф = getattr(self, _имя, None)
+                    if _бф is not None and _бф.shape[0] >= _Dm:
+                        if _D == 0:
+                            _бф[:_Dm].fill_(1)
+                        else:
+                            _бф[_D:_Dm].fill_(1)
+                # тот же выбор, что при захвате (D = Dmax): буферы есть -- вид на Dmax строк всегда
+                if getattr(self, "_nacc_ssm_буф", None) is not None and (num_accepted_ssm is not None or _D == 0):
+                    num_accepted_ssm = self._nacc_ssm_буф[:_Dm]
+                if getattr(self, "_nacc_conv_буф", None) is not None and (num_accepted_conv is not None or _D == 0):
+                    num_accepted_conv = self._nacc_conv_буф[:_Dm]
+                if _ГРАН_КОНВ_ВСЕГДА:
+                    # пара указателей свёртки: строки D..Dmax-1 -- PAD (ядро их не трогает); вид -- на Dmax строк всегда
+                    _вш = int(_спец_conv_блоки.shape[1]) if _спец_conv_блоки is not None else int(
+                        min(self._conv_блоки_буф.shape[1], self.num_spec + 1))
+                    if _D == 0 or _спец_conv_блоки is None:
+                        self._conv_блоки_буф[:_Dm].fill_(PAD_SLOT_ID)
+                        self._conv_чт_буф[:_Dm].fill_(0)
+                        self._conv_зап_буф[:_Dm].fill_(0)
+                    else:
+                        self._conv_блоки_буф[_D:_Dm].fill_(PAD_SLOT_ID)
+                        self._conv_чт_буф[_D:_Dm].fill_(0)
+                        self._conv_зап_буф[_D:_Dm].fill_(0)
+                    _спец_conv_блоки = self._conv_блоки_буф[:_Dm, :_вш]
+                    _спец_conv_чт = self._conv_чт_буф[:_Dm]
+                    _спец_conv_зап = self._conv_зап_буф[:_Dm]
+            _nss = self.non_spec_state_indices_tensor
+            _nss[:_D].fill_(PAD_SLOT_ID)
+            _nss[_D:_R].copy_(non_spec_state_indices_tensor[:_ns])
+            non_spec_state_indices_tensor = _nss[:_R]
+
+            def _в_R(буф, src, хвост):
+                буф[:_D].fill_(хвост)
+                буф[_D:_R].copy_(src[:_ns].to(буф.dtype))
+                return буф[:_R]
+            block_idx_last_computed_token = _в_R(_P["b_comp"], block_idx_last_computed_token, 0)
+            block_idx_last_scheduled_token = _в_R(_P["b_last"], block_idx_last_scheduled_token, 0)
+            block_idx_first_scheduled_token = _в_R(_P["b_first"], block_idx_first_scheduled_token, 0)
+            num_computed_tokens_ns = _в_R(_P["ncomp"], num_computed_tokens_ns, 0)
+            has_initial_state = (_в_R(_P["hinit"], has_initial_state, False) if has_initial_state is not None
+                                 else _P["hinit"][:_R].fill_(False))
+            _nq = _P["nsqsl"]
+            _nq[:_D].fill_(_Ns)
+            torch.add(non_spec_query_start_loc[:_ns + 1].to(_nq.dtype), _Ns, out=_nq[_D:_R + 1])
+            non_spec_query_start_loc = _nq[:_R + 1]
         attn_metadata = GDNAttentionMetadata(
             seq_lens_для_обновления=m.seq_lens,
             num_prefills=num_prefills,

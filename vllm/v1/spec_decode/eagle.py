@@ -751,6 +751,8 @@ class SpecDecodeBaseProposer:
         if w8 is None:
             return None
         wf, meta, K, N = s80
+        if wf.data_ptr() in getattr(w8, "_МАРЛИН_ПТР", ()):
+            return None      # [ревизия] слитый выбор читает НАШУ раскладку; словарь в раскладке Marlin -- обычный путь
         т = w8._ТЮН.get((K, N))
         if т is None:
             return None

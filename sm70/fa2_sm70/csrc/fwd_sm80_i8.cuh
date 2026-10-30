@@ -87,11 +87,24 @@ __global__ __launch_bounds__(NT, 1) void fwd_i8_paged_sm80(
     const float* __restrict__ Ks, const float* __restrict__ Vs,
     const long* __restrict__ vOff, const long* __restrict__ vScl,
     int Sq, int Sk, int H, int Hkv, float sl2, int lse_dim,
-    const int* __restrict__ selIdx, const int* __restrict__ selCnt, int selStride, int selGroupQ, int selSubLog) {
+    const int* __restrict__ selIdx, const int* __restrict__ selCnt, int selStride, int selGroupQ, int selSubLog,
+    const int* __restrict__ vl = nullptr) {
   extern __shared__ __align__(16) unsigned char smem_raw[];
   Smem& sh = *reinterpret_cast<Smem*>(smem_raw);
   const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
-  const int q0 = blockIdx.x * BQ, h = blockIdx.y, hk = h / (H / Hkv);
+  int q0 = blockIdx.x * BQ;
+  const int h = blockIdx.y, hk = h / (H / Hkv);
+  // [ОДИН ГРАФ 30.10] VARLEN: плитка blockIdx.x берёт строку из метаданных на устройстве (paged_varlen_meta):
+  // vl[6*i] = {первый токен строки в Q/O, q0 плитки в строке, Sq строки, Sk строки, база таблиц страниц строки, 0}.
+  // Sq <= 0 -- пустая плитка запаса (сетка фиксирована под граф). Отбор (selIdx) в этом режиме не используется.
+  // Арифметика плитки та же, что у вызова на одну строку: выход побитно тот же.
+  if (vl != nullptr) {
+    const int* m = vl + 6 * (long)blockIdx.x;
+    if (m[2] <= 0) return;                                 // весь блок разом -- до любых барьеров
+    Q += (long)m[0] * H * D; O += (long)m[0] * H * D;
+    if (LSE != nullptr) LSE += m[0];
+    q0 = m[1]; Sq = m[2]; Sk = m[3]; vOff += m[4]; vScl += m[4];
+  }
   const int off = Sk - Sq;                                 // позиция запроса i = off + i
   // ---- список плиток ключей
   const int kEnd = CAUSAL ? min(Sk, off + min(Sq, q0 + BQ)) : Sk;

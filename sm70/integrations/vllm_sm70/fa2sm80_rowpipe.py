@@ -46,7 +46,10 @@ def установить():
         (fa2sm70_clef_hook.с_поправкой), строки Clef заданы номерами в ЦЕЛОМ шаге: кусочный путь (распаковка +
         torch.mm мимо тела) зовёт ХУК_ДИАП со смещением куска (clef.cu delta_keyed_range); без него -- прежний путь."""
         кл = sys.modules.get("fa2sm70_clef")
-        return кл is not None and bool(getattr(кл, "_АКТИВЕН", [False])[0])
+        if кл is None:
+            return False
+        f = getattr(кл, "шаг_с_поправкой", None)     # [ОДИН ГРАФ 30.10] и захват/повтор графа has_clef
+        return bool(f()) if f is not None else bool(getattr(кл, "_АКТИВЕН", [False])[0])
 
     def _умножитель(layer, x, bias_):
         """Функция умножения куска: для W8 большого M -- распаковка ОДИН раз + torch.mm по кускам."""
@@ -55,9 +58,8 @@ def установить():
             import fa2sm80_w8 as W8
             K, N = kn
             т = W8._ТЮН.get((K, N))
-            if т is not None and K * N <= W8._БУФ_МАКС:
-                W = W8._расш().w8a16_sm80_dequant(layer.fa2sm80_wf, layer.fa2sm80_meta, N, K, т["nw"],
-                                                  W8._буфер_для(x.device, K * N))
+            if (т is not None or W8.марлин_ли(layer)) and K * N <= W8._БУФ_МАКС:
+                W = W8.деквант_слоя(layer, W8._буфер_для(x.device, K * N))   # [ФРИЗЫ 30.10] любая раскладка
                 import fa2sm80_cg as CG
                 if CG.включён():
                     return (lambda xi, out: CG.mm(xi, W, out)), N, True

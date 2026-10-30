@@ -21,7 +21,7 @@ import torch
 _ВКЛ = os.environ.get("FA2SM80_W8", "0") == "1"
 _MMAX = 64
 _ЛОГ = os.environ.get("FA2SM80_W8_LOG", "1") == "1"
-_С = {"малое": 0, "большое": 0, "слоёв": 0, "байт": 0}
+_С = {"малое": 0, "большое": 0, "слоёв": 0, "байт": 0, "марлин": 0, "марлин_деквант": 0}
 _расширение = [None]
 _буфер = {}          # device -> общий fp16-буфер под деквант больших M
 _ТЮН = {}            # (K, N) -> {"nw": int, "cfg": {корзина M: (warps, stages, splits)}}
@@ -37,6 +37,107 @@ _ПРЯМОЙ_ММАКС = int(os.environ.get("FA2SM80_W8_DIRECT_MMAX", "512"))
 # 363). Подбор (mi, splits) -- на корзину, вместе с выбором маршрута для корзин 32/64.
 _ПРЯМ_КОРЗ = (32, 64, 128, 256, 512)
 _ПРЯМ_MIDM = os.environ.get("FA2SM80_W8_MIDM", "1") == "1"   # 0 -- прежний маршрут (A/B)
+# [ЗАГРУЗКА ВЕСОВ 30.10] FA2SM80_W8_MFAST=1: прямой GEMM больших M (M > 64) -- плитки M первыми (веса из HBM один
+# раз на вызов, а не на каждую полосу строк), MI=4 без спиллов, рабочая область split-K без роста. Подбор -- в
+# (mi, splits) -- из того же кэша подбора, что у прежнего пути, поэтому выход прямого ядра побитно прежний. Корзины
+# 1024/2048 сравниваются замером при загрузке с деквантом в fp16 + GEMM: маршрут "d" (прямой) или "q" (деквант) --
+# свой кэш (_v2lr.json). FA2SM80_W8_MFAST_FILE=<файл> -- "0"/"1" из файла, перечитывается по СЧЁТЧИКУ вызовов
+# больших M (раз в _MF_ПЕРИОД): оба ранга TP проходят одни и те же вызовы и переключаются на одном и том же.
+_MFAST = os.environ.get("FA2SM80_W8_MFAST", "0") == "1"
+_MFAST_ФАЙЛ = os.environ.get("FA2SM80_W8_MFAST_FILE", "")
+_MF_ПЕРИОД = 256
+_MF = {"n": 0, "вкл": _MFAST}
+_ПРЯМ_КОРЗ_MF = (1024, 2048)
+
+
+def _mfast():
+    if _MFAST_ФАЙЛ:
+        _MF["n"] += 1
+        if _MF["n"] % _MF_ПЕРИОД == 1:
+            try:
+                with open(_MFAST_ФАЙЛ) as f:
+                    _MF["вкл"] = f.read(1) == "1"
+            except OSError:
+                _MF["вкл"] = _MFAST
+    return _MF["вкл"]
+# [СРЕДНИЕ M 30.10] FA2SM80_W8_G2=1: корзины прямого пути 128/256/512 -- ядро v2 (w8a16_sm80_gemm2: блок 128 x 32*nj,
+# один блок на SM, конвейер фрагментов), если замер при загрузке быстрее нынешнего (mi, splits) не менее чем на 5 % и
+# выход ПОБИТНО тот же (то же расщепление k -- тот же порядок сложения; проверяется torch.equal при подборе). Профиль
+# окна 12: шаг с записью Clef ~400 токенов -- прямой GEMM 112 мс из ~300. Выбор -- в кэш *_v2g2.json. Уровень >= 3 в
+# FA2SM70_NOSYNC_FILE -- то же из файла (A/B в одном экземпляре; файл перечитывается по счётчику вызовов).
+_G2 = os.environ.get("FA2SM80_W8_G2", "0") == "1"
+_G2_ФАЙЛ = os.environ.get("FA2SM70_NOSYNC_FILE", "")
+_G2_С = {"n": 0, "вкл": _G2}
+
+
+def _g2_вкл():
+    if _G2_ФАЙЛ:
+        _G2_С["n"] += 1
+        if _G2_С["n"] % _MF_ПЕРИОД == 1:
+            try:
+                with open(_G2_ФАЙЛ) as f:
+                    v = f.read(1)
+                _G2_С["вкл"] = v.isdigit() and int(v) >= 3
+            except OSError:
+                _G2_С["вкл"] = _G2
+    return _G2_С["вкл"]
+
+
+# [GEMM 30.10] FA2SM80_W8_G3=1: M > 64 -- ядро v3 (w8a16_sm80_gemm3: x в порядке фрагментов, плитка варпа 64x64, без
+# MOV-сборки фрагмента A; стенд scripts/w8_g3_test.py). Подбор при загрузке на корзину M: (wm, wn, стадий, splits) v3
+# против нынешнего маршрута корзины (прямое ядро при M <= 512, деквант + GEMM выше); кэш *_v2g3.json (первый записавший
+# ранг). "win" -- корзины, где v3 быстрее (обычный маршрут), "all" -- лучшая конфигурация v3 на каждую корзину (конвейер
+# блока при включённом v3 берёт её всегда: распаковка весов в fp16 и её буферы не нужны). FA2SM80_W8_G3_FILE=<файл> --
+# "0"/"1" из файла, перечитывается по СЧЁТЧИКУ вызовов (оба ранга TP переключаются на одном и том же вызове).
+_G3 = os.environ.get("FA2SM80_W8_G3", "0") == "1"
+_G3_ФАЙЛ = os.environ.get("FA2SM80_W8_G3_FILE", "")
+_G3_С = {"n": 0, "вкл": _G3}
+_G3_КОРЗ = (128, 256, 512, 1024, 2048, 4096, 8192)
+_G3_ИНСТ = ((2, 2, 3), (2, 2, 4), (1, 4, 3), (1, 4, 4), (2, 4, 3), (2, 4, 4), (4, 2, 3))
+
+
+def g3_вкл():
+    if not (_G3 or _G3_ФАЙЛ):
+        return False
+    if _G3_ФАЙЛ:
+        _G3_С["n"] += 1
+        if _G3_С["n"] % _MF_ПЕРИОД == 1:
+            try:
+                with open(_G3_ФАЙЛ) as f:
+                    _G3_С["вкл"] = f.read(1) == "1"
+            except OSError:
+                _G3_С["вкл"] = _G3
+    return _G3_С["вкл"]
+
+
+def _g3_корзина(m):
+    return next((c for c in _G3_КОРЗ if c >= m), _G3_КОРЗ[-1])
+
+
+def _g3_выровнен(x):
+    return x.dim() == 2 and x.stride(1) == 1 and x.stride(0) % 8 == 0 and x.data_ptr() % 16 == 0
+
+
+def g3_слой(layer, x, out=None):
+    """v3 для слоя W8 по конфигурации корзины ("all"); None -- для формы нет подбора v3."""
+    K, N = layer.fa2sm80_kn
+    т = _ТЮН.get((K, N), {})
+    g3 = т.get("g3")
+    if not g3:
+        return None
+    b = _g3_корзина(x.shape[0])
+    cfg = g3["all"].get(b)
+    if cfg is None:
+        if not g3["all"]:
+            return None
+        cfg = g3["all"][min(g3["all"], key=lambda c: abs(c - b))]      # корзина без замера -- ближайшая
+    if not _g3_выровнен(x):
+        x = x.contiguous()
+    _С["g3"] = _С.get("g3", 0) + 1
+    wm, wn, st, sp = cfg
+    return _расш().w8a16_sm80_gemm3x(x, layer.fa2sm80_wf, layer.fa2sm80_meta, N, т["nw"], wm, wn, st, sp, out)
+
+
 _ПРЯМ_NMAX = 32768        # шире (словарь) -- без подбора: рабочая область split-K росла бы до сотен МБ
 _БУФ_МАКС = 96 * 2**20   # элементов: деквант-буфер под большие M только для обычных слоёв (gate_up 89M)
 # [24.10] ПРИБОР для п.7 плана (int8 x int8 с каналами-выбросами в fp16): FA2SM80_ACT_STATS=<файл.jsonl>. На больших M
@@ -138,6 +239,88 @@ def _акт_статистика(x, W, K, N):
     rec["rel_fp16_ref"] = round(((yh - y).norm().item()) / ny, 7)
     with open(_АКТ_ФАЙЛ, "a") as f:
         f.write(json.dumps(rec) + "\n")
+
+
+# [ФРИЗЫ 30.10] FA2SM80_W8_MARLIN=1: вес -- в раскладке Marlin (marlin8_sm80.cu: шаблон Marlin с нулями kU8 в нашей
+# сборке) ВМЕСТО нашей фрагментной (те же K*N байт). M <= FA2SM80_W8_MARLIN_MMAX -- marlin8_gemm; больше -- деквант из
+# раскладки Marlin (ПОБИТНО как прежний w8a16_sm80_dequant) + наш cuBLAS-путь, конвейер блока -- тем же деквантом.
+# Окно 23 (стенд marlin8_test.py против боевого маршрута): M=40 1.91x, 64 1.68x, 128-440 1.36-1.44x, 1024 1.07x,
+# 2088 0.90x -- отсюда порог 1024. Точность та же (отн. ошибка 2.07e-4 против того же эталона, что у нашего пути).
+_MARLIN = os.environ.get("FA2SM80_W8_MARLIN", "0") == "1"
+_MARLIN_MMAX = int(os.environ.get("FA2SM80_W8_MARLIN_MMAX", "1024"))
+_м8_расш = [None]
+# [ФРИЗЫ 30.10] Раскладка Marlin -- признак КОНКРЕТНОГО веса (слоя), а не формы (K, N): слой MTP (FA2SM70_MTP_W8) и словарь
+# пакуются НАШЕЙ раскладкой (упаковать_вне_gptq) и зовут ту же операцию с теми же (K, N), что MLP модели. Окно 25/25b:
+# признак по форме в _ТЮН отправлял веса MTP в Marlin -> мусорные логиты черновика -> illegal memory access в черновике.
+_МАРЛИН_ПТР = set()          # data_ptr весов в раскладке Marlin
+# FA2SM80_W8_MARLIN_EXT=1 (при FA2SM80_W8_MARLIN): и чужие модули -- слой MTP (FA2SM70_MTP_W8, каждый шаг декода при
+# M 8-40, где Marlin ~1.9x) и словарь (FA2SM70_LMH) -- пакуются в раскладку Marlin; оба зовут только fa2sm80_w8_mm.
+_MARLIN_ВНЕ = os.environ.get("FA2SM80_W8_MARLIN_EXT", "0") == "1"
+
+
+def _м8():
+    if _м8_расш[0] is None:
+        import fa2_sm70._ext as E
+        _м8_расш[0] = E.marlin8_ext()
+    return _м8_расш[0]
+
+
+def _марлин_части(meta, K, N):
+    """meta в режиме Marlin -- [G, N] int32 (ТА ЖЕ форма, что у нашей meta -- окно 24b: скомпилированный граф из кэша
+    проверяет формы весов слоёв), внутри подряд: масштабы fp16 [G, N] (перестановка Marlin), нули [G, N/4], хвост."""
+    G = K // 128
+    плоск = meta.view(-1)
+    return плоск[: G * N // 2].view(torch.float16).view(G, N), плоск[G * N // 2: 3 * G * N // 4].view(G, N // 4)
+
+
+def _марлин_вес(wf, K):
+    """Вес Marlin хранится одномерным [N*K/4] (форма нашего wf); ядру -- вид [K/16, 4N]."""
+    return wf.view(K // 16, -1)
+
+
+def марлин_слой(layer, x, out=None):
+    """[ФРИЗЫ 30.10] y = x @ W^T слоя в раскладке Marlin прямо marlin8_gemm (конвейер блока на средних M: без декванта)."""
+    K, N = layer.fa2sm80_kn
+    ms, mz = _марлин_части(layer.fa2sm80_meta, K, N)
+    if not (x.stride(-1) == 1 and x.stride(0) % 8 == 0 and x.data_ptr() % 16 == 0):
+        x = x.contiguous()
+    _С["марлин"] += 1
+    return _м8().marlin8_gemm(x, _марлин_вес(layer.fa2sm80_wf, K), ms, mz, N, True, out)
+
+
+def марлин_ли(layer):
+    return bool(getattr(layer, "fa2sm80_marlin", False))
+
+
+def деквант_слоя(layer, buf):
+    """W [N, K] fp16 слоя в общий буфер -- в любой раскладке (конвейер блока/строк)."""
+    K, N = layer.fa2sm80_kn
+    if марлин_ли(layer):
+        ms, mz = _марлин_части(layer.fa2sm80_meta, K, N)
+        return _м8().marlin8_dequant(_марлин_вес(layer.fa2sm80_wf, K), ms, mz, N, K, buf)
+    return _расш().w8a16_sm80_dequant(layer.fa2sm80_wf, layer.fa2sm80_meta, N, K, _ТЮН[(K, N)]["nw"], buf)
+
+
+def _в_марлин(layer, qw, v2, K, N):
+    """Раскладка Marlin из GPTQ: вес (gptq_marlin_repack), масштабы (marlin_permute_scales), нули (распакованы из
+    qzeros: 4 на int32 по столбцам, младший байт первый; v1 -- нуль+1, как zbias у meta_kernel; marlin_zero_points)."""
+    from vllm import _custom_ops as ops
+    from vllm.model_executor.layers.quantization.utils.marlin_utils import marlin_permute_scales, marlin_zero_points
+    gi = torch.empty(0, dtype=torch.int, device=qw.device)
+    mq = ops.gptq_marlin_repack(qw.contiguous(), gi, K, N, 8)
+    ms = marlin_permute_scales(layer.scales.contiguous(), K, N, 128)
+    qz = layer.qzeros
+    z = torch.stack([(qz >> (8 * i)) & 0xFF for i in range(4)], -1).reshape(K // 128, N).int()
+    if not v2:
+        z = z + 1
+    if int(z.max()) > 255:
+        return None
+    mz = marlin_zero_points(z, K // 128, N, 8).to(qw.device)
+    G = K // 128
+    meta = torch.zeros(G * N, dtype=torch.int32, device=qw.device)
+    meta[: G * N // 2].copy_(ms.reshape(-1).view(torch.int32))
+    meta[G * N // 2: 3 * G * N // 4].copy_(mz.reshape(-1))
+    return mq.reshape(-1), meta.view(G, N)
 
 
 def _лог(msg):
@@ -291,6 +474,191 @@ def _подобрать(qw, qz, sc, v2, K, N):
     return итог, упаковки[nw]
 
 
+def _маршрут_больших(ext, wf, meta, K, N, nw, dev):
+    """[ЗАГРУЗКА ВЕСОВ 30.10] Корзины 1024/2048: прямой GEMM (mfast, MI=4) против декванта в fp16 + GEMM -- замером.
+    Выбор пишется в свой кэш: первый записавший ранг задаёт его для следующих пусков (как у подбора)."""
+    import json
+    import fa2sm80_cg as CG
+    путь = _кэш_подбора(K, N)
+    путь = путь[:-len("_v2.json")] + "_v2lr.json" if путь else None
+    if путь and os.path.exists(путь):
+        try:
+            итог = {int(b): r for b, r in json.load(open(путь)).items()}
+            _лог(f"маршрут больших M K={K} N={N}: из кэша {итог}")
+            return итог
+        except Exception as ex:  # noqa: BLE001
+            _лог(f"кэш маршрута {путь} не читается ({ex}) -- замеряю")
+    итог = {}
+    for b in _ПРЯМ_КОРЗ_MF:
+        x = torch.randn(b, K, device=dev, dtype=torch.float16) * 0.1
+
+        def _деквант():
+            W = ext.w8a16_sm80_dequant(wf, meta, N, K, nw, _буфер_для(dev, K * N))
+            return CG.mm(x, W.view(N, K)) if CG.включён() else torch.mm(x, W.view(N, K).t())
+
+        try:
+            tп = _время(lambda: ext.w8a16_sm80_gemm_large(x, wf, meta, N, nw, 4, 1, 1), повт=5)
+            tq = _время(_деквант, повт=5)
+        except RuntimeError as ex:
+            _лог(f"маршрут больших M K={K} N={N} M={b}: замер не удался ({ex}) -- деквант")
+            итог[b] = "q"
+            continue
+        итог[b] = "d" if tп < tq else "q"
+        _лог(f"маршрут больших M K={K} N={N} M<={b}: прямой {tп:.0f} мкс, деквант+GEMM {tq:.0f} мкс -> {итог[b]}")
+    if путь:
+        try:
+            врем = f"{путь}.{os.getpid()}"
+            json.dump({str(b): r for b, r in итог.items()}, open(врем, "w"))
+            if not os.path.exists(путь):
+                os.replace(врем, путь)
+            else:
+                os.remove(врем)
+        except Exception as ex:  # noqa: BLE001
+            _лог(f"кэш маршрута не записан: {ex}")
+    return итог
+
+
+def _маршрут_g2(ext, wf, meta, K, N, nw, dev, dcfg):
+    """[СРЕДНИЕ M 30.10] Корзины 128/256/512 прямого пути: v2 при том же расщеплении k -- только побитно равные и
+    быстрее нынешнего на 5 %+. {корзина: (nj, стадий, pin, splits)}; кэш *_v2g2.json (первый записавший ранг)."""
+    import json
+    путь = _кэш_подбора(K, N)
+    путь = путь[:-len("_v2.json")] + "_v2g2.json" if путь else None
+    if путь and os.path.exists(путь):
+        try:
+            итог = {int(b): tuple(r) for b, r in json.load(open(путь)).items()}
+            _лог(f"v2 средних M K={K} N={N}: из кэша {итог}")
+            return итог
+        except Exception as ex:  # noqa: BLE001
+            _лог(f"кэш v2 {путь} не читается ({ex}) -- замеряю")
+    итог = {}
+    if not hasattr(ext, "w8a16_sm80_gemm2") or K % 128:
+        return итог
+    for b in (128, 256, 512):
+        if b not in dcfg:
+            continue
+        mi, sp = dcfg[b]
+        x = torch.randn(b, K, device=dev, dtype=torch.float16) * 0.1
+        try:
+            эт = ext.w8a16_sm80_gemm_large(x, wf, meta, N, nw, mi, sp)
+            t0 = _время(lambda: ext.w8a16_sm80_gemm_large(x, wf, meta, N, nw, mi, sp), повт=5)
+        except RuntimeError as ex:
+            _лог(f"v2 средних M K={K} N={N} M={b}: замер прежнего не удался ({ex})")
+            continue
+        лучш = None
+        for nj in (8, 4):
+            if N % (32 * nj) or N % (8 * nw):
+                continue
+            for stg in (3, 4):
+                for pin in (False, True):
+                    try:
+                        y = ext.w8a16_sm80_gemm2(x, wf, meta, N, nw, nj, stg, sp, pin)
+                        if not torch.equal(y, эт):
+                            continue
+                        t = _время(lambda: ext.w8a16_sm80_gemm2(x, wf, meta, N, nw, nj, stg, sp, pin), повт=5)
+                    except RuntimeError:
+                        continue
+                    if лучш is None or t < лучш[0]:
+                        лучш = (t, (nj, stg, pin, sp))
+        if лучш is not None and лучш[0] < 0.95 * t0:
+            итог[b] = лучш[1]
+        _лог(f"v2 средних M K={K} N={N} M<={b}: прежний ({mi},{sp}) {t0:.0f} мкс, v2 "
+             f"{'%.0f мкс %s' % лучш if лучш else 'нет побитно равного'} -> {'v2' if b in итог else 'прежний'}")
+    if путь:
+        try:
+            врем = f"{путь}.{os.getpid()}"
+            json.dump({str(b): list(r) for b, r in итог.items()}, open(врем, "w"))
+            if not os.path.exists(путь):
+                os.replace(врем, путь)
+            else:
+                os.remove(врем)
+        except Exception as ex:  # noqa: BLE001
+            _лог(f"кэш v2 не записан: {ex}")
+    return итог
+
+
+def _маршрут_g3(ext, wf, meta, K, N, nw, dev, dcfg):
+    """[GEMM 30.10] Корзины 128..8192: лучший v3 против нынешнего маршрута (прямое ядро (mi, splits) из dcfg при M <= 512,
+    иначе деквант в fp16 + GEMM). {"win": {b: cfg}, "all": {b: cfg}, "t": {b: [v3, нынешний, GEMM без распаковки]}} (мкс);
+    кэш *_v2g3.json (первый записавший ранг задаёт выбор для следующих пусков и обоих рангов)."""
+    import json
+    import fa2sm80_cg as CG
+    путь = _кэш_подбора(K, N)
+    путь = путь[:-len("_v2.json")] + "_v2g3.json" if путь else None
+    if путь and os.path.exists(путь):
+        try:
+            д = json.load(open(путь))
+            итог = {к: {int(b): (tuple(v) if к != "t" else list(v)) for b, v in д[к].items()} for к in ("win", "all", "t")}
+            _лог(f"v3 K={K} N={N}: из кэша, выигрывает в корзинах {sorted(итог['win'])}")
+            return итог
+        except Exception as ex:  # noqa: BLE001
+            _лог(f"кэш v3 {путь} не читается ({ex}) -- замеряю")
+    итог = {"win": {}, "all": {}, "t": {}}
+    if not hasattr(ext, "w8a16_sm80_gemm3x") or K % 128 or N % 128:
+        return итог
+    W = None
+    if K * N <= _БУФ_МАКС:
+        W = torch.empty(N * K, dtype=torch.float16, device=dev)          # временный: после замера освобождается
+    for b in _G3_КОРЗ:
+        x = torch.randn(b, K, device=dev, dtype=torch.float16) * 0.1
+        лучш = None
+        for wm, wn, st in _G3_ИНСТ:
+            if N % (64 * wn):
+                continue
+            for sp in ((1, 2, 3, 4) if b <= 512 else (1,)):
+                if sp * b > 1024 and sp > 1:
+                    continue
+                try:
+                    t = _время(lambda: ext.w8a16_sm80_gemm3x(x, wf, meta, N, nw, wm, wn, st, sp), повт=5)
+                except RuntimeError:
+                    continue
+                if лучш is None or t < лучш[0]:
+                    лучш = (t, (wm, wn, st, sp))
+        if лучш is None:
+            continue
+        итог["all"][b] = лучш[1]
+        t_cg = 0.0
+        try:
+            if b <= _ПРЯМОЙ_ММАКС and b in dcfg:
+                mi, sp = dcfg[b]
+                t_ref = _время(lambda: ext.w8a16_sm80_gemm_large(x, wf, meta, N, nw, mi, sp), повт=5)
+            elif W is not None:
+                Wv = ext.w8a16_sm80_dequant(wf, meta, N, K, nw, W).view(N, K)
+                умн = (lambda: CG.mm(x, Wv)) if CG.включён() else (lambda: torch.mm(x, Wv.t()))
+                t_cg = _время(умн, повт=5)
+                t_ref = _время(lambda: (ext.w8a16_sm80_dequant(wf, meta, N, K, nw, W), умн()), повт=5)
+            else:
+                t_ref = 1e18
+        except RuntimeError as ex:
+            _лог(f"v3 K={K} N={N} M={b}: замер нынешнего не удался ({ex})")
+            t_ref = 1e18
+        итог["t"][b] = [round(лучш[0], 1), round(t_ref, 1), round(t_cg, 1)]
+        if лучш[0] < 0.97 * t_ref:
+            итог["win"][b] = лучш[1]
+        _лог(f"v3 K={K} N={N} M<={b}: v3 {лучш[0]:.0f} мкс {лучш[1]}, нынешний {t_ref:.0f} мкс"
+             + (f" (GEMM без распаковки {t_cg:.0f})" if t_cg else "") + f" -> {'v3' if b in итог['win'] else 'нынешний'}")
+        del x
+    del W
+    torch.cuda.empty_cache()
+    if путь:
+        try:
+            врем = f"{путь}.{os.getpid()}"
+            json.dump({к: {str(b): list(v) for b, v in итог[к].items()} for к in ("win", "all", "t")}, open(врем, "w"))
+            if not os.path.exists(путь):
+                os.replace(врем, путь)
+            else:
+                os.remove(врем)
+        except Exception as ex:  # noqa: BLE001
+            _лог(f"кэш v3 не записан: {ex}")
+    return итог
+
+
+def _g3_резерв(ext, K, N, dev):
+    """Буфер упаковки x (текущий поток) под наибольшую корзину и рабочая область split-K -- до профилирования и захвата."""
+    if hasattr(ext, "w8a16_sm80_g3_reserve"):
+        ext.w8a16_sm80_g3_reserve(torch.empty(1, device=dev), (K // 64) * (_G3_КОРЗ[-1] // 16) * 512, 1024 * N, 1 << 16)
+
+
 def _рабочая_область(ext, wf, meta, K, N, nw):
     """Рабочая область split-K растёт только вверх (старые буферы держатся ради графов) -- поэтому её
     размер берётся СРАЗУ максимальным для формы (splits*M <= 1024) одним пуском, до захвата графов."""
@@ -343,8 +711,42 @@ def установить():
             return
         v2 = bool(self.use_v2_format)
         ключ = (K, N)
+        if _MARLIN and K % 128 == 0 and N % 64 == 0:      # форма -- одинакова на рангах TP: решение симметрично
+            пара = _в_марлин(layer, qw, v2, K, N)
+            if пара is None:
+                # [ревизия] отказ по ЗНАЧЕНИЯМ нулей своего шарда -- у другого ранга TP его может не быть: разная
+                # раскладка дала бы разные пути конвейера (разное число сведений) -- зависание. Лучше не стартовать.
+                raise RuntimeError(f"FA2SM80_W8_MARLIN: слой K={K} N={N} -- нуль+1 > 255 (GPTQ v1), Marlin невозможен; "
+                                   "снимите FA2SM80_W8_MARLIN")
+            if пара is not None:
+                mq, meta = пара
+                layer.fa2sm80_wf = mq
+                layer.fa2sm80_meta = meta
+                layer.fa2sm80_kn = (K, N)
+                layer.fa2sm80_marlin = True
+                _МАРЛИН_ПТР.add(mq.data_ptr())
+                layer.qweight = torch.nn.Parameter(torch.empty(0, N, dtype=qw.dtype, device=qw.device),
+                                                   requires_grad=False)
+                del qw
+                # _ТЮН не трогаем: им пользуются веса НАШЕЙ раскладки той же формы (MTP, упаковать_вне_gptq)
+                _м8().marlin8_reserve(meta)
+                if K * N <= _БУФ_МАКС:
+                    _буфер_для(mq.device, K * N)
+                _С["слоёв"] += 1
+                _С["байт"] += K * N
+                if _С["слоёв"] in (1, 8, 64, 128, 256):
+                    _лог(f"Marlin: перепаковано слоёв {_С['слоёв']}, {_С['байт'] / 2**30:.2f} ГиБ")
+                return
         if ключ not in _ТЮН:
             итог, (wf, meta) = _подобрать(qw, layer.qzeros, layer.scales, v2, K, N)
+            if ((_MFAST or _MFAST_ФАЙЛ) and K * N <= _БУФ_МАКС and N % 128 == 0 and N <= _ПРЯМ_NMAX
+                    and итог.get("dcfg")):
+                итог["lroute"] = _маршрут_больших(_расш(), wf, meta, K, N, итог["nw"], wf.device)
+            if ((_G2 or _G2_ФАЙЛ) and _ПРЯМ_MIDM and N % 128 == 0 and N <= _ПРЯМ_NMAX and итог.get("dcfg")):
+                итог["g2"] = _маршрут_g2(_расш(), wf, meta, K, N, итог["nw"], wf.device, итог["dcfg"])
+            if (_G3 or _G3_ФАЙЛ) and N % 128 == 0 and N <= _ПРЯМ_NMAX and K % 128 == 0:
+                итог["g3"] = _маршрут_g3(_расш(), wf, meta, K, N, итог["nw"], wf.device, итог.get("dcfg", {}))
+                _g3_резерв(_расш(), K, N, wf.device)
             _ТЮН[ключ] = итог
         else:
             wf, meta = _расш().w8a16_sm80_pack(qw, layer.qzeros, layer.scales, 128, v2, _ТЮН[ключ]["nw"])
@@ -354,7 +756,11 @@ def установить():
         # исходный вес больше не нужен: те же K*N байт уже лежат в wf
         layer.qweight = torch.nn.Parameter(torch.empty(0, N, dtype=qw.dtype, device=qw.device), requires_grad=False)
         del qw
-        if K * N <= _БУФ_МАКС:
+        g3 = _ТЮН[ключ].get("g3")
+        # [GEMM 30.10] v3 без переключателя-файла и выигрывает во всех корзинах выше прямого пути -- деквант не нужен
+        без_декванта = (_G3 and not _G3_ФАЙЛ and g3
+                        and all(b in g3["win"] for b in _G3_КОРЗ if b > _ПРЯМОЙ_ММАКС))
+        if K * N <= _БУФ_МАКС and not без_декванта:
             _буфер_для(wf.device, K * N)   # общий буфер под деквант больших M -- до профилирования памяти
         _С["слоёв"] += 1
         _С["байт"] += K * N
@@ -424,6 +830,8 @@ def установить():
 
     def _w8_mm(x: torch.Tensor, wf: torch.Tensor, meta: torch.Tensor, sc: torch.Tensor,
                K: int, N: int) -> torch.Tensor:
+        if wf.data_ptr() in _МАРЛИН_ПТР:
+            return _марлин_mm(x, wf, meta, K, N)
         ext = _расш()
         m = x.shape[0]
         т = _ТЮН[(K, N)]
@@ -462,17 +870,49 @@ def установить():
                                        lambda xi, oi: oi.copy_(_большое(ext, xi, wf, meta, т, K, N)))
         return _большое(ext, x, wf, meta, т, K, N)
 
+    def _марлин_mm(x, wf, meta, K: int, N: int):
+        ms, mz = _марлин_части(meta, K, N)
+        m = x.shape[0]
+        if m <= _MARLIN_MMAX or K * N > _БУФ_МАКС:
+            _С["марлин"] += 1
+            if not (x.stride(-1) == 1 and x.stride(0) % 8 == 0 and x.data_ptr() % 16 == 0):
+                x = x.contiguous()
+            return _м8().marlin8_gemm(x, _марлин_вес(wf, K), ms, mz, N, True)
+        _С["марлин_деквант"] += 1
+        W = _м8().marlin8_dequant(_марлин_вес(wf, K), ms, mz, N, K, _буфер_для(x.device, K * N))
+        import fa2sm80_cg as CG
+        if CG.включён() and x.is_contiguous():
+            return CG.mm(x, W)
+        return torch.mm(x, W.t())
+
     def _большое(ext, x, wf, meta, т, K: int, N: int):
         m = x.shape[0]
-        if m <= _ПРЯМОЙ_ММАКС and N % 128 == 0:
+        g3 = т.get("g3")
+        if g3 and g3["win"] and g3_вкл():
+            cfg = g3["win"].get(_g3_корзина(m))
+            if cfg is not None:
+                _С["g3"] = _С.get("g3", 0) + 1
+                wm, wn, st, sp = cfg
+                return ext.w8a16_sm80_gemm3x(x if _g3_выровнен(x) else x.contiguous(), wf, meta, N, т["nw"], wm, wn, st, sp)
+        mf = bool(_MFAST or _MFAST_ФАЙЛ) and _mfast()
+        прямой = m <= _ПРЯМОЙ_ММАКС
+        if mf and not прямой:
+            # [ЗАГРУЗКА ВЕСОВ 30.10] 512 < M <= 2048: маршрут корзины выбран замером при подборе
+            бк = next((c for c in _ПРЯМ_КОРЗ_MF if c >= m), None)
+            прямой = бк is not None and т.get("lroute", {}).get(бк) == "d"
+        if прямой and N % 128 == 0:
             # прямой Ampere-GEMM (cp.async 3 стадии + деквант в регистрах): при M=256 быстрее деквант+cuBLAS
             # (замер bench_w8_large: 61-89 TF против 47-71), при M>=1024 пока медленнее (~100 против ~167 TF)
             dc = т["dcfg"]
             b = next((c for c in _ПРЯМ_КОРЗ if c >= m), None)
             if _ПРЯМ_MIDM and b is not None and b in dc:
+                g2 = т.get("g2")
+                if g2 and b in g2 and not mf and _g2_вкл():
+                    nj, stg, pin, sp2 = g2[b]
+                    return ext.w8a16_sm80_gemm2(x, wf, meta, N, т["nw"], nj, stg, sp2, pin)
                 mi, sp = dc[b]
-                return ext.w8a16_sm80_gemm_large(x, wf, meta, N, т["nw"], mi, sp)
-            return ext.w8a16_sm80_gemm_large(x, wf, meta, N, т["nw"], 4, 1)
+                return ext.w8a16_sm80_gemm_large(x, wf, meta, N, т["nw"], mi, sp, int(mf))
+            return ext.w8a16_sm80_gemm_large(x, wf, meta, N, т["nw"], 4, 1, int(mf))
         if K * N > _БУФ_МАКС:
             # словарь (124160x5120): буфер fp16 вышел бы 1.27 ГБ -- идём ядром кусками
             мм = т["mmax"]
@@ -519,6 +959,16 @@ def установить():
 
 def упаковать_вне_gptq(qw, qz, sc, v2, K, N):
     """Для чужих модулей (словарь, MTP): подбор по форме + упаковка; вызывать вне захвата графов."""
+    if _MARLIN and _MARLIN_ВНЕ and K % 128 == 0 and N % 64 == 0:
+        сл = type("_Слой", (), {})()
+        сл.scales, сл.qzeros = sc, qz
+        пара = _в_марлин(сл, qw, v2, K, N)
+        if пара is not None:
+            mq, meta = пара
+            _МАРЛИН_ПТР.add(mq.data_ptr())
+            _м8().marlin8_reserve(meta)
+            _лог(f"чужой модуль K={K} N={N}: раскладка Marlin")
+            return mq, meta
     if (K, N) not in _ТЮН:
         итог, pack = _подобрать(qw, qz, sc, v2, K, N)
         _ТЮН[(K, N)] = итог

@@ -79,6 +79,52 @@ _ПРОПУСК_СВЁРТКИ = _os_фальс.environ.get("FA2SM70_SKIP_CONV",
 _ПРОПУСК_ВНИМАНИЯ = _os_фальс.environ.get("FA2SM70_SKIP_FULLATTN", "0") == "1"
 
 
+# [ОДИН ГРАФ 30.10] FA2SM80_GDN_ALL_VARLEN=1: префилл GDN в режиме 'all' одним varlen-сканом на слой, если ни один кусок
+# шага не пересекает границу блока mamba (иначе -- прежний цикл с резкой по границам).
+# FA2SM80_GDN_ALL_VARLEN_FILE=<файл>: "0"/"1" из файла, раз в секунду (A/B в одном экземпляре; выход побитно тот же).
+_GDN_ALL_VARLEN = os.environ.get("FA2SM80_GDN_ALL_VARLEN", "0") == "1"
+_GDN_ALL_VARLEN_ФАЙЛ = os.environ.get("FA2SM80_GDN_ALL_VARLEN_FILE", "")
+_GDN_AV = {"t": 0.0, "вкл": _GDN_ALL_VARLEN}
+
+
+def _gdn_all_varlen_вкл():
+    if _GDN_ALL_VARLEN_ФАЙЛ:
+        import time as _t
+        сейчас = _t.monotonic()
+        if сейчас - _GDN_AV["t"] >= 1.0:
+            _GDN_AV["t"] = сейчас
+            try:
+                with open(_GDN_ALL_VARLEN_ФАЙЛ) as f:
+                    _GDN_AV["вкл"] = f.read(1) == "1"
+            except OSError:
+                _GDN_AV["вкл"] = _GDN_ALL_VARLEN
+    return _GDN_AV["вкл"]
+
+
+def _gdn_all_varlen(md, block):
+    """Шаг годен для одного varlen-скана: флаг и ни одна граница блока не лежит строго внутри куска запроса.
+    Считается по хостовым метаданным (без синхронизации) один раз на шаг -- запоминается на объекте метаданных."""
+    ok = getattr(md, "_fa2_varlen_ok", None)
+    if ok is None and not _gdn_all_varlen_вкл():
+        ok = False
+    if ok is None:
+        qsl, nc = md.non_spec_query_start_loc_cpu, md.num_computed_tokens_ns_cpu
+        ok = qsl is not None and nc is not None
+        if ok:
+            q, c = qsl.tolist(), nc.tolist()
+            for i in range(len(q) - 1):
+                n = q[i + 1] - q[i]
+                # пустой кусок цикл пропускает (без записи), а скан записал бы начальное состояние -- не годен
+                if n <= 0 or (c[i] // block + 1) * block < c[i] + n:
+                    ok = False
+                    break
+        try:
+            md._fa2_varlen_ok = ok
+        except Exception:  # noqa: BLE001
+            pass
+    return ok
+
+
 def _вещ(пул):
     """Вещественный тип, в котором с состоянием работает питон-путь префилла."""
     return torch.float32 if пул.dtype == torch.int16 else пул.dtype
@@ -294,6 +340,10 @@ def _maybe_sm70_projection(
 # branch_at=W+1 (строка b0 продолжает якорь, а не хвост ветви A -- сверено бит в бит
 # офлайн-тестом test_branch.py). Сдвиг nacc на W ложится в gdn_attn.build.
 _ДЕРЕВО_W_ENV = int(__import__("os").environ.get("FA2SM70_TREE_W", "0"))
+try:  # [ОДИН ГРАФ 30.10] полный граф смешанного шага (sm70/integrations/vllm_sm70/fa2sm70_fullmix.py)
+    import fa2sm70_fullmix as _FM
+except ImportError:  # pragma: no cover
+    _FM = None
 _ДЕРЕВО_БЕЗ_BRANCH = __import__("os").environ.get("FA2SM70_TREE_NOBRANCH", "0") == "1"
 # [СТРАЖ ИНДЕКСОВ, 08.09] Тот же приём, что дал первое исключение по состоянию GDN:
 # ядро-проверка запускается в потоке и потому попадает в ЗАХВАТ ГРАФА -- значит видит
@@ -896,6 +946,11 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
         num_actual_tokens = attn_metadata.num_actual_tokens
         num_accepted_tokens = attn_metadata.num_accepted_tokens
 
+        _fm = _FM.ШАГ[0] if _FM is not None else None
+        if _fm is not None:
+            return self._forward_core_fullmix(mixed_qkv, b, a, core_attn_out, attn_metadata, int(_fm[2]),
+                                              conv_state, ssm_state)
+
         # --- РЕЖИМ 'all': ПРЕФИКС-КЭШ ДЛЯ РЕКУРРЕНТНОГО СОСТОЯНИЯ (задача 194) -------------
         # Признак режима -- ненулевой mamba_block_size в метаданных. В нём индексы состояний
         # ДВУМЕРНЫЕ (запрос x блоки): состояние берётся из блока последнего ПОСЧИТАННОГО
@@ -1364,7 +1419,43 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
             core_attn_out_spec, last_recurrent_state = None, None
 
         # 2.2: Process the remaining part
-        if attn_metadata.num_prefills > 0 and mamba_all:
+        if attn_metadata.num_prefills > 0 and mamba_all and _gdn_all_varlen(attn_metadata, mamba_block_size):
+            # [ОДИН ГРАФ 30.10] РЕЖИМ 'all' БЕЗ ЦИКЛА ПО ЗАПРОСАМ (FA2SM80_GDN_ALL_VARLEN=1). Ни один кусок шага не
+            # пересекает границу блока (блок 16384, кусок <= 8192 -- почти всегда так), значит промежуточных
+            # состояний класть не нужно: один varlen-скан на все запросы. Начальное состояние -- из блока
+            # последнего посчитанного токена (_idx_read), нули -- через where (маска-индекс дала бы nonzero, то
+            # есть синхронизацию), конечное -- в блок последнего запланированного (_idx_write). Скан считает
+            # запросы независимо, поэтому выход и состояния побитно те же, что у цикла; без .to("cpu") индексов,
+            # без питон-цикла и без N-кратных запусков на слой.
+            n_ns = attn_metadata.non_spec_query_start_loc_cpu.numel() - 1
+            cu_ns = getattr(attn_metadata, "_fa2_cu_ns", None)
+            if cu_ns is None:
+                cu_ns = (non_spec_query_start_loc if non_spec_query_start_loc.numel() == n_ns + 1
+                         else non_spec_query_start_loc[: n_ns + 1])
+                try:
+                    attn_metadata._fa2_cu_ns = cu_ns     # один объект на шаг: кэш FLA по идентичности
+                except Exception:  # noqa: BLE001
+                    pass
+            _kva_gdn_dump(self, key_non_spec, value_non_spec, g_non_spec, beta_non_spec,
+                          {"qsl": attn_metadata.non_spec_query_start_loc_cpu.clone(),
+                           "ncomp": attn_metadata.num_computed_tokens_ns_cpu.clone()})
+            init_st = _чит(ssm_state, _idx_read[:n_ns]).contiguous()
+            init_st = torch.where(has_initial_state[:n_ns].view(-1, 1, 1, 1), init_st, torch.zeros_like(init_st))
+            core_attn_out_non_spec, st_fin = chunk_gated_delta_rule(
+                q=query_non_spec,
+                k=key_non_spec,
+                v=value_non_spec,
+                g=g_non_spec,
+                beta=beta_non_spec,
+                initial_state=init_st,
+                output_final_state=True,
+                cu_seqlens=cu_ns,
+                head_first=False,
+                use_qk_l2norm_in_kernel=True,
+            )
+            _пиш(ssm_state, _idx_write[:n_ns], st_fin)
+            last_recurrent_state = None
+        elif attn_metadata.num_prefills > 0 and mamba_all:
             # РЕЖИМ 'all', ПРЕФИЛЛ. Состояние обязано быть сохранено НА КАЖДОЙ ГРАНИЦЕ
             # БЛОКА, иначе следующий запрос с тем же префиксом не сможет продолжить с
             # середины -- ради этого всё и делается. Чанковый скан отдаёт только КОНЕЧНОЕ
@@ -1507,6 +1598,101 @@ class Qwen3NextGatedDeltaNet(nn.Module, MambaBase):
         else:
             core_attn_out[:num_actual_tokens] = core_attn_out_non_spec.squeeze(0)
 
+
+    def _forward_core_fullmix(self, mixed_qkv, b, a, core_attn_out, attn_metadata, Dm, conv_state, ssm_state):
+        """[ОДИН ГРАФ 30.10] Смешанный шаг полного графа (fa2sm70_fullmix), НЕ зависящий от состава: Dm -- ёмкость графа
+        по спекулятивным строкам (их раскладка -- первые k+1 токенов на строку; строки за настоящими -- нулевой длины,
+        индексы PAD), обычные строки -- все R строк в абсолютных координатах токенов (у спекулятивных и заполнителей
+        длина 0). Формы -- только из T и Dm, метаданные -- постоянные буферы (gdn_attn: упаковка шага). Те же ядра, что
+        у смешанного eager-пути: conv1d_fn и один varlen-скан (метаданные чанков на карте) по всем строкам, обновление
+        свёртки и рекуррент спекуляции; выход скана -- по маске токенов (спекулятивные пишет рекуррент)."""
+        from vllm.model_executor.layers.fla.ops import chunk as _ch
+        md = attn_metadata
+        if (md.mamba_block_size <= 0 or md.non_spec_query_start_loc is None or _ДЕРЕВО_W_ENV > 0
+                or not _ch._devmeta_вкл() or (Dm > 0 and md.spec_state_indices_tensor is None)):
+            raise RuntimeError("fullmix: нужен режим 'all', спекуляция без дерева и FA2SM80_GDN_DEVMETA=1")
+        # [ФРИЗЫ 30.10, ревизия] свёртка -- ТОЛЬКО нативная: Triton-ветка берёт batch_ptr/nums_dict построителя в
+        # прежней нумерации строк (без спекулятивных), а здесь строки -- раскладка всех R; при D > 0 она читала бы чужие
+        # последовательности. Метаданные ей не передаются (metadata=None): если нативная всё же откажет, Triton
+        # построит их из nsq (раскладка R строк), а в захвате это синхронизация -- захват сорвётся явно, а не тихо.
+        from vllm.model_executor.layers.mamba.ops import causal_conv1d as _cc
+        if not getattr(_cc, "_НАШЕ_FN", False) or getattr(_cc, "_СВЕРКА_FN", False):
+            raise RuntimeError("fullmix: нужна нативная свёртка (FA2SM70_CONV_FN_NATIVE=1, без FA2SM70_CONV_FN_CHECK)")
+        T = mixed_qkv.shape[0]
+        sst = md.spec_state_indices_tensor                    # [Dm, k+1], строки за настоящими -- PAD
+        k1 = int(sst.shape[-1]) if Dm > 0 else 1
+        Nsm = k1 * Dm
+        nss = md.non_spec_state_indices_tensor                # [R, блоки], спекулятивные и заполнители -- PAD
+        nsq = md.non_spec_query_start_loc                     # [R+1], абсолютные токены
+        bc, bl = md.block_idx_last_computed_token, md.block_idx_last_scheduled_token
+        # индексы чтения/записи SSM; PAD (-1) -> нулевой блок пула (строки нулевой длины пишут туда безвредно)
+        idx_read = nss.gather(1, bc.unsqueeze(1).long()).squeeze(1).clamp(min=0)
+        idx_write = nss.gather(1, bl.unsqueeze(1).long()).squeeze(1).clamp(min=0)
+        conv_weights = self.conv1d.weight.view(self.conv1d.weight.size(0), self.conv1d.weight.size(2))
+        nacc = md.num_accepted_tokens
+        # 1. причинная свёртка обычных строк -- по всему отрезку [0, T) (ядро идёт по строкам; нулевые и хвост
+        #    пропускает); ПЕРВОЙ: ниже обновление свёртки спекуляции правит mixed_qkv на месте
+        x_ns = causal_conv1d_fn(
+            mixed_qkv[:T].transpose(0, 1), conv_weights, self.conv1d.bias, activation=self.activation,
+            conv_states=conv_state, has_initial_state=md.has_initial_state, cache_indices=nss,
+            block_idx_first_scheduled_token=md.block_idx_first_scheduled_token,
+            block_idx_last_scheduled_token=bl, initial_state_idx=bc,
+            num_computed_tokens=md.num_computed_tokens_ns, block_size_to_align=md.mamba_block_size,
+            query_start_loc=nsq, metadata=None,
+        ).transpose(0, 1)
+        #    спекуляция -- обновлением на Dm строк (нулевые строки ядро пропускает, PAD не пишет состояние)
+        x_spec = None
+        if Dm > 0:
+            x_spec = mixed_qkv[:Nsm]
+            _кб, _кч, _кз = md.spec_conv_блоки, md.spec_conv_чт, md.spec_conv_зап
+            if (_кб is not None and _кч is not None and _кз is not None
+                    and _кб.shape[0] >= Dm and _кч.shape[0] >= Dm and _кз.shape[0] >= Dm):
+                x_spec = causal_conv1d_update(
+                    x_spec, conv_state, conv_weights, self.conv1d.bias, self.activation,
+                    conv_state_indices=_кб[:Dm], num_accepted_tokens=nacc,
+                    query_start_loc=md.spec_query_start_loc, max_query_len=k1,
+                    block_idx_last_scheduled_token=_кз[:Dm], initial_state_idx=_кч[:Dm], validate_data=False)
+            else:
+                x_spec = causal_conv1d_update(
+                    x_spec, conv_state, conv_weights, self.conv1d.bias, self.activation,
+                    conv_state_indices=sst[:, 0], num_accepted_tokens=nacc,
+                    query_start_loc=md.spec_query_start_loc, max_query_len=k1, validate_data=False)
+        q_n, k_n, v_n = self.rearrange_mixed_qkv(x_ns)
+        g, beta = fused_gdn_gating(self.A_log, a[:T], b[:T], self.dt_bias)
+        # маска токенов обычных строк: от начала первой обычной строки (= (k+1)D на карте)
+        tok = torch.arange(T, device=mixed_qkv.device)
+        мн = (tok >= nsq[0]).view(-1, 1, 1)
+        # 2. рекуррент спекуляции -- выход прямо в core_attn_out (только токены настоящих строк)
+        if Dm > 0:
+            q_s, k_s, v_s = self.rearrange_mixed_qkv(
+                x_spec, contig=not (_ДЕКОД_ВИДОМ and QWEN3_NEXT_FUSED_SIGMOID_GATING_ENABLED))
+            _out = None
+            if QWEN3_NEXT_FUSED_SIGMOID_GATING_ENABLED:
+                _out = (core_attn_out[:Nsm].unsqueeze(0)
+                        if (_ДЕКОД_ВИДОМ and core_attn_out.is_contiguous()
+                            and _принимает_out(fused_sigmoid_gating_delta_rule_update)) else None)
+                o_s, _ = fused_sigmoid_gating_delta_rule_update(
+                    **({"out": _out} if _out is not None else {}),
+                    A_log=self.A_log, a=a[:Nsm], b=b[:Nsm], dt_bias=self.dt_bias, q=q_s, k=k_s, v=v_s,
+                    initial_state=ssm_state, inplace_final_state=True, cu_seqlens=md.spec_query_start_loc,
+                    ssm_state_indices=sst, num_accepted_tokens=self._дерево_ssm_nacc(md, nacc),
+                    use_qk_l2norm_in_kernel=True, branch_at=0)
+            else:
+                o_s, _ = fused_recurrent_gated_delta_rule(
+                    q=q_s, k=k_s, v=v_s, g=g[:, :Nsm], beta=beta[:, :Nsm], initial_state=ssm_state,
+                    inplace_final_state=True, cu_seqlens=md.spec_query_start_loc, ssm_state_indices=sst,
+                    num_accepted_tokens=nacc, use_qk_l2norm_in_kernel=True)
+            if _out is None or o_s.data_ptr() != core_attn_out.data_ptr():
+                core_attn_out[:Nsm] = torch.where(мн[:Nsm], core_attn_out[:Nsm], o_s.squeeze(0))
+        # 3. один varlen-скан по всем строкам: начальное состояние -- из блока последнего посчитанного (нули без
+        #    истории), конечное -- в блок последнего запланированного (кусок не пересекает границу блока: планировщик)
+        init = _чит(ssm_state, idx_read).contiguous()
+        init = torch.where(md.has_initial_state.view(-1, 1, 1, 1), init, torch.zeros_like(init))
+        o_n, st_fin = chunk_gated_delta_rule(
+            q=q_n, k=k_n, v=v_n, g=g, beta=beta, initial_state=init, output_final_state=True,
+            cu_seqlens=nsq, head_first=False, use_qk_l2norm_in_kernel=True)
+        _пиш(ssm_state, idx_write, st_fin)
+        core_attn_out[:T] = torch.where(мн, o_n.squeeze(0), core_attn_out[:T])
 
 class Qwen3NextAttention(nn.Module):
     def __init__(
@@ -2178,12 +2364,44 @@ def gdn_attention_core(
     """
     forward_context: ForwardContext = get_forward_context()
     self = forward_context.no_compile_layers[layer_name]
+    пул = _пул_gdn(forward_context, layer_name)
+    if пул is not None:
+        with torch.cuda.use_mem_pool(пул):
+            self._forward_core(mixed_qkv=mixed_qkv, b=b, a=a, core_attn_out=core_attn_out)
+        return
     self._forward_core(
         mixed_qkv=mixed_qkv,
         b=b,
         a=a,
         core_attn_out=core_attn_out,
     )
+
+
+# [ФРИЗЫ 30.10] ОТДЕЛЬНЫЙ ПУЛ ПАМЯТИ ДЛЯ ВРЕМЕННЫХ ТЕНЗОРОВ ЯДРА GDN НА ШАГАХ С ПРЕФИЛЛОМ (FA2SM70_GDN_POOL=1). Аудит
+# распределителя окна 23: промежуточные FLA (wy_fast, fwd_h, chunk_o, l2norm, cumsum), rearrange q/k/v и выход свёртки --
+# ~5-8 ГБ оборота за смешанный шаг и ~110 новых отображений сегментов за 20 шагов (с повторами выделения рядом). Формы у
+# всех 48 слоёв GDN шага одинаковы: в своём пуле блоки слоя L тут же берёт слой L+1, основной пул ими не дробится.
+# Выход ядра (core_attn_out) и состояния (кэш) -- готовые тензоры вызывающего: из пула ничего не утекает, кроме
+# кэшей метаданных шага (освобождаются вместе с ними). В захвате графа и на шагах без префилла -- прежний путь.
+# ВНИМАНИЕ (ревизия): свободные сегменты живого MemPool не отдаются empty_cache() -- пик временных GDN остаётся
+# зарезервированным в пуле навсегда и недоступен основному пулу; при тесном KV включать только после замера памяти.
+_GDN_ПУЛ_ВКЛ = os.environ.get("FA2SM70_GDN_POOL", "0") == "1"
+_GDN_ПУЛЫ: dict = {}
+
+
+def _пул_gdn(forward_context, layer_name):
+    if not _GDN_ПУЛ_ВКЛ or torch.cuda.is_current_stream_capturing():
+        return None
+    md = forward_context.attn_metadata
+    if isinstance(md, dict):
+        md = md.get(layer_name)
+    if md is None or not getattr(md, "num_prefills", 0):
+        return None
+    dev = torch.cuda.current_device()
+    п = _GDN_ПУЛЫ.get(dev)
+    if п is None:
+        п = _GDN_ПУЛЫ[dev] = torch.cuda.MemPool()
+    return п
 
 
 def gdn_attention_core_fake(

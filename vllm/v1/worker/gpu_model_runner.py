@@ -115,6 +115,10 @@ from vllm.v1.attention.backend import (
     MultipleOf,
 )
 from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadataBuilder
+try:  # [ОДИН ГРАФ 30.10] полный граф смешанного шага с Clef (sm70/integrations/vllm_sm70/fa2sm70_fullmix.py)
+    import fa2sm70_fullmix as _FM
+except ImportError:  # pragma: no cover
+    _FM = None
 from vllm.v1.attention.backends.utils import (
     create_fast_prefill_custom_backend,
     get_dcp_local_seq_lens,
@@ -257,6 +261,30 @@ _ДЕРЕВО_ТОЛЬКО_A = os.environ.get("FA2SM70_TREE_ONLY_A", "0") == "1"
 # завершённых запросов) -- иначе индексы хозяйского массива и строк вывода
 # расходятся, и приёмка уедет не тому запросу.
 _БЕЗ_СИНХРО_ПРИЁМКИ = os.environ.get("FA2SM70_NOSYNC_ACC", "0") == "1"
+# [БЕЗ ХОСТА 30.10] FA2SM70_NOSYNC_ACC2=1: приёмка остаётся на устройстве и при СМЕНЕ состава батча (поток записей
+# Clef меняет его почти каждый шаг, и прежний рычаг выше почти не срабатывал). В начале следующего шага значения
+# переносятся по номерам запросов -- как vLLM переносит prev_sampled_token_ids при асинхронном планировании: новые
+# запросы получают 1, продолжающие -- свою приёмку. Хостовая копия в режиме mamba 'all' больше никому не нужна
+# ('align' читает её в pre/postprocess_mamba -- там путь прежний). Профиль окна 12: .cpu() здесь держал главный
+# поток 21-90 мс на каждом смешанном шаге, и CPU не готовил шаг N+1, пока GPU считал шаг N.
+# FA2SM70_NOSYNC_FILE=<файл>: уровень из файла раз в секунду (A/B в одном экземпляре): "0" -- выкл, "1".."9" -- вкл.
+_БЕЗ_ХОСТА_ПРИЁМКА = os.environ.get("FA2SM70_NOSYNC_ACC2", "0") == "1"
+_БЕЗ_ХОСТА_ФАЙЛ = os.environ.get("FA2SM70_NOSYNC_FILE", "")
+_БЕЗ_ХОСТА_ПЕРЕКЛ = {"t": 0.0, "ур": 1 if _БЕЗ_ХОСТА_ПРИЁМКА else 0}
+
+
+def _без_хоста_уровень() -> int:
+    if _БЕЗ_ХОСТА_ФАЙЛ:
+        сейчас = time.monotonic()
+        if сейчас - _БЕЗ_ХОСТА_ПЕРЕКЛ["t"] >= 1.0:
+            _БЕЗ_ХОСТА_ПЕРЕКЛ["t"] = сейчас
+            try:
+                with open(_БЕЗ_ХОСТА_ФАЙЛ) as f:
+                    v = f.read(1)
+                _БЕЗ_ХОСТА_ПЕРЕКЛ["ур"] = int(v) if v.isdigit() else 0
+            except OSError:
+                _БЕЗ_ХОСТА_ПЕРЕКЛ["ур"] = 1 if _БЕЗ_ХОСТА_ПРИЁМКА else 0
+    return _БЕЗ_ХОСТА_ПЕРЕКЛ["ур"]
 # [ВЫБОРКА ДЛЯ ПЕРЕРАНЖИРОВЩИКА, 07.09] Метка -- argmax ЦЕЛИ на позиции 0; вход --
 # скрытое состояние черновика и его 16 кандидатов. Всё это уже посчитано, платы нет.
 _ВЫБОРКА_ФАЙЛ = os.environ.get("FA2SM70_RERANK_DUMP", "")
@@ -325,6 +353,44 @@ _ПОДРЕЗ_МиБ = int(os.environ.get("FA2SM70_MEM_TRIM_MB", "0"))
 # Порог по числу токенов шага: ниже него распределитель не опрашивается вовсе. Декодный шаг со
 # спекуляцией это (k+1)*запросов, то есть десятки; префилльный чанк -- тысячи.
 _ПОДРЕЗ_ТОКЕНОВ = int(os.environ.get("FA2SM70_MEM_TRIM_MINTOK", "512"))
+# [ЗАГРУЗКА ВЕСОВ 30.10] На A100 подрезка срабатывает почти на КАЖДОМ шаге > 512 токенов: Clef снижает порог
+# 400 -> 64 МиБ (свой след), а держанное-свободное после большого шага ~2 ГБ. Бой 30.10 00:25-02:16: 10176 подрезок
+# на ранг, по 2.0-2.4 ГБ; каждая -- синхронизация карты + снятие отображений expandable_segments, после чего шаг
+# заново отображает те же ~2 ГБ под свои буферы. FA2SM70_MEM_TRIM_MODE:
+#   always   -- как было (умолчание);
+#   off      -- не подрезать;
+#   nodecode -- только на шагах, где никто не декодирует (синхронизация не задерживает поток токенов чата).
+# FA2SM70_MEM_TRIM_FILE=<файл> -- то же слово из файла, перечитывается раз в секунду (A/B в одном экземпляре;
+# рангам согласие не нужно: подрезка не меняет вычислений).
+_ПОДРЕЗ_РЕЖИМ = os.environ.get("FA2SM70_MEM_TRIM_MODE", "always").strip().lower()
+_ПОДРЕЗ_ФАЙЛ = os.environ.get("FA2SM70_MEM_TRIM_FILE", "")
+_ПОДРЕЗ_ПЕРЕКЛ = {"t": 0.0, "режим": _ПОДРЕЗ_РЕЖИМ}
+
+
+def _подрез_разрешён(scheduler_output) -> bool:
+    р = _ПОДРЕЗ_ПЕРЕКЛ["режим"]
+    # [БЕЗ ХОСТА 30.10] уровень >= 2 в FA2SM70_NOSYNC_FILE: без подрезки -- empty_cache ждёт карту, и при снятых
+    # синхронизациях приёмки/обмена/приёма Clef она стала бы следующей точкой, где CPU ждёт конца прошлого шага
+    if _без_хоста_уровень() >= 2:
+        return False
+    if _ПОДРЕЗ_ФАЙЛ:
+        сейчас = time.monotonic()
+        if сейчас - _ПОДРЕЗ_ПЕРЕКЛ["t"] >= 1.0:
+            _ПОДРЕЗ_ПЕРЕКЛ["t"] = сейчас
+            try:
+                with open(_ПОДРЕЗ_ФАЙЛ) as f:
+                    v = f.read(16).strip().lower()
+            except OSError:
+                v = _ПОДРЕЗ_РЕЖИМ
+            _ПОДРЕЗ_ПЕРЕКЛ["режим"] = р = v if v in ("always", "off", "nodecode") else _ПОДРЕЗ_РЕЖИМ
+    if р == "off":
+        return False
+    if р == "nodecode":
+        spec = getattr(scheduler_output, "scheduled_spec_decode_tokens", None) or {}
+        for rid, n in scheduler_output.num_scheduled_tokens.items():
+            if n <= 1 + len(spec.get(rid, ())):
+                return False
+    return True
 
 AttnMetadataDict: TypeAlias = dict[str, AttentionMetadata]
 # list when ubatching is enabled
@@ -1372,9 +1438,16 @@ class GPUModelRunner(
                      and not getattr(scheduler_output, "finished_req_ids", None))
         if _БЕЗ_СИНХРО_ПРИЁМКИ and _стабилен:
             self._приёмка_gpu = num_accepted_tokens
+            self._приёмка_ids = None
+            num_accepted_tokens = None
+        elif self.cache_config.mamba_cache_mode != "align" and _без_хоста_уровень() >= 1:
+            # строка i вывода = input_batch.req_ids[i] этого шага; перенос -- в начале следующего
+            self._приёмка_gpu = num_accepted_tokens
+            self._приёмка_ids = list(self.input_batch.req_ids[:num_accepted_tokens.shape[0]])
             num_accepted_tokens = None
         else:
             self._приёмка_gpu = None
+            self._приёмка_ids = None
             num_accepted_tokens = num_accepted_tokens.cpu().numpy()
             for i, num_tokens in enumerate(num_accepted_tokens):
                 self.input_batch.num_accepted_tokens_cpu[i] = num_tokens
@@ -2000,7 +2073,24 @@ class GPUModelRunner(
         _тм1 = time.perf_counter()
         if use_spec_decode:
             _пг = getattr(self, "_приёмка_gpu", None)
-            if _пг is not None and _пг.numel() >= num_reqs:
+            _ид = getattr(self, "_приёмка_ids", None)
+            if _пг is not None and _ид is not None:
+                # перенос по номерам запросов: без хоста и без синхронизации (индексы -- из обычной памяти,
+                # non_blocking: копия забирает данные до возврата)
+                _поз = {r: j for j, r in enumerate(_ид)}
+                _ист = np.fromiter((_поз.get(r, -1) for r in self.input_batch.req_ids[:num_reqs]),
+                                   dtype=np.int64, count=num_reqs)
+                _цель = self.num_accepted_tokens.gpu
+                if num_reqs and _пг.numel() == 0:
+                    _цель[:num_reqs].fill_(1)
+                elif num_reqs:
+                    _и = torch.from_numpy(_ист).to(_цель.device, non_blocking=True)
+                    _цель[:num_reqs].copy_(torch.where(_и >= 0, _пг[_и.clamp(min=0)],
+                                                       torch.ones_like(_и)).to(_цель.dtype))
+                _цель[num_reqs:].fill_(1)
+                self._приёмка_gpu = None
+                self._приёмка_ids = None
+            elif _пг is not None and _пг.numel() >= num_reqs:
                 _цель = self.num_accepted_tokens.gpu
                 _цель[:num_reqs].copy_(_пг[:num_reqs].to(_цель.dtype))
                 _цель[num_reqs:].fill_(1)
@@ -3829,6 +3919,31 @@ class GPUModelRunner(
             **model_kwargs,
         )
 
+    def _fullmix_план(self, scheduler_output, num_tokens, num_reqs, nst):
+        """[ОДИН ГРАФ 30.10] (T, D) для полного графа смешанного шага или None -- по хостовым массивам шага."""
+        if _FM.ЧЕРНОВИКИ[0] is None:
+            _FM.ЧЕРНОВИКИ[0] = self.num_decode_draft_tokens.gpu
+            _FM.K1[0] = self.uniform_decode_query_len
+        if not _FM.вкл_сейчас() or num_reqs <= 0:
+            return None
+        k = int(self.num_spec_tokens or 0)
+        if scheduler_output.scheduled_spec_decode_tokens:
+            ndraft = self.num_decode_draft_tokens.np[:num_reqs]
+        else:
+            ndraft = np.full(num_reqs, -1, dtype=np.int32)
+        Bm = getattr(self, "_fullmix_блок_mamba", None)
+        if Bm is None:
+            Bm = 0
+            if self.cache_config.mamba_cache_mode == "all":
+                for g in self.kv_cache_config.kv_cache_groups:
+                    if isinstance(g.kv_cache_spec, MambaSpec):
+                        Bm = int(g.kv_cache_spec.block_size)
+                        break
+            self._fullmix_блок_mamba = Bm
+        return _FM.план(num_tokens, num_reqs, nst, ndraft, self.input_batch.num_computed_tokens_cpu[:num_reqs],
+                        k, self.scheduler_config.max_num_seqs, Bm,
+                        lambda T, D: self.cudagraph_dispatcher.dispatch_fullmix(T, D) is not None)
+
     def _fa2sm70_ne_odnorodnyj(self, scheduler_output, num_reqs, max_num_scheduled_tokens):
         """[18.10, ФАЗЗИНГ 14.10 gdnmeta, находка 2] FA2SM70_UNIFORM_PREFILL_FIX=1.
 
@@ -3890,6 +4005,7 @@ class GPUModelRunner(
         force_num_active_loras: int | None = None,
         num_encoder_reqs: int = 0,
         force_has_clef: bool | None = None,
+        fullmix_D: int | None = None,
     ) -> tuple[
         CUDAGraphMode,
         BatchDescriptor,
@@ -3917,6 +4033,21 @@ class GPUModelRunner(
             else len(self.input_batch.lora_id_to_lora_request)
         )
         has_lora = num_active_loras > 0 if force_has_lora is None else force_has_lora
+
+        # [ОДИН ГРАФ 30.10] шаг с Clef под полный граф смешанного шага: ключ (T, D) (fa2sm70_fullmix). В фиктивном
+        # проходе захвата D приходит явно; в бою -- из плана шага (раскладка, границы блоков, наличие графа).
+        self._fullmix_шаг = None
+        if (force_has_clef and not force_eager and _FM is not None and _FM.ВКЛ
+                and self.vllm_config.parallel_config.data_parallel_size == 1):
+            _fm = None
+            if fullmix_D is not None:
+                _fm = (num_tokens, int(fullmix_D))
+            else:
+                _fm = getattr(self, "_fullmix_кандидат", None)
+            _bd = self.cudagraph_dispatcher.dispatch_fullmix(*_fm) if _fm is not None else None
+            if _bd is not None:
+                self._fullmix_шаг = (_fm[0], _fm[1], int(_bd.spec_rows))
+                return CUDAGraphMode.FULL, _bd, False, None, None
 
         num_tokens_padded = self._pad_for_sequence_parallelism(num_tokens)
         dispatch_cudagraph = (
@@ -4131,6 +4262,9 @@ class GPUModelRunner(
         scheduler_output: "SchedulerOutput",
         intermediate_tensors: IntermediateTensors | None = None,
     ) -> ModelRunnerOutput | AsyncModelRunnerOutput | IntermediateTensors | None:
+        if _FM is not None:
+            # [ФРИЗЫ 30.10] файлы-переключатели режима (граф/полный граф/eager) -- одно значение на шаг на всех рангах TP
+            _FM.шаг_режима()
         if _ФАЗА_ШАГА_N:
             # ПРОМЕЖУТОК МЕЖДУ ШАГАМИ: воркер простаивает, работает движок/планировщик.
             _т = time.perf_counter()
@@ -4160,7 +4294,7 @@ class GPUModelRunner(
             # Лечение: отсекать по ОБЩЕМУ числу токенов шага (целое из планировщика, дешевле
             # некуда), и только потом трогать распределитель.
             _всего = getattr(scheduler_output, "total_num_scheduled_tokens", 0)
-            if _всего > _ПОДРЕЗ_ТОКЕНОВ:
+            if _всего > _ПОДРЕЗ_ТОКЕНОВ and _подрез_разрешён(scheduler_output):
                 _дер = torch.cuda.memory_reserved() - torch.cuda.memory_allocated()
                 if _дер > _ПОДРЕЗ_МиБ * 2 ** 20:
                     torch.cuda.empty_cache()
@@ -4254,6 +4388,10 @@ class GPUModelRunner(
                     scheduler_output.num_common_prefix_blocks,
                 )
 
+            # [ОДИН ГРАФ 30.10] годится ли шаг под полный граф смешанного шага (решает _determine_..., если шаг с Clef)
+            self._fullmix_кандидат = (
+                self._fullmix_план(scheduler_output, num_tokens_unpadded, num_reqs, num_scheduled_tokens_np)
+                if (_FM is not None and _FM.ВКЛ and cascade_attn_prefix_lens is None) else None)
             (
                 cudagraph_mode,
                 batch_desc,
@@ -4270,6 +4408,12 @@ class GPUModelRunner(
                 force_uniform_decode=self._fa2sm70_ne_odnorodnyj(
                     scheduler_output, num_reqs, max_num_scheduled_tokens),
             )
+            self._fullmix_кандидат = None
+            if (getattr(self, "_fullmix_шаг", None) is not None and cudagraph_mode == CUDAGraphMode.FULL
+                    and not scheduler_output.scheduled_spec_decode_tokens):
+                # [ОДИН ГРАФ 30.10] граф берёт маску спекулятивных строк из черновиков на карте -- без спекуляции все -1
+                self.num_decode_draft_tokens.np[:].fill(-1)
+                self.num_decode_draft_tokens.copy_to_gpu()
 
             logger.debug(
                 "Running batch with cudagraph_mode: %s, batch_descriptor: %s, "
@@ -4342,6 +4486,8 @@ class GPUModelRunner(
             if _ФАЗА_ШАГА_N:
                 self._фаза_шага("  слоты по слоям", time.perf_counter() - _тс)
             _тм = time.perf_counter()
+            if _FM is not None:
+                _FM.ШАГ[0] = getattr(self, "_fullmix_шаг", None) if cudagraph_mode == CUDAGraphMode.FULL else None
             attn_metadata, spec_decode_common_attn_metadata = (
                 self._build_attention_metadata(
                     num_tokens=num_tokens_unpadded,
@@ -4410,13 +4556,17 @@ class GPUModelRunner(
                 self._фаза_шага("метаданные+слоты до прохода",
                                 _тф - self._t_после_подготовки)
             with self._фаза_карты("проход цели"):
-                model_output = self._model_forward(
-                    input_ids=input_ids,
-                    positions=positions,
-                    intermediate_tensors=intermediate_tensors,
-                    inputs_embeds=inputs_embeds,
-                    **model_kwargs,
-                )
+                try:
+                    model_output = self._model_forward(
+                        input_ids=input_ids,
+                        positions=positions,
+                        intermediate_tensors=intermediate_tensors,
+                        inputs_embeds=inputs_embeds,
+                        **model_kwargs,
+                    )
+                finally:
+                    if _FM is not None:
+                        _FM.ШАГ[0] = None
             if _ФАЗА_ШАГА_N:
                 if not _ФАЗА_БЕЗ_СИНХР:
                     torch.cuda.synchronize()
@@ -5919,6 +6069,7 @@ class GPUModelRunner(
         is_graph_capturing: bool = False,
         num_active_loras: int = 0,
         has_clef: bool = False,
+        fullmix_D: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Run a dummy forward pass to warm up/profile run or capture the
@@ -5975,7 +6126,16 @@ class GPUModelRunner(
         # has num_tokens in total.
         assert num_tokens <= self.scheduler_config.max_num_batched_tokens
         max_num_reqs = self.scheduler_config.max_num_seqs
-        if create_mixed_batch:
+        if fullmix_D is not None:
+            # [ОДИН ГРАФ 30.10] D строк спекулятивного декода по k+1 токенов + один кусок префилла на остаток
+            if _FM is not None and _FM.ЧЕРНОВИКИ[0] is None:
+                _FM.ЧЕРНОВИКИ[0] = self.num_decode_draft_tokens.gpu
+                _FM.K1[0] = self.uniform_decode_query_len
+            _k1 = self.uniform_decode_query_len
+            num_reqs = int(fullmix_D) + 1
+            num_scheduled_tokens_list = [_k1] * int(fullmix_D) + [num_tokens - _k1 * int(fullmix_D)]
+            max_query_len = max(num_scheduled_tokens_list)
+        elif create_mixed_batch:
             assert not uniform_decode
             # Create mixed batch:
             # first half decode tokens, second half one prefill
@@ -6029,6 +6189,7 @@ class GPUModelRunner(
                 # need to capture graphs for specific num_active_loras counts
                 force_num_active_loras=num_active_loras,
                 force_has_clef=has_clef,
+                fullmix_D=fullmix_D,
             )
         )
 
@@ -6044,6 +6205,8 @@ class GPUModelRunner(
         num_reqs_padded = (
             batch_desc.num_reqs if batch_desc.num_reqs is not None else num_reqs
         )
+        if fullmix_D is not None:
+            num_reqs_padded = max_num_reqs     # [ОДИН ГРАФ 30.10] и в прогреве: строки до R, как в графе
         ubatch_slices, ubatch_slices_padded = maybe_create_ubatch_slices(
             should_ubatch,
             num_scheduled_tokens,
@@ -6068,7 +6231,38 @@ class GPUModelRunner(
 
         # If force_attention is True, we always capture attention. Otherwise,
         # it only happens for cudagraph_runtime_mode=FULL.
-        if force_attention or cudagraph_runtime_mode == CUDAGraphMode.FULL:
+        if fullmix_D is not None and (force_attention or cudagraph_runtime_mode == CUDAGraphMode.FULL):
+            # [ОДИН ГРАФ 30.10] метаданные смешанного шага -- обычным построением (не захватным: GDN строит смешанную
+            # ветку и раскладывает её по постоянным буферам), спекулятивные строки -- первыми, строки до R -- нулевые
+            _D = int(fullmix_D)
+            _k = int(self.num_spec_tokens or 0)
+            self.seq_lens.np[:_D] = _k + 1 + 8
+            self.seq_lens.np[_D:num_reqs] = num_scheduled_tokens_list[-1]
+            self.seq_lens.np[num_reqs:] = 0
+            self.seq_lens.copy_to_gpu()
+            cum_num_tokens, _ = self._get_cumsum_and_arange(num_scheduled_tokens)
+            self.query_start_loc.np[0] = 0
+            self.query_start_loc.np[1 : num_reqs + 1] = cum_num_tokens
+            self.query_start_loc.np[num_reqs + 1 :].fill(cum_num_tokens[-1])
+            self.query_start_loc.copy_to_gpu()
+            self.num_decode_draft_tokens.np[:_D] = _k
+            self.num_decode_draft_tokens.np[_D:].fill(-1)
+            self.num_decode_draft_tokens.copy_to_gpu()
+            self.num_accepted_tokens.gpu.fill_(1)
+            if _FM is not None:
+                _FM.ШАГ[0] = (num_tokens, _D, _D)
+            attn_metadata, _ = self._build_attention_metadata(
+                num_tokens=num_tokens_unpadded,
+                num_reqs=num_reqs,
+                max_query_len=max_query_len,
+                num_tokens_padded=num_tokens,
+                num_reqs_padded=num_reqs_padded,
+                ubatch_slices=ubatch_slices_padded,
+                use_spec_decode=_k > 0,
+                for_cudagraph_capture=False,
+                slot_mappings=slot_mappings_by_group,
+            )
+        elif force_attention or cudagraph_runtime_mode == CUDAGraphMode.FULL:
             if create_mixed_batch:
                 # In the mixed batch mode (used for FI warmup), we use
                 # shorter sequence lengths to run faster.
@@ -6163,13 +6357,17 @@ class GPUModelRunner(
                     slot_mapping=slot_mappings,
                 ),
             ):
-                outputs = self.model(
-                    input_ids=input_ids,
-                    positions=positions,
-                    intermediate_tensors=intermediate_tensors,
-                    inputs_embeds=inputs_embeds,
-                    **model_kwargs,
-                )
+                try:
+                    outputs = self.model(
+                        input_ids=input_ids,
+                        positions=positions,
+                        intermediate_tensors=intermediate_tensors,
+                        inputs_embeds=inputs_embeds,
+                        **model_kwargs,
+                    )
+                finally:
+                    if _FM is not None:
+                        _FM.ШАГ[0] = None
 
             if self.use_aux_hidden_state_outputs:
                 hidden_states, _ = outputs
@@ -6521,6 +6719,12 @@ class GPUModelRunner(
                 if should_freeze:
                     gc.unfreeze()
                     gc.collect()
+                # [ПАУЗЫ 30.10] FA2SM80_GC_FREEZE=1: после захвата куча процесса (модули, кэши компиляции, графы)
+                # замораживается НАВСЕГДА -- полная сборка поколения 2 больше её не обходит (кандидат на паузы
+                # 2.4-2.7 с окна 14b; журнал -- FA2SM80_GC_LOG_MS в sitecustomize).
+                if os.environ.get("FA2SM80_GC_FREEZE", "0") == "1":
+                    gc.freeze()
+                    logger.info("[fa2_sm70 GC] куча воркера заморожена после захвата: %d объектов", gc.get_freeze_count())
 
         # Trigger CUDA graph capture for specific shapes.
         # Capture the large shapes first so that the smaller shapes
@@ -6631,8 +6835,15 @@ class GPUModelRunner(
                     allow_microbatching=allow_microbatching,
                     num_active_loras=num_active_loras,
                     has_clef=batch_desc.has_clef,
+                    fullmix_D=(batch_desc.spec_rows if batch_desc.spec_rows >= 0 else None),
                 )
 
+            # [ОДИН ГРАФ 30.10] полный граф смешанного шага: пул графа частный, а прогрев оставил память в общем кэше
+            # распределителя -- отдаём её драйверу, иначе захват крупного шага упирается в OOM (окно 17)
+            _fm_cap = batch_desc.spec_rows >= 0
+            if _fm_cap:
+                torch.cuda.empty_cache()
+                _св0 = torch.cuda.mem_get_info()[0]
             # Capture run
             dummy_run(
                 num_tokens,
@@ -6641,7 +6852,15 @@ class GPUModelRunner(
                 num_active_loras=num_active_loras,
                 is_graph_capturing=True,
                 has_clef=batch_desc.has_clef,
+                fullmix_D=(batch_desc.spec_rows if batch_desc.spec_rows >= 0 else None),
             )
+            if _fm_cap:
+                self._fm_захвачено = getattr(self, "_fm_захвачено", 0) + 1
+                if self._fm_захвачено <= 3 or self._fm_захвачено % 20 == 0:
+                    logger.info("[fa2_sm70 FULLMIX] граф T=%d D=%d захвачен: пул +%.0f МиБ, свободно %.0f МиБ (графов %d)",
+                                num_tokens, batch_desc.spec_rows,
+                                (_св0 - torch.cuda.mem_get_info()[0]) / 2**20, torch.cuda.mem_get_info()[0] / 2**20,
+                                self._fm_захвачено)
         self.maybe_remove_all_loras(self.lora_config)
 
     def initialize_attn_backend(self, kv_cache_config: KVCacheConfig) -> None:
@@ -7590,3 +7809,129 @@ class EncoderTimingStats:
             "encoder_forward_time": self.encoder_forward_time,
             "num_encoder_calls": self.num_encoder_calls,
         }
+
+
+# [ФРИЗЫ 30.10] АУДИТ СМЕШАННЫХ ШАГОВ (только для A/B, по умолчанию выключен). Трасса окна 20 без стеков показала в
+# каждом смешанном шаге ~12 синхронизаций с картой (nonzero, .to("cpu"), item) и ~3600 выделений через кэширующий
+# распределитель (у декодного шага в графе -- 65); места вызова по трассе не восстановить. Здесь -- точные стеки:
+#   FA2SM70_SYNC_AUDIT=<путь>  -- torch.cuda.set_sync_debug_mode("warn") на время смешанного шага (execute_model +
+#                                 sample_tokens), стек каждой синхронизации -> счётчик по месту; json раз в 30 с;
+#   FA2SM70_ALLOC_AUDIT=<путь> -- история распределителя со стеками на FA2SM70_ALLOC_AUDIT_STEPS смешанных шагов,
+#                                 затем снимок (pickle) и счётчики повторов выделения на шаг.
+# Смешанный шаг -- в шаге есть кусок prefill (запрос планирует больше 1 + черновики токенов).
+_АУДИТ_СИНХ = _os.environ.get("FA2SM70_SYNC_AUDIT", "")
+# FA2SM70_SYNC_AUDIT_FILE=<файл>: аудит синхронизаций только пока в файле "1" (раз в секунду) -- чтобы не мешать замерам
+_АУДИТ_СИНХ_ФАЙЛ = _os.environ.get("FA2SM70_SYNC_AUDIT_FILE", "")
+# FA2SM70_SYNC_AUDIT_ALL=1: аудит и шагов без префилла (декод: n-граммы черновика, выход шага и т. п.)
+_АУДИТ_ВСЕ = _os.environ.get("FA2SM70_SYNC_AUDIT_ALL", "0") == "1"
+_АУДИТ_ПАМ = _os.environ.get("FA2SM70_ALLOC_AUDIT", "")
+if _АУДИТ_СИНХ or _АУДИТ_ПАМ:
+    import collections as _collections
+    import json as _json
+    import traceback as _traceback
+    import warnings as _warnings
+
+    _АУД = {"стеки": _collections.Counter(), "смешанных": 0, "прочих": 0, "t": time.monotonic(), "в_шаге": False,
+            "пам_шагов": 0, "пам_готово": False, "повторы": []}
+    _АУД_ШАГОВ = int(_os.environ.get("FA2SM70_ALLOC_AUDIT_STEPS", "20"))
+    _исх_showwarning = _warnings.showwarning
+
+    def _ауд_showwarning(message, category, filename, lineno, file=None, line=None):
+        if "synchroniz" in str(message):
+            st = _traceback.extract_stack(limit=24)[:-1]
+            ключ = " <- ".join(f"{_os.path.basename(f.filename)}:{f.lineno}:{f.name}" for f in reversed(st[-10:]))
+            _АУД["стеки"][("смеш" if _АУД["в_шаге"] else ("декод" if _АУДИТ_ВСЕ else "прочее")) + " | " + ключ] += 1
+            return
+        _исх_showwarning(message, category, filename, lineno, file, line)
+
+    _warnings.showwarning = _ауд_showwarning
+    _warnings.filterwarnings("always", message=".*synchroniz.*")
+
+    def _ауд_ранг():
+        try:
+            return torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+        except Exception:  # noqa: BLE001
+            return 0
+
+    def _ауд_смешанный(so) -> bool:
+        spec = getattr(so, "scheduled_spec_decode_tokens", {}) or {}
+        return any(n > 1 + len(spec.get(r, ())) for r, n in so.num_scheduled_tokens.items())
+
+    def _ауд_сброс():
+        if _АУДИТ_СИНХ and time.monotonic() - _АУД["t"] >= 30.0:
+            _АУД["t"] = time.monotonic()
+            try:
+                with open(f"{_АУДИТ_СИНХ}.rank{_ауд_ранг()}.json", "w") as f:
+                    _json.dump({"смешанных_шагов": _АУД["смешанных"], "прочих_шагов": _АУД["прочих"],
+                                "синхронизации": _АУД["стеки"].most_common(200)}, f, ensure_ascii=False, indent=1)
+            except OSError:
+                pass
+
+    _исх_execute_model = GPUModelRunner.execute_model
+    _исх_sample_tokens = getattr(GPUModelRunner, "sample_tokens", None)
+
+    def _ауд_синх_вкл() -> bool:
+        if not _АУДИТ_СИНХ_ФАЙЛ:
+            return True
+        t = time.monotonic()
+        if t - _АУД.get("фт", 0.0) >= 1.0:
+            _АУД["фт"] = t
+            try:
+                with open(_АУДИТ_СИНХ_ФАЙЛ) as f:
+                    _АУД["фв"] = f.read(1) == "1"
+            except OSError:
+                _АУД["фв"] = False
+        return _АУД.get("фв", False)
+
+    def _ауд_вход(смеш: bool, начало: bool = True):
+        _АУД["в_шаге"] = смеш
+        if _АУДИТ_СИНХ:
+            torch.cuda.set_sync_debug_mode("warn" if ((смеш or _АУДИТ_ВСЕ) and _ауд_синх_вкл()) else 0)
+        if _АУДИТ_ПАМ and смеш and начало and not _АУД["пам_готово"]:
+            if _АУД["пам_шагов"] == 0:
+                torch.cuda.memory._record_memory_history(enabled="all", context="all", stacks="python",
+                                                         max_entries=400000)
+            _АУД["повтор0"] = torch.cuda.memory_stats().get("num_alloc_retries", 0)
+
+    def _ауд_выход(смеш: bool):
+        if _АУДИТ_СИНХ:
+            torch.cuda.set_sync_debug_mode(0)
+        _АУД["в_шаге"] = False
+        if _АУДИТ_ПАМ and смеш and not _АУД["пам_готово"]:
+            _АУД["повторы"].append(torch.cuda.memory_stats().get("num_alloc_retries", 0) - _АУД.get("повтор0", 0))
+            _АУД["пам_шагов"] += 1
+            if _АУД["пам_шагов"] >= _АУД_ШАГОВ:
+                torch.cuda.synchronize()
+                путь = f"{_АУДИТ_ПАМ}.rank{_ауд_ранг()}.pickle"
+                try:
+                    torch.cuda.memory._dump_snapshot(путь)
+                    with open(путь + ".повторы.json", "w") as f:
+                        _json.dump(_АУД["повторы"], f)
+                finally:
+                    torch.cuda.memory._record_memory_history(enabled=None)
+                    _АУД["пам_готово"] = True
+                logger.info("[fa2_sm70 АУДИТ] снимок распределителя за %d смешанных шагов: %s", _АУД["пам_шагов"], путь)
+
+    def _execute_model_аудит(self, scheduler_output, intermediate_tensors=None):
+        смеш = _ауд_смешанный(scheduler_output)
+        self._ауд_смеш = смеш
+        if not _АУДИТ_СИНХ or _ауд_синх_вкл():
+            _АУД["смешанных" if смеш else "прочих"] += 1
+        _ауд_вход(смеш)
+        try:
+            return _исх_execute_model(self, scheduler_output, intermediate_tensors)
+        finally:
+            _ауд_выход(смеш and _исх_sample_tokens is None)
+            _ауд_сброс()
+
+    GPUModelRunner.execute_model = _execute_model_аудит
+    if _исх_sample_tokens is not None:
+        def _sample_tokens_аудит(self, *args, **kwargs):
+            смеш = bool(getattr(self, "_ауд_смеш", False))
+            _ауд_вход(смеш, начало=False)
+            try:
+                return _исх_sample_tokens(self, *args, **kwargs)
+            finally:
+                _ауд_выход(смеш)
+
+        GPUModelRunner.sample_tokens = _sample_tokens_аудит

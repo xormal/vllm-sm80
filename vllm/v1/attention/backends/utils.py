@@ -733,6 +733,31 @@ def create_fast_prefill_custom_backend(
     return attn_backend
 
 
+# [ФРИЗЫ 30.10] Метаданные causal_conv1d -- без синхронизации и без выделений на каждый шаг с префиллом. Аудит окна 23:
+# две синхронизации на смешанный шаг -- копия mlist/offsetlist с ОБЫЧНОЙ (pageable) памяти на карту ждёт, пока поток
+# опустеет, то есть процессор не готовит следующий шаг; плюс два torch.full на карте при каждом вызове. Теперь буферы на
+# карте постоянные (растут только вверх), копия -- из закреплённой памяти неблокирующая, кольцо закреплённых
+# буферов (16) с событиями: к повторному использованию ячейки её копия давно прошла (ожидания нет). Хвост за mlist_len не
+# читается (сетка ядра -- ровно tot = mlist_len программ). FA2SM70_CONV_META_PINNED=1 -- новый путь (до A/B выключен).
+_CONV_META_PINNED = (__import__("os").environ.get("FA2SM70_CONV_META_PINNED", "0") == "1"
+                     # перекрытие половин (fa2sm70_overlap) строит ДВЕ разные метаданные на шаг -- общие буферы нельзя
+                     and __import__("os").environ.get("FA2SM70_OVERLAP", "0") != "1")
+_CONV_META = {}
+
+
+def _conv_meta_buffers(device, need):
+    st = _CONV_META.get(str(device))
+    if st is None or st["cap"] < need:
+        cap = max(need, 4096)
+        st = {"cap": cap,
+              "bp": torch.full((cap,), PAD_SLOT_ID, dtype=torch.int32, device=device),
+              "of": torch.full((cap,), PAD_SLOT_ID, dtype=torch.int32, device=device),
+              "pin": [torch.empty((2, cap), dtype=torch.int32, pin_memory=True) for _ in range(16)],
+              "ev": [None] * 16, "i": 0, "last": None}
+        _CONV_META[str(device)] = st
+    return st
+
+
 def compute_causal_conv1d_metadata(
     query_start_loc_p_cpu: torch.Tensor,
     *,
@@ -748,37 +773,52 @@ def compute_causal_conv1d_metadata(
         nums = -(-seqlens // BLOCK_M)
         nums_dict[BLOCK_M] = {}
         nums_dict[BLOCK_M]["nums"] = nums
-        nums_dict[BLOCK_M]["tot"] = nums.sum().item()
-        mlist = torch.from_numpy(np.repeat(np.arange(len(nums)), nums))
+        nums_np = nums.numpy().astype(np.int64)
+        tot = int(nums_np.sum())
+        nums_dict[BLOCK_M]["tot"] = tot
+        mlist_np = np.repeat(np.arange(len(nums_np)), nums_np)
+        mlist = torch.from_numpy(mlist_np)
         nums_dict[BLOCK_M]["mlist"] = mlist
-        mlist_len = len(nums_dict[BLOCK_M]["mlist"])
+        mlist_len = len(mlist_np)
         nums_dict[BLOCK_M]["mlist_len"] = mlist_len
         MAX_NUM_PROGRAMS = max(1024, mlist_len) * 2
-        offsetlist = []  # type: ignore
-        for idx, num in enumerate(nums):
-            offsetlist.extend(range(num))
-        offsetlist = torch.tensor(offsetlist, dtype=torch.int32)
+        # номер куска внутри своей последовательности (то же, что прежний цикл extend(range(num)))
+        offs_np = np.arange(mlist_len, dtype=np.int64) - np.repeat(np.cumsum(nums_np) - nums_np, nums_np)
+        offsetlist = torch.from_numpy(offs_np.astype(np.int32))
         nums_dict[BLOCK_M]["offsetlist"] = offsetlist
 
-        if batch_ptr is None:
-            # Update default value after class definition
+        if _CONV_META_PINNED and device is not None and torch.device(device).type == "cuda":
+            st = _conv_meta_buffers(device, MAX_NUM_PROGRAMS)
+            batch_ptr, token_chunk_offset_ptr = st["bp"], st["of"]
+            # [ревизия] построитель зовётся на каждую KV-группу GDN шага (несколько раз с теми же длинами): то же
+            # содержимое уже лежит в постоянных буферах (копия раньше по потоку) -- не копировать снова
+            ключ = (mlist_len, query_start_loc_p_cpu.numpy().tobytes())
+            if mlist_len and st["last"] != ключ:
+                st["last"] = ключ
+                i = st["i"]
+                st["i"] = (i + 1) % 16
+                ev = st["ev"][i]
+                if ev is not None and not ev.query():
+                    ev.synchronize()             # ячейка кольца из 16 -- обычно давно прошла (ожидания нет)
+                pin = st["pin"][i]
+                pin[0, :mlist_len].copy_(torch.from_numpy(mlist_np.astype(np.int32)))
+                pin[1, :mlist_len].copy_(offsetlist)
+                batch_ptr[:mlist_len].copy_(pin[0, :mlist_len], non_blocking=True)
+                token_chunk_offset_ptr[:mlist_len].copy_(pin[1, :mlist_len], non_blocking=True)
+                if ev is None:
+                    ev = st["ev"][i] = torch.cuda.Event()
+                ev.record()
+        else:
             batch_ptr = torch.full(
                 (MAX_NUM_PROGRAMS,), PAD_SLOT_ID, dtype=torch.int32, device=device
             )
             token_chunk_offset_ptr = torch.full(
                 (MAX_NUM_PROGRAMS,), PAD_SLOT_ID, dtype=torch.int32, device=device
             )
-        else:
-            if batch_ptr.nelement() < MAX_NUM_PROGRAMS:
-                batch_ptr.resize_(MAX_NUM_PROGRAMS).fill_(PAD_SLOT_ID)
-                token_chunk_offset_ptr.resize_(  # type: ignore
-                    MAX_NUM_PROGRAMS
-                ).fill_(PAD_SLOT_ID)
-
-        batch_ptr[0:mlist_len].copy_(mlist)
-        token_chunk_offset_ptr[  # type: ignore
-            0:mlist_len
-        ].copy_(offsetlist)
+            batch_ptr[0:mlist_len].copy_(mlist)
+            token_chunk_offset_ptr[  # type: ignore
+                0:mlist_len
+            ].copy_(offsetlist)
         nums_dict[BLOCK_M]["batch_ptr"] = batch_ptr
         nums_dict[BLOCK_M]["token_chunk_offset_ptr"] = token_chunk_offset_ptr  # type: ignore
 

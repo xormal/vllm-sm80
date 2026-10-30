@@ -406,6 +406,13 @@ struct Engine {
   at::Tensor ws_hn, ws_X, ws_F, ws_H, ws_C, ws_Hq, ws_G, ws_KV, ws_MC, ws_m, ws_l, ws_acc;
   at::Tensor ws_ctx16, ws_qv16, ws_gl16, ws_Qp, ws_BF, ws_SN, ws_SM, ws_gp, ws_FN, ws_ON, ws_cos, ws_prior, ws_res;
   std::vector<ReqSlot> req;
+  // [ФРИЗЫ 30.10] tap(h, run_heads=false): головы концов записей не запускаются внутри tap (на потоке сбора), а
+  // ставятся в очередь -- run_pending_heads() пускает их на СВОЁМ (побочном) потоке. Графовая ветка асинхронной головы
+  // собирает строки на основном потоке (выход графа перезапишет следующий повтор), а голова уходит с него.
+  std::vector<int> pend;
+  // [БЕЗ ХОСТА 30.10] req_begin(sync=false): закреплённый буфер ячейки + событие вместо синхронизации потока
+  std::vector<at::Tensor> rb_stage;
+  std::vector<cudaEvent_t> rb_ev;
   int loaded_stage = -1;
   // указатель тензора веса (scales / pack / weight) -> (слой, модуль): ключ, по которому тело
   // умножения узнаёт свой модуль, не меняя ни сигнатуры операции, ни графа
@@ -625,6 +632,7 @@ struct GState {
   int max_rows = 0;
   int64_t kmax = 0, nmax = 0;
   at::Tensor rows, n, xc, yc, tb;           // GPU: int32 [max_rows], int32 [1], half scratch
+  at::Tensor mask;                          // [ОДИН ГРАФ 30.10] GPU int32 [max_rows]: 1 -- строка Clef (для окон строк)
   std::vector<at::Tensor> host;             // закреплённое кольцо int32 [1 + max_rows]
   std::vector<cudaEvent_t> ev;
   int ring = 0;
@@ -688,6 +696,54 @@ void g_scatter(const half* src, int64_t lds, half* dst, int64_t ldd, int cols, i
   CLEF_CK(cudaGetLastError());
 }
 
+// [ОДИН ГРАФ 30.10] ОКНО СТРОК В ГРАФЕ. Конвейер блока (fa2sm80_blockpipe) и конвейер строк зовут поправку на куске
+// строк [r0, r0+M) шага; delta_graph собирает строки по СПИСКУ номеров шага и для куска не годится. Здесь -- маска
+// строк шага (строится на карте из того же списка в graph_set_rows): кусок собирает свои строки с маской, цепочка
+// cuBLAS идёт на M = размер куска (r0 и M -- из формы и плана кусков, при повторе графа те же), запись -- только строк
+// Clef. Строки чатов не трогаются.
+__global__ void g_mask_zero_k(int* __restrict__ mask, int n) {
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < n) mask[i] = 0;
+}
+__global__ void g_mask_set_k(int* __restrict__ mask, const int* __restrict__ rows, const int* __restrict__ n, int cap) {
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < *n && rows[i] >= 0 && rows[i] < cap) mask[rows[i]] = 1;
+}
+
+template <bool VEC>
+__global__ void g_gather_mask_k(const half* __restrict__ src, int64_t lds, half* __restrict__ dst, int64_t ldd,
+                                int cols, const int* __restrict__ mask, int r0, int zero_tail) {
+  const int i = blockIdx.x;
+  half* d = dst + (int64_t)i * ldd;
+  if (mask[r0 + i]) {
+    const half* s = src + (int64_t)i * lds;
+    if (VEC) {
+      for (int c = threadIdx.x * 8; c < cols; c += blockDim.x * 8)
+        *reinterpret_cast<uint4*>(d + c) = *reinterpret_cast<const uint4*>(s + c);
+    } else {
+      for (int c = threadIdx.x; c < cols; c += blockDim.x) d[c] = s[c];
+    }
+  } else if (zero_tail) {
+    const half z = __float2half(0.f);
+    for (int c = threadIdx.x; c < cols; c += blockDim.x) d[c] = z;
+  }
+}
+
+template <bool VEC>
+__global__ void g_scatter_mask_k(const half* __restrict__ src, int64_t lds, half* __restrict__ dst, int64_t ldd,
+                                 int cols, const int* __restrict__ mask, int r0) {
+  const int i = blockIdx.x;
+  if (!mask[r0 + i]) return;
+  const half* s = src + (int64_t)i * lds;
+  half* d = dst + (int64_t)i * ldd;
+  if (VEC) {
+    for (int c = threadIdx.x * 8; c < cols; c += blockDim.x * 8)
+      *reinterpret_cast<uint4*>(d + c) = *reinterpret_cast<const uint4*>(s + c);
+  } else {
+    for (int c = threadIdx.x; c < cols; c += blockDim.x) d[c] = s[c];
+  }
+}
+
 void init_graph(int64_t max_rows, int64_t kmax, int64_t nmax, int64_t ring) {
   TORCH_CHECK(E.inited && !G.on, "clef: init_graph -- после finalize_delta, один раз");
   TORCH_CHECK(max_rows > 0 && kmax > 0 && nmax > 0 && ring >= 2, "clef: init_graph: размеры");
@@ -699,6 +755,7 @@ void init_graph(int64_t max_rows, int64_t kmax, int64_t nmax, int64_t ring) {
   G.nmax = nmax;
   G.rows = at::zeros({max_rows}, i32);
   G.n = at::zeros({1}, i32);
+  G.mask = at::zeros({max_rows}, i32);
   G.xc = at::empty({max_rows * kmax}, f16);
   G.yc = at::empty({max_rows * nmax}, f16);
   G.tb = at::empty({max_rows * (int64_t)E.rmax}, f16);
@@ -728,6 +785,11 @@ void graph_set_rows(at::Tensor r) {
   CLEF_CK(cudaMemcpyAsync(G.n.data_ptr(), h, sizeof(int), cudaMemcpyHostToDevice, st));
   if (m) CLEF_CK(cudaMemcpyAsync(G.rows.data_ptr(), h + 1, m * sizeof(int), cudaMemcpyHostToDevice, st));
   CLEF_CK(cudaEventRecord(G.ev[k], st));
+  // маска строк для окон (тот же поток, до прохода)
+  const int nb = (G.max_rows + 255) / 256;
+  g_mask_zero_k<<<nb, 256, 0, st>>>(G.mask.data_ptr<int>(), G.max_rows);
+  g_mask_set_k<<<nb, 256, 0, st>>>(G.mask.data_ptr<int>(), G.rows.data_ptr<int>(), G.n.data_ptr<int>(), G.max_rows);
+  CLEF_CK(cudaGetLastError());
   G.n_set++;
 }
 
@@ -781,6 +843,76 @@ void delta_keyed_graph(at::Tensor x, at::Tensor y, std::vector<at::Tensor> keys)
     auto it = E.keys.find((uintptr_t)k.data_ptr());
     if (it != E.keys.end()) {
       delta_graph(x, y, it->second.first, it->second.second);
+      return;
+    }
+  }
+  E.n_keymiss++;
+}
+
+// окно строк [r0, r0+M): x, y -- строки куска (M = x.size(0)), маска -- строки Clef всего шага
+void delta_graph_range(at::Tensor x, at::Tensor y, int64_t model_layer, int64_t mod, int64_t r0) {
+  if (!G.on) return;
+  if (model_layer < 0 || model_layer >= 256 || E.lmap[model_layer] < 0) return;
+  if (x.dim() != 2 || y.dim() != 2 || x.scalar_type() != at::kHalf || y.scalar_type() != at::kHalf ||
+      x.stride(1) != 1 || y.stride(1) != 1 || x.size(0) != y.size(0) || !x.is_cuda() || !y.is_cuda()) {
+    fail("delta_graph_range: форма/тип x,y");
+    return;
+  }
+  HLayer& L = E.layers[E.lmap[model_layer]];
+  bool has_op = false;
+  for (const Op& o : L.ops) has_op |= (o.mod == mod);
+  if (!has_op) return;
+  const int64_t M = x.size(0), ldx = x.stride(0), ldy = y.stride(0), K = x.size(1), N = y.size(1);
+  if (M <= 0) return;
+  if (r0 < 0 || r0 + M > G.max_rows || K > G.kmax || N > G.nmax) { fail("delta_graph_range: окно больше буферов"); return; }
+  cudaStream_t st = at::cuda::getCurrentCUDAStream();
+  const uint8_t* base = (const uint8_t*)L.dev.data_ptr();
+  half* xc = (half*)G.xc.data_ptr();
+  half* yc = (half*)G.yc.data_ptr();
+  half* tb = (half*)G.tb.data_ptr();
+  const int* mk = G.mask.data_ptr<int>();
+  if (vec_ok(x.data_ptr(), ldx, xc, K, (int)K))
+    g_gather_mask_k<true><<<M, 256, 0, st>>>((const half*)x.data_ptr(), ldx, xc, K, (int)K, mk, (int)r0, 1);
+  else
+    g_gather_mask_k<false><<<M, 256, 0, st>>>((const half*)x.data_ptr(), ldx, xc, K, (int)K, mk, (int)r0, 1);
+  if (vec_ok(y.data_ptr(), ldy, yc, N, (int)N))
+    g_gather_mask_k<true><<<M, 256, 0, st>>>((const half*)y.data_ptr(), ldy, yc, N, (int)N, mk, (int)r0, 0);
+  else
+    g_gather_mask_k<false><<<M, 256, 0, st>>>((const half*)y.data_ptr(), ldy, yc, N, (int)N, mk, (int)r0, 0);
+  CLEF_CK(cudaGetLastError());
+  int rank = 0;
+  for (const Op& o : L.ops) {
+    if (o.mod != mod) continue;
+    const half* w = (const half*)(base + o.off);
+    cublasStatus_t s = CUBLAS_STATUS_SUCCESS;
+    if (o.type == 0) {
+      if (o.in != K) { fail("delta_graph_range: in != K"); return; }
+      rank = o.n;
+      s = gemm_xwt(xc, (int)K, w, o.in, tb, CUDA_R_16F, rank, (int)M, rank, o.in, 0.f);
+    } else if (o.type == 1) {
+      if (rank == 0 || o.col + o.n > N) { fail("delta_graph_range: разжатие без сжатия / за краем"); return; }
+      s = gemm_xwt(tb, rank, w, rank, yc + o.col, CUDA_R_16F, (int)N, (int)M, o.n, rank, 1.f);
+    } else {
+      if (o.in != K || o.col + o.n > N) { fail("delta_graph_range: плотная форма"); return; }
+      s = gemm_xwt(xc, (int)K, w, o.in, yc + o.col, CUDA_R_16F, (int)N, (int)M, o.n, o.in, 1.f);
+    }
+    if (s != CUBLAS_STATUS_SUCCESS) { fail("delta_graph_range: cublas " + std::to_string((int)s)); return; }
+  }
+  if (vec_ok(yc, N, y.data_ptr(), ldy, (int)N))
+    g_scatter_mask_k<true><<<M, 256, 0, st>>>(yc, N, (half*)y.data_ptr(), ldy, (int)N, mk, (int)r0);
+  else
+    g_scatter_mask_k<false><<<M, 256, 0, st>>>(yc, N, (half*)y.data_ptr(), ldy, (int)N, mk, (int)r0);
+  CLEF_CK(cudaGetLastError());
+  G.n_delta++;
+}
+
+void delta_keyed_graph_range(at::Tensor x, at::Tensor y, std::vector<at::Tensor> keys, int64_t r0) {
+  if (!G.on) return;
+  for (const auto& k : keys) {
+    if (!k.defined() || k.numel() == 0) continue;
+    auto it = E.keys.find((uintptr_t)k.data_ptr());
+    if (it != E.keys.end()) {
+      delta_graph_range(x, y, it->second.first, it->second.second, r0);
       return;
     }
   }
@@ -868,28 +1000,60 @@ void init_head(std::vector<at::Tensor> stage_host, std::map<std::string, std::tu
 }
 
 // запрос в ячейку r: позиции -> спан, 1/длина спана, вопрос каждого варианта, границы, типы, lex
+// [БЕЗ ХОСТА 30.10] sync=false: копии идут из ЗАКРЕПЛЁННОГО буфера ячейки (настоящая асинхронность: с обычной памятью
+// драйвер вправе синхронизироваться с потоком, чтобы подготовить подкачку), конец копий -- событие ячейки. Перед
+// записью в буфер ячейки ждём её прошлое событие (ячейка освобождается через много шагов -- ожидания нет). Без
+// cudaStreamSynchronize главный поток не ждёт конца предыдущего шага на каждой новой записи Clef (профиль окна 12).
 void req_begin(int64_t r, int64_t N, at::Tensor spanid, at::Tensor inv_len, at::Tensor qidx, at::Tensor qoff,
-               at::Tensor types, at::Tensor lex) {
+               at::Tensor types, at::Tensor lex, bool sync) {
   TORCH_CHECK(E.head_on && r >= 0 && r < E.R, "clef: req_begin ячейка");
   const int Qn = (int)types.numel(), Qo = (int)qidx.numel(), S = (int)inv_len.numel();
   TORCH_CHECK(N > 0 && N <= E.Nmax && spanid.numel() == N, "clef: N");
   TORCH_CHECK(Qn > 0 && Qn <= E.Qnmax && Qo > 0 && Qo <= E.Qomax && S == Qn + Qo && S <= E.Smax, "clef: Qn/Qo/S");
   TORCH_CHECK(qoff.numel() == Qn + 1 && lex.size(0) == Qo && lex.size(1) == 5120, "clef: qoff/lex");
   cudaStream_t st = at::cuda::getCurrentCUDAStream();
-  auto cp = [&](at::Tensor dst, const at::Tensor& src, int64_t bytes) {
-    at::Tensor s = src.contiguous();
-    CLEF_CK(cudaMemcpyAsync(dst.data_ptr(), s.data_ptr(), bytes, cudaMemcpyHostToDevice, st));
-  };
-  cp(E.spanid[r], spanid.to(at::kInt), N * 4);
-  cp(E.inv_len[r], inv_len.to(at::kFloat), S * 4);
-  cp(E.qidx[r], qidx.to(at::kInt), Qo * 4);
-  cp(E.qoff[r], qoff.to(at::kInt), (Qn + 1) * 4);
-  cp(E.types[r], types.to(at::kInt), Qn * 4);
-  cp(E.lex[r], lex.to(at::kHalf), (int64_t)Qo * 5120 * 2);
-  CLEF_CK(cudaMemsetAsync(E.span[r].data_ptr(), 0, (int64_t)S * 5120 * 4, st));
-  CLEF_CK(cudaMemsetAsync(E.glob[r].data_ptr(), 0, 5120 * 4, st));
-  // копии с хоста асинхронны: исходники обязаны дожить до конца копии
-  CLEF_CK(cudaStreamSynchronize(st));
+  if (sync) {
+    auto cp = [&](at::Tensor dst, const at::Tensor& src, int64_t bytes) {
+      at::Tensor s = src.contiguous();
+      CLEF_CK(cudaMemcpyAsync(dst.data_ptr(), s.data_ptr(), bytes, cudaMemcpyHostToDevice, st));
+    };
+    cp(E.spanid[r], spanid.to(at::kInt), N * 4);
+    cp(E.inv_len[r], inv_len.to(at::kFloat), S * 4);
+    cp(E.qidx[r], qidx.to(at::kInt), Qo * 4);
+    cp(E.qoff[r], qoff.to(at::kInt), (Qn + 1) * 4);
+    cp(E.types[r], types.to(at::kInt), Qn * 4);
+    cp(E.lex[r], lex.to(at::kHalf), (int64_t)Qo * 5120 * 2);
+    CLEF_CK(cudaMemsetAsync(E.span[r].data_ptr(), 0, (int64_t)S * 5120 * 4, st));
+    CLEF_CK(cudaMemsetAsync(E.glob[r].data_ptr(), 0, 5120 * 4, st));
+    // копии с хоста асинхронны: исходники обязаны дожить до конца копии
+    CLEF_CK(cudaStreamSynchronize(st));
+  } else {
+    auto al = [](int64_t b) { return (b + 255) & ~(int64_t)255; };
+    const int64_t o_sp = 0, o_il = o_sp + al((int64_t)E.Nmax * 4), o_qi = o_il + al((int64_t)E.Smax * 4),
+                  o_qo = o_qi + al((int64_t)E.Qomax * 4), o_ty = o_qo + al((int64_t)(E.Qnmax + 1) * 4),
+                  o_lx = o_ty + al((int64_t)E.Qnmax * 4), tot = o_lx + al((int64_t)E.Qomax * 5120 * 2);
+    if ((int)E.rb_stage.size() < E.R) { E.rb_stage.resize(E.R); E.rb_ev.resize(E.R, nullptr); }
+    if (!E.rb_stage[r].defined())
+      E.rb_stage[r] = at::empty({tot}, at::TensorOptions().dtype(at::kByte).pinned_memory(true));
+    if (E.rb_ev[r]) CLEF_CK(cudaEventSynchronize(E.rb_ev[r]));
+    else CLEF_CK(cudaEventCreateWithFlags(&E.rb_ev[r], cudaEventDisableTiming));
+    unsigned char* hb = (unsigned char*)E.rb_stage[r].data_ptr();
+    auto cp = [&](at::Tensor dst, const at::Tensor& src, int64_t bytes, int64_t off) {
+      at::Tensor s = src.contiguous();
+      TORCH_CHECK(s.device().is_cpu(), "clef: req_begin -- данные с хоста");
+      std::memcpy(hb + off, s.data_ptr(), bytes);
+      CLEF_CK(cudaMemcpyAsync(dst.data_ptr(), hb + off, bytes, cudaMemcpyHostToDevice, st));
+    };
+    cp(E.spanid[r], spanid.to(at::kInt), N * 4, o_sp);
+    cp(E.inv_len[r], inv_len.to(at::kFloat), S * 4, o_il);
+    cp(E.qidx[r], qidx.to(at::kInt), Qo * 4, o_qi);
+    cp(E.qoff[r], qoff.to(at::kInt), (Qn + 1) * 4, o_qo);
+    cp(E.types[r], types.to(at::kInt), Qn * 4, o_ty);
+    cp(E.lex[r], lex.to(at::kHalf), (int64_t)Qo * 5120 * 2, o_lx);
+    CLEF_CK(cudaMemsetAsync(E.span[r].data_ptr(), 0, (int64_t)S * 5120 * 4, st));
+    CLEF_CK(cudaMemsetAsync(E.glob[r].data_ptr(), 0, 5120 * 4, st));
+    CLEF_CK(cudaEventRecord(E.rb_ev[r], st));
+  }
   E.req[r] = ReqSlot{true, false, false, (int)N, Qn, Qo, S};
 }
 
@@ -1045,7 +1209,7 @@ bool head_run(int64_t r) {
 }
 
 // отвод: h [T, 5120] fp16 -- скрытые после финальной нормы всех строк шага (ранг с головой)
-void tap(at::Tensor h) {
+void tap(at::Tensor h, bool run_heads) {
   if (!E.active || !E.head_on) return;
   if (h.dim() != 2 || h.size(1) != 5120 || h.scalar_type() != at::kHalf || h.stride(1) != 1 || !h.is_cuda()) {
     fail("tap: форма h");
@@ -1082,9 +1246,19 @@ void tap(at::Tensor h) {
     E.n_tap++;
     if (sg.fin && !R.bad) {
       if (sg.pos0 + sg.rows != R.N) { fail("tap: конец не на N"); R.bad = true; continue; }
+      if (!run_heads) { E.pend.push_back(sg.req); continue; }
       if (!head_run(sg.req)) R.bad = true;
     }
   }
+}
+
+// Головы, отложенные tap(h, false), -- на текущем потоке (вызывающий ставит побочный и ждёт поток сбора).
+void run_pending_heads() {
+  for (int r : E.pend) {
+    if (r < 0 || r >= E.R || !E.req[r].used || E.req[r].bad) continue;
+    if (!head_run(r)) E.req[r].bad = true;
+  }
+  E.pend.clear();
 }
 
 at::Tensor result(int64_t r) {
@@ -1116,9 +1290,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("delta_keyed", &delta_keyed);
   m.def("delta_keyed_range", &delta_keyed_range);
   m.def("init_head", &init_head);
-  m.def("req_begin", &req_begin);
+  m.def("req_begin", &req_begin, "ячейка головы: данные запроса (sync=false -- без синхронизации потока)",
+        py::arg("r"), py::arg("N"), py::arg("spanid"), py::arg("inv_len"), py::arg("qidx"), py::arg("qoff"),
+        py::arg("types"), py::arg("lex"), py::arg("sync") = true);
   m.def("req_end", &req_end);
-  m.def("tap", &tap);
+  m.def("tap", &tap, py::arg("h"), py::arg("run_heads") = true);
+  m.def("run_pending_heads", &run_pending_heads, "головы, отложенные tap(h, run_heads=False), -- на текущем потоке");
   m.def("head_run", &head_run);
   m.def("result", &result);
   m.def("ready", &ready);
@@ -1128,6 +1305,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("init_graph", &init_graph);
   m.def("graph_set_rows", &graph_set_rows);
   m.def("delta_graph", &delta_graph);
+  m.def("delta_graph_range", &delta_graph_range);
+  m.def("delta_keyed_graph_range", &delta_keyed_graph_range);
   m.def("delta_keyed_graph", &delta_keyed_graph);
   m.def("graph_stats", &graph_stats);
 }

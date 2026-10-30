@@ -50,6 +50,8 @@ class CudagraphDispatcher:
             CUDAGraphMode.PIECEWISE: set(),
             CUDAGraphMode.FULL: set(),
         }
+        # [ОДИН ГРАФ 30.10] полные графы смешанных шагов с Clef, ключ (T, D) -- отдельно от штатных FULL (fa2sm70_fullmix)
+        self.fullmix_keys: set[BatchDescriptor] = set()
 
         assert (
             not self.compilation_config.cudagraph_mode.requires_piecewise_compilation()
@@ -234,7 +236,28 @@ class CudagraphDispatcher:
                     ),
                 )
 
+        # [ОДИН ГРАФ 30.10] полные графы смешанных шагов с Clef (FA2SM70_FULL_MIX=1, нужна графобезопасная поправка)
+        if _CLEF_GRAPH and cudagraph_mode != CUDAGraphMode.NONE:
+            try:
+                import fa2sm70_fullmix as _FM
+            except ImportError:
+                _FM = None
+            if _FM is not None and _FM.ВКЛ:
+                R = self.vllm_config.scheduler_config.max_num_seqs
+                mx = self.vllm_config.scheduler_config.max_num_batched_tokens
+                for T, D in _FM.ключи(self.uniform_decode_query_len, R):
+                    if T <= mx and T <= _CLEF_GRAPH_MAX:
+                        self.fullmix_keys.add(BatchDescriptor(T, num_reqs=R, uniform=False, has_clef=True,
+                                                              spec_rows=D))
+
         self.keys_initialized = True
+
+    def dispatch_fullmix(self, T: int, D: int) -> BatchDescriptor | None:
+        """[ОДИН ГРАФ 30.10] ключ полного графа корзины T, если он вмещает D спекулятивных строк, иначе None."""
+        for bd in self.fullmix_keys:
+            if bd.num_tokens == T and D <= bd.spec_rows:
+                return bd
+        return None
 
     def dispatch(
         self,
@@ -329,6 +352,10 @@ class CudagraphDispatcher:
             return []
 
         result = []
+        # [ОДИН ГРАФ 30.10] полные графы смешанных шагов -- первыми: они крупнейшие (пул графов под них)
+        if self.fullmix_keys:
+            fm = sorted(self.fullmix_keys, key=lambda d: (d.num_tokens, d.spec_rows), reverse=True)
+            result.append((CUDAGraphMode.FULL, fm))
         # Return in order: PIECEWISE first, then FULL
         for mode in [CUDAGraphMode.PIECEWISE, CUDAGraphMode.FULL]:
             descs = list(self.cudagraph_keys[mode])

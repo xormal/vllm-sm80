@@ -915,24 +915,32 @@ struct GemmSmem {
   uint32_t meta[GS][GBN];                  // (s | 1024+z) на столбец, группа плитки
 };
 
-template <int NW, int MI>
-__global__ __launch_bounds__(256, 2) void w8a16_sm80_gemm(
+// [ЗАГРУЗКА ВЕСОВ 30.10] MINB -- блоков на SM в __launch_bounds__ (прежде всегда 2: при MI=4 потолок 128 регистров
+// давал 8 STL + 11 LDL на итерацию главного цикла; MINB=1 -- без спиллов). mfast=1 -- плитки M идут ПЕРВЫМИ
+// (blockIdx.x -- M): соседние блоки берут одну плитку весов, и она читается из HBM один раз на шаг. При mfast=0
+// (прежний порядок, N первыми) каждая полоса строк заново тянет все веса, а веса gate_up (89 МБ) в L2 (40 МБ) не
+// держатся: при M~430 веса шли из HBM 4-5 раз. Порядок блоков не меняет арифметику элемента -- выход побитно тот же.
+// ldx/ldy -- шаг строк x и y (срез большего тензора без копии).
+template <int NW, int MI, int MINB>
+__global__ __launch_bounds__(256, MINB) void w8a16_sm80_gemm(
     const __half* __restrict__ x, const uint4* __restrict__ wf, const uint32_t* __restrict__ meta,
-    __half* __restrict__ y, float* __restrict__ ws, int* __restrict__ cnt, int M, int N, int K, int tps) {
+    __half* __restrict__ y, float* __restrict__ ws, int* __restrict__ cnt, int M, int N, int K, int tps,
+    long ldx, long ldy, int mfast) {
   extern __shared__ __align__(16) unsigned char smem_raw[];
   constexpr int GBM = 32 * MI;
   GemmSmem<MI>& sm = *reinterpret_cast<GemmSmem<MI>*>(smem_raw);
   const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
   const int g = lane >> 2, t = lane & 3;
   const int wm = warp >> 2, wn = warp & 3;               // 2 x 4
-  const int m0 = blockIdx.y * GBM, n0 = blockIdx.x * GBN;
+  const int bmi = mfast ? blockIdx.x : blockIdx.y, bni = mfast ? blockIdx.y : blockIdx.x;
+  const int m0 = bmi * GBM, n0 = bni * GBN;
   const int KT = K >> 6;
   auto issue = [&](int kt, int st) {
 #pragma unroll
     for (int i = 0; i < MI; ++i) {                       // A: 32*MI строк x 8 кусков / 256 нитей
       const int c = tid + i * 256, r = c >> 3, ch = c & 7;
       const bool live = (m0 + r) < M;
-      const __half* src = x + (long)(live ? m0 + r : 0) * K + kt * 64 + ch * 8;
+      const __half* src = x + (long)(live ? m0 + r : 0) * ldx + kt * 64 + ch * 8;
       cp_async16_ca_z(&sm.a[st][r][(ch ^ ((r & 1) << 2)) * 8], src, live);
     }
 #pragma unroll
@@ -1018,7 +1026,7 @@ __global__ __launch_bounds__(256, 2) void w8a16_sm80_gemm(
         const int row = m0 + wm * (16 * MI) + i * 16 + g + 8 * hh;
         if (row >= M) continue;
         if (!split)
-          *reinterpret_cast<__half2*>(y + (long)row * N + col) = __floats2half2_rn(acc[i][j][2 * hh], acc[i][j][2 * hh + 1]);
+          *reinterpret_cast<__half2*>(y + (long)row * ldy + col) = __floats2half2_rn(acc[i][j][2 * hh], acc[i][j][2 * hh + 1]);
         else
           *reinterpret_cast<float2*>(ws + ((long)blockIdx.z * M + row) * N + col) = make_float2(acc[i][j][2 * hh], acc[i][j][2 * hh + 1]);
       }
@@ -1041,7 +1049,7 @@ __global__ __launch_bounds__(256, 2) void w8a16_sm80_gemm(
       const float2 p = __ldcg(reinterpret_cast<const float2*>(ws + ((long)z * M + m0 + r) * N + n0 + c2));
       v.x += p.x; v.y += p.y;
     }
-    *reinterpret_cast<__half2*>(y + (long)(m0 + r) * N + n0 + c2) = __floats2half2_rn(v.x, v.y);
+    *reinterpret_cast<__half2*>(y + (long)(m0 + r) * ldy + n0 + c2) = __floats2half2_rn(v.x, v.y);
   }
   if (tid == 0) cnt[tile] = 0;                           // самоочистка (повтор графа)
 }
@@ -1263,7 +1271,11 @@ torch::Tensor w12a16_sm80_dequant(torch::Tensor wf, torch::Tensor scales, int64_
 }
 
 namespace {
-struct Scratch { torch::Tensor ws, cnt; std::vector<torch::Tensor> old; };
+struct Scratch {
+  torch::Tensor ws, cnt;
+  std::unordered_map<long, torch::Tensor> pa;   // [GEMM 30.10] x в порядке фрагментов (v3) -- свой на поток
+  std::vector<torch::Tensor> old;
+};
 std::unordered_map<int, Scratch>& scratch() { static std::unordered_map<int, Scratch> m; return m; }
 
 template <int NW, int XR, int STAGES, int WARPS>
@@ -1375,6 +1387,7 @@ torch::Tensor w8a16_sm80_mm_impl(torch::Tensor x, torch::Tensor wf, torch::Tenso
 
 
 #include "w8a16_sw_sm80.cuh"
+#include "w8a16_sm80_g3.cuh"
 
 // Перестановка A/B (w8a16_sw_sm80.cuh): M <= 8, раздел K между warps варпами как у w8a16_sm80_mm при splits=1.
 torch::Tensor w8a16_sm80_sw(torch::Tensor x, torch::Tensor wf, torch::Tensor meta, int64_t N, int64_t nw,
@@ -1620,44 +1633,75 @@ torch::Tensor w12a16_sm80_sk(torch::Tensor x, torch::Tensor wf, torch::Tensor sc
 }
 
 
+// mfast=0 -- прежний путь побитно и по памяти (N первыми, MI=4 при 2 блоках на SM, рабочая область split-K растёт).
+// mfast=1 [ЗАГРУЗКА ВЕСОВ 30.10] -- путь без распределителя на шаге: M первыми, MI=4 без спиллов; x и out могут быть
+// срезами строк (шаг ldx/ldy); out -- готовый выход (иначе torch::empty); рабочая область split-K НЕ растёт --
+// если её не хватает, расщепление уменьшается до вмещающегося (размер задаётся один раз при загрузке весов, до
+// захвата графов, вызовом с mfast=0 или reserve=true).
 torch::Tensor w8a16_sm80_gemm_large(torch::Tensor x, torch::Tensor wf, torch::Tensor meta, int64_t N, int64_t nw,
-                                    int64_t mi, int64_t splits) {
+                                    int64_t mi, int64_t splits, int64_t mfast, c10::optional<torch::Tensor> out) {
   const c10::cuda::CUDAGuard guard(x.device());
-  auto xc = x.contiguous();
+  const bool strided = mfast && x.dim() == 2 && x.stride(1) == 1 && x.stride(0) % 8 == 0 &&
+                       (reinterpret_cast<uintptr_t>(x.data_ptr()) % 16) == 0;
+  auto xc = strided ? x : x.contiguous();
   const int K = (int)xc.size(-1), M = (int)(xc.numel() / K);
+  const long ldx = strided ? (long)xc.stride(0) : (long)K;
   TORCH_CHECK(K % 64 == 0 && N % 128 == 0, "w8a16_sm80_gemm: K кратно 64, N кратно 128");
   TORCH_CHECK(wf.numel() == (long)N * K / 4 && meta.numel() == (long)(K / 128) * N);
-  auto y = torch::empty({M, N}, xc.options());
+  torch::Tensor y;
+  if (out.has_value()) {
+    y = *out;
+    TORCH_CHECK(mfast, "w8a16_sm80_gemm: out -- только при mfast=1");
+    TORCH_CHECK(y.scalar_type() == torch::kFloat16 && y.dim() == 2 && y.size(0) == M && y.size(1) == N &&
+                y.stride(1) == 1 && y.stride(0) >= N && y.stride(0) % 2 == 0 && y.device() == xc.device(),
+                "w8a16_sm80_gemm: out [M, N] fp16, столбцы подряд");
+  } else {
+    y = torch::empty({M, N}, xc.options());
+  }
+  const long ldy = y.stride(0);
+  if (M == 0) return y;
   if (mi <= 0) mi = M <= 32 ? 1 : M <= 64 ? 2 : 4;
   TORCH_CHECK(mi == 1 || mi == 2 || mi == 4, "w8a16_sm80_gemm: mi 1/2/4");
   auto st = at::cuda::getCurrentCUDAStream();
   const int bm = 32 * (int)mi;
   const int KT = K / 64;
   if (splits < 1) splits = 1;
-  const int tps = (KT + (int)splits - 1) / (int)splits, sp = (KT + tps - 1) / tps;
-  dim3 grid(N / 128, (M + bm - 1) / bm, sp);
+  int tps = (KT + (int)splits - 1) / (int)splits, sp = (KT + tps - 1) / tps;
+  const int mt = (M + bm - 1) / bm, ntl = (int)(N / 128);
   float* wsp = nullptr; int* cp = nullptr;
   if (sp > 1) {
     auto& S = scratch()[xc.device().index()];
-    const long need = (long)sp * M * N;
-    if (!S.ws.defined() || S.ws.numel() < need) {
-      if (S.ws.defined()) S.old.push_back(S.ws);
-      S.ws = torch::empty({std::max<long>(need, 1L << 20)}, xc.options().dtype(torch::kFloat32));
+    if (mfast) {
+      // без выделений: расщепление по вместимости рабочей области и счётчиков плиток
+      const long cap = S.ws.defined() ? S.ws.numel() : 0, ccap = S.cnt.defined() ? S.cnt.numel() : 0;
+      while (sp > 1 && ((long)sp * M * N > cap || (long)mt * ntl > ccap)) {
+        --splits;
+        tps = (KT + (int)splits - 1) / (int)splits;
+        sp = (KT + tps - 1) / tps;
+      }
+    } else {
+      const long need = (long)sp * M * N;
+      if (!S.ws.defined() || S.ws.numel() < need) {
+        if (S.ws.defined()) S.old.push_back(S.ws);
+        S.ws = torch::empty({std::max<long>(need, 1L << 20)}, xc.options().dtype(torch::kFloat32));
+      }
+      const long tiles = (long)mt * ntl;
+      if (!S.cnt.defined() || S.cnt.numel() < tiles) {
+        if (S.cnt.defined()) S.old.push_back(S.cnt);
+        S.cnt = torch::zeros({std::max<long>(tiles, 1L << 16)}, xc.options().dtype(torch::kInt32));
+      }
     }
-    const long tiles = (long)grid.x * grid.y;
-    if (!S.cnt.defined() || S.cnt.numel() < tiles) {
-      if (S.cnt.defined()) S.old.push_back(S.cnt);
-      S.cnt = torch::zeros({std::max<long>(tiles, 1L << 16)}, xc.options().dtype(torch::kInt32));
-    }
-    wsp = S.ws.data_ptr<float>(); cp = S.cnt.data_ptr<int>();
+    if (sp > 1) { wsp = S.ws.data_ptr<float>(); cp = S.cnt.data_ptr<int>(); }
   }
-#define GEMM_K(NW_, MI_) do { const size_t smem = sizeof(w8s80::GemmSmem<MI_>); \
-    auto k = w8s80::w8a16_sm80_gemm<NW_, MI_>; static bool a = false; \
+  const dim3 grid = mfast ? dim3(mt, ntl, sp) : dim3(ntl, mt, sp);
+#define GEMM_K(NW_, MI_, MINB_) do { const size_t smem = sizeof(w8s80::GemmSmem<MI_>); \
+    auto k = w8s80::w8a16_sm80_gemm<NW_, MI_, MINB_>; static bool a = false; \
     if (!a) { C10_CUDA_CHECK(cudaFuncSetAttribute(k, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem)); a = true; } \
     k<<<grid, 256, smem, st>>>(reinterpret_cast<const __half*>(xc.data_ptr<at::Half>()), \
       reinterpret_cast<const uint4*>(wf.data_ptr<int>()), reinterpret_cast<const uint32_t*>(meta.data_ptr<int>()), \
-      reinterpret_cast<__half*>(y.data_ptr<at::Half>()), wsp, cp, M, (int)N, K, tps); } while (0)
-#define GEMM_NW(NW_) do { if (mi == 1) GEMM_K(NW_, 1); else if (mi == 2) GEMM_K(NW_, 2); else GEMM_K(NW_, 4); } while (0)
+      reinterpret_cast<__half*>(y.data_ptr<at::Half>()), wsp, cp, M, (int)N, K, tps, ldx, ldy, (int)mfast); } while (0)
+#define GEMM_NW(NW_) do { if (mi == 1) GEMM_K(NW_, 1, 2); else if (mi == 2) GEMM_K(NW_, 2, 2); \
+    else if (mfast) GEMM_K(NW_, 4, 1); else GEMM_K(NW_, 4, 2); } while (0)
   if (nw == 2) GEMM_NW(2); else if (nw == 4) GEMM_NW(4); else if (nw == 8) GEMM_NW(8);
   else TORCH_CHECK(false, "w8a16_sm80_gemm: nw 2/4/8");
 #undef GEMM_NW
@@ -1715,7 +1759,193 @@ torch::Tensor w8a16_sm80_gemm2(torch::Tensor x, torch::Tensor wf, torch::Tensor 
   return y;
 }
 
+
+// =====================================================================================================
+// [GEMM 30.10] W8A16 v3 (w8a16_sm80_g3.cuh): x в порядке фрагментов + блок WM x WN варпов по 64x64.
+// =====================================================================================================
+namespace {
+bool g3_capturing(cudaStream_t st) {
+  cudaStreamCaptureStatus cs = cudaStreamCaptureStatusNone;
+  C10_CUDA_CHECK(cudaStreamIsCapturing(st, &cs));
+  return cs != cudaStreamCaptureStatusNone;
+}
+long g3_pack_numel(int M, int K) { return (long)(K / 64) * ((M + 15) / 16) * 512; }   // int32
+
+void g3_pack(const torch::Tensor& x, int M, int K, int32_t* xa, cudaStream_t st) {
+  if (M <= 0) return;
+  const int MTA = (M + 15) / 16;
+  const long total = (long)(K / 64) * MTA * 64;
+  const int blocks = (int)std::min<long>((total + 255) / 256, 8192);
+  w8s80::pack_a_kernel<<<blocks, 256, 0, st>>>(reinterpret_cast<const __half*>(x.data_ptr<at::Half>()), (long)x.stride(0),
+                                               M, K, reinterpret_cast<uint4*>(xa), MTA);
+}
+
+void g3_check_x(const torch::Tensor& x) {
+  TORCH_CHECK(x.is_cuda() && x.dtype() == torch::kFloat16 && x.dim() == 2 && x.stride(1) == 1 &&
+              x.stride(0) % 8 == 0 && (reinterpret_cast<uintptr_t>(x.data_ptr()) % 16) == 0 && x.size(1) % 64 == 0,
+              "w8a16_sm80 v3: x [M,K] fp16, столбцы подряд, строки по 16 Б, K кратно 64");
+}
+
+void g3_launch(const int32_t* xa, long lda, int mt_off, const torch::Tensor& wf, const torch::Tensor& meta, __half* y,
+               long ldy, int M, int N, int K, int nw, int wm, int wn, int stages, int64_t splits, const at::TensorOptions& opt,
+               cudaStream_t st) {
+  const int KT = K / 64;
+  if (splits < 1) splits = 1;
+  int tps = (KT + (int)splits - 1) / (int)splits, sp = (KT + tps - 1) / tps;
+  const int BM = 64 * wm, BN = 64 * wn;
+  const dim3 grid0((M + BM - 1) / BM, N / BN, 1);
+  float* wsp = nullptr; int* cp = nullptr;
+  if (sp > 1) {
+    auto& S = scratch()[opt.device().index()];
+    const long tiles = (long)grid0.x * grid0.y;
+    if (g3_capturing(st)) {
+      // в захвате рабочая область не растёт: расщепление -- до вмещающегося (размер задаётся до захвата)
+      const long cap = S.ws.defined() ? S.ws.numel() : 0, ccap = S.cnt.defined() ? S.cnt.numel() : 0;
+      while (sp > 1 && ((long)sp * M * N > cap || tiles > ccap)) {
+        --splits;
+        tps = (KT + (int)splits - 1) / (int)splits;
+        sp = (KT + tps - 1) / tps;
+      }
+    } else {
+      const long need = (long)sp * M * N;
+      if (!S.ws.defined() || S.ws.numel() < need) {
+        if (S.ws.defined()) S.old.push_back(S.ws);
+        S.ws = torch::empty({std::max<long>(need, 1L << 20)}, opt.dtype(torch::kFloat32));
+      }
+      if (!S.cnt.defined() || S.cnt.numel() < tiles) {
+        if (S.cnt.defined()) S.old.push_back(S.cnt);
+        S.cnt = torch::zeros({std::max<long>(tiles, 1L << 16)}, opt.dtype(torch::kInt32));
+      }
+    }
+    if (sp > 1) { wsp = S.ws.data_ptr<float>(); cp = S.cnt.data_ptr<int>(); }
+  }
+  const dim3 grid(grid0.x, grid0.y, sp);
+  const int nwl = nw == 2 ? 1 : nw == 4 ? 2 : 3;
+  const uint4* xp = reinterpret_cast<const uint4*>(xa) + (long)mt_off * 128;
+#define G3_K(WM_, WN_, ST_, MINB_) do { const size_t smem = sizeof(w8s80::G3Smem<WM_, WN_, ST_>);                    \
+    auto k = w8s80::w8a16_sm80_gemm3<WM_, WN_, ST_, MINB_>; static bool a = false;                                     \
+    if (!a) { C10_CUDA_CHECK(cudaFuncSetAttribute(k, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem)); a = true; } \
+    k<<<grid, WM_ * WN_ * 32, smem, st>>>(xp, lda, reinterpret_cast<const uint4*>(wf.data_ptr<int>()),                   \
+      reinterpret_cast<const uint32_t*>(meta.data_ptr<int>()), y, ldy, wsp, cp, M, N, K, tps, nwl); } while (0)
+  if (wm == 2 && wn == 2 && stages == 3) G3_K(2, 2, 3, 2);
+  else if (wm == 2 && wn == 2 && stages == 4) G3_K(2, 2, 4, 1);
+  else if (wm == 1 && wn == 4 && stages == 3) G3_K(1, 4, 3, 2);
+  else if (wm == 1 && wn == 4 && stages == 4) G3_K(1, 4, 4, 1);
+  else if (wm == 2 && wn == 4 && stages == 3) G3_K(2, 4, 3, 1);
+  else if (wm == 2 && wn == 4 && stages == 4) G3_K(2, 4, 4, 1);
+  else if (wm == 4 && wn == 2 && stages == 3) G3_K(4, 2, 3, 1);
+  else TORCH_CHECK(false, "w8a16_sm80_gemm3: нет инстанса wm=", wm, " wn=", wn, " stages=", stages);
+#undef G3_K
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+torch::Tensor g3_out(c10::optional<torch::Tensor> out, int M, int N, const at::TensorOptions& opt) {
+  if (!out.has_value()) return torch::empty({M, N}, opt.dtype(torch::kFloat16));
+  auto y = *out;
+  TORCH_CHECK(y.scalar_type() == torch::kFloat16 && y.dim() == 2 && y.size(0) == M && y.size(1) == N &&
+              y.stride(1) == 1 && y.stride(0) >= N && y.stride(0) % 2 == 0 && y.device() == opt.device(),
+              "w8a16_sm80 v3: out [M, N] fp16, столбцы подряд");
+  return y;
+}
+}  // namespace
+
+// x [M,K] fp16 -> int32-тензор KT*ceil(M/16)*512 (порядок фрагментов); out -- готовый буфер не меньше.
+torch::Tensor w8a16_sm80_pack_a(torch::Tensor x, c10::optional<torch::Tensor> out) {
+  g3_check_x(x);
+  const c10::cuda::CUDAGuard guard(x.device());
+  const int M = (int)x.size(0), K = (int)x.size(1);
+  const long need = g3_pack_numel(M, K);
+  torch::Tensor xa;
+  if (out.has_value()) {
+    TORCH_CHECK(out->dtype() == torch::kInt32 && out->is_contiguous() && out->numel() >= need && out->device() == x.device(),
+                "pack_a: out -- int32 подряд, не меньше ", need);
+    xa = out->view(-1).narrow(0, 0, need);
+  } else {
+    xa = torch::empty({std::max<long>(need, 1L)}, x.options().dtype(torch::kInt32));
+  }
+  g3_pack(x, M, K, xa.data_ptr<int32_t>(), at::cuda::getCurrentCUDAStream());
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  return xa;
+}
+
+// xa -- выход pack_a (mta m16-плиток); вызов берёт строки [16*mt_off, 16*mt_off + M).
+torch::Tensor w8a16_sm80_gemm3(torch::Tensor xa, int64_t M, int64_t K, int64_t mta, int64_t mt_off, torch::Tensor wf,
+                               torch::Tensor meta, int64_t N, int64_t nw, int64_t wm, int64_t wn, int64_t stages,
+                               int64_t splits, c10::optional<torch::Tensor> out) {
+  const c10::cuda::CUDAGuard guard(xa.device());
+  TORCH_CHECK(xa.is_cuda() && xa.dtype() == torch::kInt32 && xa.is_contiguous(), "gemm3: xa -- int32 из pack_a");
+  TORCH_CHECK(K % 128 == 0 && N % (64 * wn) == 0 && N % (8 * nw) == 0, "gemm3: K кратно 128, N кратно ", 64 * wn);
+  TORCH_CHECK(mt_off >= 0 && mt_off + (M + 15) / 16 <= mta && xa.numel() >= (K / 64) * mta * 512, "gemm3: xa мал");
+  TORCH_CHECK(wf.numel() == N * K / 4 && meta.numel() == (K / 128) * N, "gemm3: wf/meta");
+  auto y = g3_out(out, (int)M, (int)N, xa.options());
+  if (M == 0) return y;
+  g3_launch(xa.data_ptr<int32_t>(), mta * 128, (int)mt_off, wf, meta, reinterpret_cast<__half*>(y.data_ptr<at::Half>()),
+            y.stride(0), (int)M, (int)N, (int)K, (int)nw, (int)wm, (int)wn, (int)stages, splits, xa.options(),
+            at::cuda::getCurrentCUDAStream());
+  return y;
+}
+
+// Упаковка в рабочий буфер потока + умножение. Буфер растёт только вне захвата графа; в захвате, если мал, --
+// временный тензор (пул графа).
+torch::Tensor w8a16_sm80_gemm3x(torch::Tensor x, torch::Tensor wf, torch::Tensor meta, int64_t N, int64_t nw, int64_t wm,
+                                int64_t wn, int64_t stages, int64_t splits, c10::optional<torch::Tensor> out) {
+  g3_check_x(x);
+  const c10::cuda::CUDAGuard guard(x.device());
+  const int M = (int)x.size(0), K = (int)x.size(1);
+  TORCH_CHECK(K % 128 == 0 && N % (64 * wn) == 0 && N % (8 * nw) == 0, "gemm3x: K кратно 128, N кратно ", 64 * wn);
+  TORCH_CHECK(wf.numel() == N * K / 4 && meta.numel() == (K / 128) * N, "gemm3x: wf/meta");
+  auto y = g3_out(out, M, (int)N, x.options());
+  if (M == 0) return y;
+  auto st = at::cuda::getCurrentCUDAStream();
+  const long need = g3_pack_numel(M, K);
+  auto& S = scratch()[x.device().index()];
+  torch::Tensor& buf = S.pa[(long)st.id()];
+  torch::Tensor xa;
+  if (buf.defined() && buf.numel() >= need) xa = buf;
+  else if (g3_capturing(st)) xa = torch::empty({need}, x.options().dtype(torch::kInt32));
+  else {
+    if (buf.defined()) S.old.push_back(buf);
+    buf = torch::empty({std::max<long>(need, 1L << 20)}, x.options().dtype(torch::kInt32));
+    xa = buf;
+  }
+  g3_pack(x, M, K, xa.data_ptr<int32_t>(), st);
+  g3_launch(xa.data_ptr<int32_t>(), (long)((M + 15) / 16) * 128, 0, wf, meta, reinterpret_cast<__half*>(y.data_ptr<at::Half>()),
+            y.stride(0), M, (int)N, K, (int)nw, (int)wm, (int)wn, (int)stages, splits, x.options(), st);
+  return y;
+}
+
+// Заранее (до захвата графов): буфер упаковки текущего потока, рабочая область split-K и счётчики плиток.
+void w8a16_sm80_g3_reserve(torch::Tensor like, int64_t pa_numel, int64_t ws_numel, int64_t cnt_numel) {
+  const c10::cuda::CUDAGuard guard(like.device());
+  auto& S = scratch()[like.device().index()];
+  auto st = at::cuda::getCurrentCUDAStream();
+  torch::Tensor& buf = S.pa[(long)st.id()];
+  if (pa_numel > 0 && (!buf.defined() || buf.numel() < pa_numel)) {
+    if (buf.defined()) S.old.push_back(buf);
+    buf = torch::empty({pa_numel}, like.options().dtype(torch::kInt32));
+  }
+  if (ws_numel > 0 && (!S.ws.defined() || S.ws.numel() < ws_numel)) {
+    if (S.ws.defined()) S.old.push_back(S.ws);
+    S.ws = torch::empty({ws_numel}, like.options().dtype(torch::kFloat32));
+  }
+  if (cnt_numel > 0 && (!S.cnt.defined() || S.cnt.numel() < cnt_numel)) {
+    if (S.cnt.defined()) S.old.push_back(S.cnt);
+    S.cnt = torch::zeros({cnt_numel}, like.options().dtype(torch::kInt32));
+  }
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("w8a16_sm80_pack_a", &w8a16_sm80_pack_a, "x [M,K] fp16 -> порядок фрагментов A (v3)",
+        py::arg("x"), py::arg("out") = py::none());
+  m.def("w8a16_sm80_gemm3", &w8a16_sm80_gemm3, "W8A16 sm_80 v3: x в порядке фрагментов, варп 64x64",
+        py::arg("xa"), py::arg("M"), py::arg("K"), py::arg("mta"), py::arg("mt_off"), py::arg("wf"), py::arg("meta"),
+        py::arg("N"), py::arg("nw") = 4, py::arg("wm") = 2, py::arg("wn") = 2, py::arg("stages") = 3,
+        py::arg("splits") = 1, py::arg("out") = py::none());
+  m.def("w8a16_sm80_gemm3x", &w8a16_sm80_gemm3x, "W8A16 sm_80 v3: упаковка x в буфер потока + умножение",
+        py::arg("x"), py::arg("wf"), py::arg("meta"), py::arg("N"), py::arg("nw") = 4, py::arg("wm") = 2,
+        py::arg("wn") = 2, py::arg("stages") = 3, py::arg("splits") = 1, py::arg("out") = py::none());
+  m.def("w8a16_sm80_g3_reserve", &w8a16_sm80_g3_reserve, "v3: буферы до захвата графов",
+        py::arg("like"), py::arg("pa_numel"), py::arg("ws_numel"), py::arg("cnt_numel"));
   m.def("w8a16_sm80_pack", &w8a16_sm80_pack, "GPTQ int8 g128 -> фрагментный порядок sm_80 (wf, meta)",
         py::arg("qweight"), py::arg("qzeros"), py::arg("scales"), py::arg("group_size"), py::arg("v2_zero"),
         py::arg("nw") = 4);
@@ -1733,7 +1963,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("x"), py::arg("wf"), py::arg("meta"), py::arg("N"), py::arg("nw") = 4, py::arg("nj") = 8,
         py::arg("stages") = 3, py::arg("splits") = 1, py::arg("pin") = false);
   m.def("w8a16_sm80_gemm_large", &w8a16_sm80_gemm_large, "W8A16 sm_80 большие M: прямой GEMM 128x128x64",
-        py::arg("x"), py::arg("wf"), py::arg("meta"), py::arg("N"), py::arg("nw") = 4, py::arg("mi") = 0, py::arg("splits") = 1);
+        py::arg("x"), py::arg("wf"), py::arg("meta"), py::arg("N"), py::arg("nw") = 4, py::arg("mi") = 0, py::arg("splits") = 1,
+        py::arg("mfast") = 0, py::arg("out") = py::none());
   m.def("w8a16_sm80_bmax", &w8a16_sm80_bmax, "аргмакс словаря, грубая ступень: максимумы по n-блокам",
         py::arg("x"), py::arg("wf"), py::arg("meta"), py::arg("N"), py::arg("ktu"), py::arg("nvalid"),
         py::arg("splits") = 1, py::arg("nw") = 4, py::arg("warps") = 8, py::arg("stages") = 3);

@@ -332,3 +332,31 @@ if os.environ.get("FA2SM70_CLEF", "0") == "1":
     except Exception:
         import traceback
         traceback.print_exc()
+
+# [ПАУЗЫ 30.10] ЖУРНАЛ ДОЛГИХ СБОРОК МУСОРА (FA2SM80_GC_LOG_MS=<мс>). Окно 14b: два шага подряд по 2.4 и 2.7 с при
+# обычном составе, без повторов выделения и без JIT. Воркеры размораживают кучу после захвата графов
+# (gpu_model_runner.freeze_gc), и полная сборка поколения 2 обходит всю кучу процесса (модули, кэши компиляции) --
+# кандидат на такие паузы; пауза одного ранга TP останавливает оба. Здесь -- только наблюдение: сборки дольше
+# порога пишутся в stderr (pid, поколение, длительность, собрано, объектов). Без переменной -- ничего.
+_gc_порог = os.environ.get("FA2SM80_GC_LOG_MS", "")
+if _gc_порог:
+    try:
+        import gc as _gc
+        import sys as _sys2
+        import time as _t2
+        _gc_п = float(_gc_порог) / 1e3
+        _gc_с = {"t": 0.0}
+
+        def _gc_cb(phase, info):
+            if phase == "start":
+                _gc_с["t"] = _t2.perf_counter()
+                return
+            dt = _t2.perf_counter() - _gc_с["t"]
+            if dt >= _gc_п:
+                print(f"[fa2_sm70 GC] pid {os.getpid()} поколение {info.get('generation')}: {dt * 1e3:.0f} мс, "
+                      f"собрано {info.get('collected')}, счётчики {_gc.get_count()}, заморожено {_gc.get_freeze_count()}",
+                      file=_sys2.stderr, flush=True)
+
+        _gc.callbacks.append(_gc_cb)
+    except Exception:
+        pass

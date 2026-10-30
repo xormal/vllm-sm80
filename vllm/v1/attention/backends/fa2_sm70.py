@@ -493,6 +493,33 @@ def _смешанный_декод_вкл():
             _MIX_DEC_ПЕРЕКЛ["вкл"] = True
     return _MIX_DEC_ПЕРЕКЛ["вкл"]
 
+# [ОДИН ГРАФ 30.10] FA2SM80_ATTN_VARLEN=1: строки prefill с Sq >= FA2SM80_ATTN_VARLEN_MINSQ (куски записей Clef) --
+# ОДНИМ вызовом на слой (attn_fwd_i8_paged_varlen: SM80-ядро, строка плитки -- из карты на устройстве), метаданные
+# (paged_varlen_meta: карта плиток + таблицы страниц всех строк) -- один раз на шаг и общие для всех слоёв внимания.
+# Прежде на каждую строку и слой -- шесть torch-операций таблиц страниц и свой запуск. Строки с окном, разреженным
+# отбором и короткие (спекулятивный декод q=1+k: там вольтовский порт с расщеплением по ключам) -- прежним путём.
+# Строки короче 512 (FA2SM80_PF_MINSQ) прежде шли вольтовским портом -- здесь SM80-ядром: ответ того же порядка
+# точности, но не побитно прежний. FA2SM80_ATTN_VARLEN_FILE=<файл>: "0"/"1" раз в секунду (A/B в одном экземпляре).
+_VARLEN = os.environ.get("FA2SM80_ATTN_VARLEN", "0") == "1"
+_VARLEN_FILE = os.environ.get("FA2SM80_ATTN_VARLEN_FILE", "")
+_VARLEN_MINSQ = int(os.environ.get("FA2SM80_ATTN_VARLEN_MINSQ", "64"))
+_VARLEN_ПЕРЕКЛ = {"t": 0.0, "вкл": _VARLEN}
+
+
+def _varlen_вкл():
+    if not _VARLEN_FILE:
+        return _VARLEN
+    сейчас = time.monotonic()
+    if сейчас - _VARLEN_ПЕРЕКЛ["t"] >= 1.0:
+        _VARLEN_ПЕРЕКЛ["t"] = сейчас
+        try:
+            with open(_VARLEN_FILE) as f:
+                _VARLEN_ПЕРЕКЛ["вкл"] = f.read(1) == "1"
+        except OSError:
+            _VARLEN_ПЕРЕКЛ["вкл"] = _VARLEN
+    return _VARLEN_ПЕРЕКЛ["вкл"]
+
+
 _SEL_SINK = int(os.environ.get("FA2SM70_SEL_SINK", "2"))
 _SEL_WIN = int(os.environ.get("FA2SM70_SEL_WIN", "8"))
 _SEL_REC = int(os.environ.get("FA2SM70_SEL_REC", "2"))
@@ -761,6 +788,7 @@ def _ph_dump(tag):
 
 _COUNTS = {
     "prefill": 0, "decode": 0, "store": 0, "prefill_win": 0, "decode_win": 0,
+    "fullmix": 0,   # [ОДИН ГРАФ 30.10] смешанный шаг полного графа (_fullmix_forward)
     # РАЗРЕЖЕННАЯ ВЕТКА -- СВОЙ счётчик. Ключ обязан быть ЗДЕСЬ: _COUNTS -- обычный dict, и
     # незаявленный ключ роняет воркер KeyError'ом на первом же длинном запросе (поймано замером).
     "prefill_sparse": 0, "kbar_upd": 0, "decode_sparse": 0, "tree_mask": 0,
@@ -773,7 +801,7 @@ _COUNTS = {
     # байты, а внимание читает их чужим маршрутом. Три счётчика = три места, где формат обязан был
     # совпасть: запись, сборка префилла, декод.
     "store_e4m3": 0, "store_i8": 0,
-    "prefill_e4m3": 0, "prefill_i8": 0, "prefill_i8_paged": 0,
+    "prefill_e4m3": 0, "prefill_i8": 0, "prefill_i8_paged": 0, "prefill_varlen": 0,
     "decode_e4m3": 0, "decode_i8": 0,
     # Ш1: быстрый однородный декод (путь под CUDA-граф). Отдельным счётчиком, а не внутри "decode":
     # иначе «граф захвачен» доказывалось бы тем, что декод вообще шёл, -- а он шёл бы и прежним путём.
@@ -904,6 +932,10 @@ def _say_once(msg: str, key: str | None = None) -> None:
 # Гейт ядра: побитово == gather-путь на 4 формах, включая некратный T и перестановленную
 # таблицу; 71.40 мс против 71.63 у gather+ядро на T=32K (сборка исчезла целиком).
 _PAGED_PREF = os.environ.get("FA2SM70_PAGED_PREFILL", "0") == "1"
+try:  # [ОДИН ГРАФ 30.10] полный граф смешанного шага (sm70/integrations/vllm_sm70/fa2sm70_fullmix.py)
+    import fa2sm70_fullmix as _FM
+except ImportError:  # pragma: no cover
+    _FM = None
 # [ЦЕЛЕВОЙ ВИД КОНТУРА] FA2SM70_KV_I8=1: движку пул объявлен fp8_e4m3 (его страница делит
 # mamba-страницу гибрида; int8-страница с масштабами +2*bs*Hkv*4 НЕ делит её ни при каком bs:
 # множители 5*13 против 2^16*7^2 -- Gemma-класс тупика унификации), а БАЙТЫ внутри наши:
@@ -1863,6 +1895,10 @@ class FA2SM70Impl(AttentionImpl):
         m = attn_metadata
         n = m.num_actual_tokens
 
+        _fm = _FM.ШАГ[0] if _FM is not None else None
+        if _fm is not None:
+            return self._fullmix_forward(query, output, kv_cache, m, int(_fm[2]))
+
         # =====================================================================================
         # Ш1. ОДНОРОДНЫЙ ДЕКОД БЕЗ ЕДИНОГО ВЫДЕЛЕНИЯ И БЕЗ ЧТЕНИЯ ХОСТОМ (путь под CUDA-граф).
         #
@@ -2005,6 +2041,10 @@ class FA2SM70Impl(AttentionImpl):
             pre_rows = self._смешанный_декод(query, output, out3, kv_cache, pool, m, qsl, seq_lens, pre_rows,
                                             block_size, Hkv, d)
 
+        if (pre_rows and (_VARLEN or _VARLEN_FILE) and _PAGED_PREF and self._fmt == _I8 and d == 256
+                and getattr(m, "causal", True) and block_size % 16 == 0 and _varlen_вкл()):
+            pre_rows = self._префилл_varlen(query, out3, pool, m, cache, qsl, seq_lens, pre_rows, block_size, Hkv)
+
         for i in pre_rows:
             _с_повтором(lambda i=i: self._prefill_row(
                 query, out3, pool, m, i,
@@ -2017,6 +2057,93 @@ class FA2SM70Impl(AttentionImpl):
                 seq_lens, block_size, Hkv, d,
             )
         return output
+
+    def _fullmix_forward(self, query, output, kv_cache, m, Dm):
+        """[ОДИН ГРАФ 30.10] Смешанный шаг полного графа (fa2sm70_fullmix), НЕ зависящий от состава. Dm -- ёмкость графа
+        по спекулятивным строкам. Маска спекулятивных строк -- черновики на карте (>= 0). 1) однородное ядро декода на
+        Dm строк (k+1 запечено, плотно -- как графы декода); длины строк-не-спекуляций -- 0, их выход перезапишет шаг 2;
+        2) ОДИН varlen-вызов по всем R строкам (у спекулятивных sq=0 -- пропускаются; заполнители -- тоже нулевые).
+        Метаданные varlen граф строит сам из постоянных qsl/seq_lens и таблицы блоков. Ни одного чтения хостом."""
+        H, d = self.num_heads, self.head_size
+        pool = self._pool(kv_cache, "forward")
+        block_size = int(pool["k"].shape[1])
+        Hkv = int(pool["k"].shape[2])
+        if not (_PAGED_PREF and self._fmt == _I8 and d == 256 and getattr(m, "causal", True) and block_size % 16 == 0
+                and _FM.ЧЕРНОВИКИ[0] is not None):
+            raise RuntimeError("fullmix: внимание требует paged int8, d=256, causal и черновики на карте")
+        T = int(query.shape[0])
+        R = int(m.num_reqs)
+        k1 = int(_FM.K1[0])
+        спек = _FM.ЧЕРНОВИКИ[0][:R] >= 0
+        if Dm > 0:
+            sl_дек = torch.where(спек[:Dm], m.seq_lens[:Dm], torch.zeros_like(m.seq_lens[:Dm]))
+            if self._decode_uniform(query, output, kv_cache, m, Dm, k1, плотно=True, sl_src=sl_дек) is None:
+                raise RuntimeError("fullmix: однородный путь декода не взят")
+        out3 = output.view(-1, H, d) if output.dim() == 2 else output
+        ext = self._pre()
+        qsl = m.query_start_loc[:R + 1]
+        bt = m.block_table
+        if bt.dtype != torch.int32:
+            raise RuntimeError("fullmix: таблица блоков не int32")
+        q0s = qsl[:R].to(torch.int32)
+        sqs = torch.where(спек, torch.zeros_like(qsl[:R]), qsl[1:] - qsl[:R]).to(torch.int32)
+        sks = m.seq_lens[:R].to(torch.int32)
+        ridx = torch.arange(R, dtype=torch.int32, device=query.device)
+        ntmax = (T + 127) // 128 + R
+        pgcap = R * ((int(bt.shape[1]) * block_size + 15) // 16)
+        tiles, vo, vsc, _err = ext.paged_varlen_meta(q0s, sqs, sks, ridx, bt, block_size, int(pool["k"].stride(0)),
+                                                     Hkv, ntmax, pgcap)
+        ext.attn_fwd_i8_paged_varlen(query[:T], pool["k"], pool["v"], pool["ks"], pool["vs"], tiles, vo, vsc,
+                                     float(self.scale), True, out3[:T])
+        _bump("fullmix")
+        return output
+
+    def _префилл_varlen(self, query, out3, pool, m, cache, qsl, seq_lens, pre_rows, block_size, Hkv):
+        """[ОДИН ГРАФ 30.10] Годные строки prefill -- одним вызовом; возвращает строки для прежнего пути."""
+        ext = self._pre()
+        if not hasattr(ext, "attn_fwd_i8_paged_varlen"):
+            return pre_rows
+        W = self.window
+        годные = []
+        for i in pre_rows:
+            sq, T = qsl[i + 1] - qsl[i], int(seq_lens[i])
+            if sq < _VARLEN_MINSQ or (W > 0 and T > W):
+                continue
+            if _SPARSE_T and T >= _SPARSE_T and sq >= _SPARSE_MINSQ and getattr(self, "_sparse_layer_ok", True):
+                continue
+            годные.append(i)
+        if not годные:
+            return pre_rows
+        геом = (block_size, int(pool["k"].stride(0)), Hkv)
+        vm = cache.get("varlen")
+        if vm is None or vm[0] != tuple(годные) or vm[1] != геом:
+            ts, te = qsl[годные[0]], qsl[годные[-1] + 1]
+            sqs = [qsl[i + 1] - qsl[i] for i in годные]
+            sks = [int(seq_lens[i]) for i in годные]
+            # обычная память + non_blocking: копия забирает данные до возврата, синхронизации нет
+            мета = torch.tensor([[qsl[i] - ts for i in годные], sqs, sks, годные],
+                                dtype=torch.int32).to(query.device, non_blocking=True)
+            bt = cache.get("bt32")
+            if bt is None:
+                bt = m.block_table.to(torch.int32)
+                if bt.stride(-1) != 1:
+                    bt = bt.contiguous()
+                cache["bt32"] = bt
+            ntmax = sum((x + 127) // 128 for x in sqs)
+            pgcap = sum((x + 15) // 16 for x in sks)
+            tiles, vo, vsc, _err = ext.paged_varlen_meta(мета[0], мета[1], мета[2], мета[3], bt, block_size,
+                                                         геом[1], Hkv, ntmax, pgcap)
+            vm = (tuple(годные), геом, ts, te, tiles, vo, vsc)
+            cache["varlen"] = vm
+        _, _, ts, te, tiles, vo, vsc = vm
+        q = query[ts:te].contiguous()
+        _с_повтором(lambda: ext.attn_fwd_i8_paged_varlen(q, pool["k"], pool["v"], pool["ks"], pool["vs"], tiles, vo,
+                                                          vsc, float(self.scale), True, out3[ts:te]))
+        _bump("prefill_varlen")
+        _say_once(f"префилл VARLEN: {len(годные)} строк одним вызовом на слой (метаданные на устройстве)",
+                  key="varlen")
+        взяты = set(годные)
+        return [i for i in pre_rows if i not in взяты]
 
     def _prefill_row(
         self, query, output, pool, m, row, t0, t1, T, block_size, Hkv, d
@@ -2537,7 +2664,7 @@ class FA2SM70Impl(AttentionImpl):
                   file=__import__("sys").stderr, flush=True)
         return pre_rows[k0:]
 
-    def _decode_uniform(self, query, output, kv_cache, m, B, q: int = 1):
+    def _decode_uniform(self, query, output, kv_cache, m, B, q: int = 1, плотно: bool = False, sl_src=None):
         """Ш1: однородный декод -- ни одного выделения, ни одного чтения хостом.
 
         Возвращает выходной буфер, если путь применим, иначе None (тогда идёт прежний путь).
@@ -2569,15 +2696,16 @@ class FA2SM70Impl(AttentionImpl):
         if _DEC_QGRP[0] is None:
             _DEC_QGRP[0] = "qGrp" in (
                 getattr(self._dec().flash_decode_defer_mqa_paged_into, "__doc__", "") or "")
+        _sl_все = m.seq_lens if sl_src is None else sl_src     # [ОДИН ГРАФ 30.10] длины строк можно подменить
         if q > 1:
             if _DEC_QGRP[0] and _QGRP_ON:
-                sl = m.seq_lens[:B]; _qg = q
+                sl = _sl_все[:B]; _qg = q
                 _say_once("виртуальный батч БЕЗ КОПИЙ (ядро считает запрос и длину само)",
                           key="qgrp")
             else:
-                bt, sl = self._virt_batch(B, q, bt, m.seq_lens, m, причинно=_прич)
+                bt, sl = self._virt_batch(B, q, bt, _sl_все, m, причинно=_прич)
         else:
-            sl = m.seq_lens[:B]
+            sl = _sl_все[:B]
         B = N                                   # дальше всё считается по строкам виртуального батча
         kv_cap = int(bt.shape[1]) * block_size
         # [ГРАНИЦА ТАБЛИЦЫ БЛОКОВ -- ПРИБОР И ЗАМОК, 31.08]
@@ -2658,7 +2786,7 @@ class FA2SM70Impl(AttentionImpl):
         # спекуляции, у каждой своя seq_len и своя причинность. Средние ключи берутся из
         # таблицы пула, обновлённой при записи KV.
         _sc = _si = None
-        if _SPARSE_DEC and self._fmt == _I8 and _SPARSE_DEC_ALPHA > 0:
+        if _SPARSE_DEC and self._fmt == _I8 and _SPARSE_DEC_ALPHA > 0 and not плотно:
             _kb = _kbar_pool(pool, _SPARSE_B)
             # ПОРОГ БЕРЁТСЯ ИЗ ХОЗЯЙСКОГО ЧИСЛА, а не из `int(sl.max())`: последнее -- это
             # синхронизация GPU->CPU в горячем пути (запрещена) и разрыв CUDA-графа.

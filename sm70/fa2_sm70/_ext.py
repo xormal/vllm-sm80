@@ -331,6 +331,22 @@ def w8a16_sm80_ext():
     return _w8a16_sm80
 
 
+_marlin8 = None
+
+
+def marlin8_ext():
+    """[ФРИЗЫ 30.10] Marlin W8A16 kU8 + нули (асимметричный GPTQ int8, fp16, g128) в нашей сборке (marlin8_sm80.cu):
+    шаблон и хост-часть Marlin из csrc/quantization/marlin vLLM, свои экземпляры ядер и буферы."""
+    global _marlin8
+    if _marlin8 is None:
+        _common()
+        import vllm as _v
+        vc = os.environ.get("FA2SM70_VLLM_CSRC") or os.path.join(os.path.dirname(os.path.dirname(_v.__file__)), "csrc")
+        _marlin8 = _build("fa2sm80_marlin8", "marlin8_sm80.cu", ["-O3", "-std=c++17", "-Xptxas", "-v"],
+                          inc=[vc, os.path.join(vc, "quantization", "marlin"), _CSRC])
+    return _marlin8
+
+
 _w8a8_sm80 = None
 
 
