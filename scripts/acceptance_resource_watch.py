@@ -21,8 +21,9 @@ while True:
         for name in ("memory.current", "memory.peak", "memory.events", "cpu.stat"):
             try: sample[name] = (root / name).read_text().strip()
             except FileNotFoundError: pass
-    if available < 8 * 1024**3:
-        sample["action"] = "KILL candidate only: host available memory <8GiB"
+    # 31.10 владелец: предел 4 ГиБ вместо 8 (провалы до ~8 ГиБ дают другие процессы хоста, боевой в покое 12.4 ГиБ)
+    if available < 4 * 1024**3:
+        sample["action"] = "KILL candidate only: host available memory <4GiB"
         subprocess.run(["systemctl", "--user", "kill", "--kill-whom=all", "--signal=SIGKILL", unit], check=False)
     with (STATE / "host-memory.jsonl").open("a") as f:
         f.write(json.dumps(sample) + "\n")

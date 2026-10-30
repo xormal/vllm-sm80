@@ -70,7 +70,8 @@ def main():
         age=now-int(fields.get('ActiveEnterTimestampMonotonic') or 0)/1e6
         action=policy.decide(now=now,invocation=fields.get('InvocationID',''),
             state=fields['ActiveState'],age=age,healthy=healthy,
-            metrics=sample.get('metrics'),available=available)
+            metrics=sample.get('metrics'),available=available,
+            reclaimable=int(sample.get('memory.current') or 0))
         if action:
             # Avoid restarting a replacement process or a manually stopped unit.
             current=subprocess.check_output(['systemctl','--user','show',UNIT,

@@ -12,7 +12,7 @@ class RecoveryPolicy:
     action_at: float = -1e30
     failed_since: float | None = None
 
-    def decide(self, *, now, invocation, state, age, healthy, metrics, available):
+    def decide(self, *, now, invocation, state, age, healthy, metrics, available, reclaimable=0):
         if state=='failed':
             if self.failed_since is None:self.failed_since=now
         else:self.failed_since=None
@@ -33,7 +33,9 @@ class RecoveryPolicy:
         if not inflight or counters!=self.counters:
             self.progress_at=now
         self.counters=counters
-        if available<16*1024**3 or now-self.action_at<300:return None
+        # 31.10: память самого активного юнита освобождается при перезапуске -- идёт в запас 16 GiB (иначе при живом
+        # боевом MemAvailable 15-19 GiB и зависший процесс не перезапускался 7-26 % времени)
+        if available+(reclaimable if state=='active' else 0)<16*1024**3 or now-self.action_at<300:return None
         action=None
         if state=='failed' and now-self.failed_since>=300:
             action=('start','failed unit persisted for300s; retry after systemd start limit')

@@ -36,6 +36,18 @@ class RecoveryTests(unittest.TestCase):
         for i in range(100):
             self.assertIsNone(p.decide(now=1000+i*30,invocation='x',state='active',age=1000,
                 healthy=True,metrics={'num_requests_running':1,'generation_tokens_total':i},available=20*1024**3))
+    def test_restart_counts_own_memory(self):
+        self.step(healthy=True)
+        for i in range(5):self.assertIsNone(self.step(now=1010+i*10,available=12*1024**3,reclaimable=12*1024**3))
+        self.assertEqual(self.step(now=1060,available=12*1024**3,reclaimable=12*1024**3)[0],'restart')
+        p=module.RecoveryPolicy()
+        p.decide(now=1000,invocation='y',state='active',age=100,healthy=True,metrics=None,available=12*1024**3)
+        for i in range(10):
+            self.assertIsNone(p.decide(now=1010+i*10,invocation='y',state='active',age=100,healthy=False,
+                                       metrics=None,available=12*1024**3))
+    def test_failed_ignores_reclaimable(self):
+        self.assertIsNone(self.step(state='failed',available=10*1024**3,reclaimable=12*1024**3))
+        self.assertIsNone(self.step(now=1301,state='failed',available=10*1024**3,reclaimable=12*1024**3))
     def test_new_process_gets_startup_grace(self):
         self.step(healthy=True)
         for i in range(5):self.step(now=1010+i*10)
