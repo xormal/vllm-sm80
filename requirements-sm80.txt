@@ -1,0 +1,5 @@
+# Python environment of the A100 (sm_80) deployment. The pins are those of the V100 deployment: `pip freeze` of the
+# running sm_80 virtualenv on 2026-10-31 equals requirements-sm70.txt (plus the dev tool pyflakes). vLLM's C++/CUDA
+# code is built from this repository for sm_80 by scripts/install_from_source_sm80.sh; flash-attention-v100 is not
+# needed on Ampere.
+-r requirements-sm70.txt

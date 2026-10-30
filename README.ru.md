@@ -144,10 +144,35 @@ PCIe 3.0 и хост.
 
 * 2× NVIDIA A100 (проверено: одна пара DRIVE A100 PROD 32 ГБ), отданные серверу целиком (план памяти фиксирован,
   `--gpu-memory-utilization 0.96`).
-* CUDA 12.x (на сервере 12.9) и Python 3.12. Ядра `sm70/fa2_sm70` собираются JIT под sm_80 при
-  `TORCH_CUDA_ARCH_LIST=8.0` (добавляется `-DFA2_SM80=1`).
-* Скриптовая сборка из исходников в этом репозитории, [`scripts/install_from_source.sh`](scripts/install_from_source.sh),
-  пока под sm_70 (`TORCH_CUDA_ARCH_LIST=7.0`); скриптовая сборка окружения под sm_80 ещё не опубликована.
+* CUDA 12.x (на сервере 12.9; CUDA 13 не поддерживается), gcc, который она принимает, Python 3.12, не меньше
+  24 ГБ свободной памяти для сборки с `MAX_JOBS=4` (единицы Marlin/CUTLASS берут по 4–5 ГБ).
+
+```bash
+git clone -b sm80 https://github.com/xormal/vllm-sm80.git
+cd vllm-sm80
+CUDA_HOME=/usr/local/cuda-12.9 MAX_JOBS=4 scripts/install_from_source_sm80.sh      # DRYRUN=1 -- только проверка инструментов
+```
+
+[`scripts/install_from_source_sm80.sh`](scripts/install_from_source_sm80.sh) воспроизводит окружение сервера:
+
+1. закреплённые пакеты ([`requirements-sm80.txt`](requirements-sm80.txt), те же версии, что для sm_70: torch
+   2.9.1+cu128, triton 3.5.1, transformers 4.57.6, …);
+2. C++/CUDA-код vLLM **только под sm_80** и только цели, которые загружает сервер (`_C`, `cumem_allocator`,
+   `triton_kernels`) — FlashAttention, FlashMLA и MoE-ядра vLLM не нужны (внимание своё, модель плотная); около часа
+   с `MAX_JOBS=4`;
+3. регистрирует дерево исходников в виртуальном окружении как `vllm 0.0.3+sm80`;
+4. кладёт в `STATE_DIR` таблицы подбора W8 и CUTLASS-GEMM, измеренные на наших картах
+   ([`configs/sm80-tune`](configs/sm80-tune)), — без них первый старт выбирает конфигурации ядер по замеру времени, а
+   это невоспроизводимо;
+5. заранее, без GPU, собирает JIT-ядра `sm70/fa2_sm70` скриптом [`scripts/build_kernels_sm80.sh`](scripts/build_kernels_sm80.sh)
+   ровно в окружении запускающего скрипта (`TORCH_CUDA_ARCH_LIST=8.0` добавляет `-DFA2_SM80=1`; тот же gcc, пути
+   заголовков и ninja), чтобы первый старт загрузил их, а не пересобирал (15–30 мин). После правки ядра — запустить
+   его снова.
+
+Скрипт отказывается работать, пока виртуальное окружение занято процессом (`FORCE=1` — обойти). Шаг CMake у vLLM
+скачивает зависимости; без сети укажите локальные копии в `VLLM_CUTLASS_SRC_DIR`, `VLLM_FLASH_ATTN_SRC_DIR`,
+`FLASH_MLA_SRC_DIR`, `QUTLASS_SRC_DIR` и `TRITON_KERNELS_SRC_DIR` (ревизии — в
+[README vLLM-SM70](https://github.com/xormal/vllm-sm70/blob/sm70/README.ru.md)).
 
 ## Запуск
 
@@ -156,7 +181,7 @@ PY=.venv/bin/python MODEL_DIR=/models/Qwen3.8-27B-ABLITERATED-GPTQ-Int8-Clef \
 CARDS=0,1 PORT=8000 scripts/serve_qwen38_sm80.sh
 ```
 
-[`scripts/serve_qwen38_sm80.sh`](scripts/serve_qwen38_sm80.sh) загружает [`configs/qwen38-27b-int8-sm80.env`](configs/qwen38-27b-int8-sm80.env)
+[`scripts/serve_qwen38_sm80.sh`](scripts/serve_qwen38_sm80.sh) (с тем же `STATE_DIR`, что и при установке) загружает [`configs/qwen38-27b-int8-sm80.env`](configs/qwen38-27b-int8-sm80.env)
 поверх [`configs/qwen38-27b-int8-clef.env`](configs/qwen38-27b-int8-clef.env) (переменные, уже заданные вызывающим,
 главнее), собирает все ядра в одном процессе и поднимает сервер с API, совместимым с OpenAI. Боевой профиль поверх
 него — [`scripts/serve_candidate_live.sh`](scripts/serve_candidate_live.sh), его рычаги перечислены в
@@ -203,9 +228,10 @@ vllm/                     vLLM 0.0.3 (1Cat-vLLM) + боевой рантайм �
 sm70/                     библиотека ядер и слой интеграции (MIT); собирается под sm_70 и, с FA2_SM80, под sm_80
   fa2_sm70/csrc/          ядра CUDA: *_sm80.* — переносы и дополнения для Ampere, см. docs/sm80/KERNELS.md
   integrations/vllm_sm70/ слой рантайма: линейные пути, конвейер блока, обмен TP, голова MTP, Clef
-scripts/                  запуск (serve_qwen38_sm80.sh, serve_candidate_live.sh), bench_conc.py, стенды ядер,
-                          скрипты окон обслуживания (window*.sh)
-configs/                  наборы рычагов (qwen38-27b-int8-sm80.env поверх qwen38-27b-int8-clef.env), юниты systemd
+scripts/                  install_from_source_sm80.sh, build_kernels_sm80.sh, запуск (serve_qwen38_sm80.sh,
+                          serve_candidate_live.sh), bench_conc.py, стенды ядер, скрипты окон обслуживания
+configs/                  наборы рычагов (qwen38-27b-int8-sm80.env поверх qwen38-27b-int8-clef.env), sm80-tune/
+                          (таблицы подбора DRIVE A100 PROD), юниты systemd
 docs/sm80/                изменения в ядрах, нагрузочные тесты, сырые результаты
 docs/research/            журнал исследования: профили, окна A/B, неудачные попытки
 ```

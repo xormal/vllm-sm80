@@ -144,10 +144,33 @@ Method, configuration and every table: [docs/sm80/LOAD_TESTS.md](docs/sm80/LOAD_
 
 * 2× NVIDIA A100 (tested: one pair of DRIVE A100 PROD 32 GB), dedicated to the server (fixed memory plan,
   `--gpu-memory-utilization 0.96`).
-* CUDA 12.x toolkit (the deployment uses 12.9) and Python 3.12. The kernels in `sm70/fa2_sm70` are JIT-built for
-  sm_80 when `TORCH_CUDA_ARCH_LIST=8.0` (adds `-DFA2_SM80=1`).
-* The scripted source build in this repository, [`scripts/install_from_source.sh`](scripts/install_from_source.sh),
-  is still the sm_70 one (`TORCH_CUDA_ARCH_LIST=7.0`); a scripted sm_80 environment build is not published yet.
+* CUDA 12.x toolkit (the deployment uses 12.9; CUDA 13 is not supported), a host gcc it accepts, Python 3.12,
+  ≥ 24 GB of free RAM for the build with `MAX_JOBS=4` (Marlin/CUTLASS units take 4–5 GB each).
+
+```bash
+git clone -b sm80 https://github.com/xormal/vllm-sm80.git
+cd vllm-sm80
+CUDA_HOME=/usr/local/cuda-12.9 MAX_JOBS=4 scripts/install_from_source_sm80.sh      # DRYRUN=1 checks the toolchain only
+```
+
+[`scripts/install_from_source_sm80.sh`](scripts/install_from_source_sm80.sh) reproduces the deployed environment:
+
+1. the pinned packages ([`requirements-sm80.txt`](requirements-sm80.txt), the same pins as sm_70: torch 2.9.1+cu128,
+   triton 3.5.1, transformers 4.57.6, …);
+2. vLLM's C++/CUDA code for **sm_80 only** and only the targets the server loads (`_C`, `cumem_allocator`,
+   `triton_kernels`) — vLLM's own FlashAttention, FlashMLA and MoE kernels are not needed (attention is ours, the
+   model is dense), about an hour with `MAX_JOBS=4`;
+3. the source tree registered in the virtualenv as `vllm 0.0.3+sm80`;
+4. the W8 and CUTLASS-GEMM tuning tables measured on these cards ([`configs/sm80-tune`](configs/sm80-tune)) into
+   `STATE_DIR` — without them the first start picks kernel configurations by timing, which is not reproducible;
+5. the `sm70/fa2_sm70` JIT kernels, prebuilt without a GPU by [`scripts/build_kernels_sm80.sh`](scripts/build_kernels_sm80.sh)
+   in exactly the launcher's environment (`TORCH_CUDA_ARCH_LIST=8.0` adds `-DFA2_SM80=1`; the same gcc, include paths
+   and ninja), so the first start loads them instead of rebuilding (15–30 min). Re-run it after changing a kernel.
+
+The script refuses to run while a process uses the target virtualenv (`FORCE=1` overrides). vLLM's CMake step clones
+its dependencies; offline, point `VLLM_CUTLASS_SRC_DIR`, `VLLM_FLASH_ATTN_SRC_DIR`, `FLASH_MLA_SRC_DIR`,
+`QUTLASS_SRC_DIR` and `TRITON_KERNELS_SRC_DIR` at local checkouts (revisions in the
+[vLLM-SM70 README](https://github.com/xormal/vllm-sm70#installation)).
 
 ## Serving
 
@@ -156,7 +179,7 @@ PY=.venv/bin/python MODEL_DIR=/models/Qwen3.8-27B-ABLITERATED-GPTQ-Int8-Clef \
 CARDS=0,1 PORT=8000 scripts/serve_qwen38_sm80.sh
 ```
 
-[`scripts/serve_qwen38_sm80.sh`](scripts/serve_qwen38_sm80.sh) loads [`configs/qwen38-27b-int8-sm80.env`](configs/qwen38-27b-int8-sm80.env)
+[`scripts/serve_qwen38_sm80.sh`](scripts/serve_qwen38_sm80.sh) (pass the same `STATE_DIR` as to the install) loads [`configs/qwen38-27b-int8-sm80.env`](configs/qwen38-27b-int8-sm80.env)
 over [`configs/qwen38-27b-int8-clef.env`](configs/qwen38-27b-int8-clef.env) (variables already set by the caller
 win), builds all kernels in one process and starts the OpenAI-compatible server. The production profile on top of
 it is [`scripts/serve_candidate_live.sh`](scripts/serve_candidate_live.sh); its levers are listed in
@@ -205,9 +228,10 @@ vllm/                     vLLM 0.0.3 (1Cat-vLLM) + the production Python runtime
 sm70/                     kernel library and integration layer (MIT); builds for sm_70 and, with FA2_SM80, sm_80
   fa2_sm70/csrc/          CUDA kernels: *_sm80.* are the Ampere ports and additions, see docs/sm80/KERNELS.md
   integrations/vllm_sm70/ runtime layer: linear paths, block pipeline, TP exchange, MTP head, Clef
-scripts/                  launchers (serve_qwen38_sm80.sh, serve_candidate_live.sh), bench_conc.py, kernel
-                          benches, maintenance-window scripts (window*.sh)
-configs/                  lever sets (qwen38-27b-int8-sm80.env over qwen38-27b-int8-clef.env), systemd units
+scripts/                  install_from_source_sm80.sh, build_kernels_sm80.sh, launchers (serve_qwen38_sm80.sh,
+                          serve_candidate_live.sh), bench_conc.py, kernel benches, maintenance-window scripts
+configs/                  lever sets (qwen38-27b-int8-sm80.env over qwen38-27b-int8-clef.env), sm80-tune/ (tuning
+                          tables of the DRIVE A100 PROD), systemd units
 docs/sm80/                kernel changes, load tests, raw results
 docs/research/            the investigation journal (Russian): profiles, A/B windows, failed attempts
 ```

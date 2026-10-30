@@ -86,13 +86,19 @@ export CC="$cc_ok" CXX="${cc_ok/gcc/g++}" CUDAHOSTCXX="${cc_ok/gcc/g++}"
 export TORCH_CUDA_ARCH_LIST=8.0 MAX_JOBS="${MAX_JOBS:-1}"
 # torch's JIT loader shells out to `ninja` and `nvcc` in EVERY worker: put the virtualenv's bin
 # (pip's ninja lives there) and the toolkit on PATH even when PY is called without activation.
-PY_BIN="$(dirname "$(command -v "$PY")")"
+# absolute: torch runs ninja from the build directory, where a relative .venv/bin is not found and the system
+# ninja (another version, other command hashes) would rebuild every extension
+PY_BIN="$(cd "$(dirname "$(command -v "$PY")")" && pwd)"
 export PATH="$PY_BIN:$CUDA_HOME/bin:$PATH"
 
 # ---------------------------------------------------------------- 3. paths
 export FA2SM70_PATH="$REPO/sm70"
 export PYTHONPATH="$REPO/sm70/integrations/vllm_sm70:$REPO/sm70${PYTHONPATH:+:$PYTHONPATH}"
 export FA2SM70_BUILD_DIR="${FA2SM70_BUILD_DIR:-$STATE_DIR/build}"
+# Tuning tables (configs/sm80-tune, installed by install_from_source_sm80.sh): W8 kernel choice per weight shape and the
+# CUTLASS prefill GEMM table. Without them the first start chooses by timing, which is not reproducible.
+export FA2SM80_W8_TUNE_DIR="${FA2SM80_W8_TUNE_DIR:-$STATE_DIR/w8tune}"
+export FA2SM80_CG_TABLE="${FA2SM80_CG_TABLE:-$STATE_DIR/cgtune.json}"
 export FA2SM70_W12_CACHE="${FA2SM70_W12_CACHE:-$STATE_DIR/w12/$(basename "$MODEL_DIR")}"
 # Кэш torch inductor/Triton -- на диск, а не в /tmp/torchinductor_$USER по умолчанию: /tmp чистится при
 # перезагрузке, и первый старт после неё заново компилировал бы все ядра графа (перенесён 24.10).
@@ -213,6 +219,8 @@ if os.environ.get("FA2SM70_CLEF") == "1":
     names.append("clef_ext")
 if os.environ.get("FA2SM80_W8A8", "off") not in ("", "off") or os.environ.get("FA2SM80_W8A8_FILE"):
     names.append("w8a8_sm80_ext")
+if os.environ.get("FA2SM80_W8_MARLIN") == "1":     # otherwise both TP workers build Marlin8 lazily at once
+    names.append("marlin8_ext")
 bad = 0
 for n in names:
     t = time.time()
