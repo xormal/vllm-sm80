@@ -108,6 +108,12 @@ export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-$STATE_DIR/torchinduc
 # graph compiled under one lever set from being replayed under another (silent misuse otherwise).
 fp="sm80|${FA2SM80_W8:-}|${FA2SM70_W8:-}|${FA2SM70_TM8:-}|${FA2SM70_TM8_ONLY:-}|${FA2SM70_TM8_NMIN:-}|${FA2SM70_W12:-}|${FA2SM80_W12:-}|${FA2SM80_ROWPIPE:-}|${FA2SM80_BLOCKPIPE:-}|${FA2SM70_DRAFT_TM8:-}|${FA2SM70_LMH:-}|${FA2SM70_FMLP:-}|${FA2SM70_GDN_I16:-}|${FA2SM70_MTP_W8:-}|${FA2SM70_MTP_W8_NSPLIT:-}"
 export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-$STATE_DIR/vllm-cache-$(printf '%s' "$fp" | md5sum | cut -c1-8)}"
+# Levers that reshape the MTP head graph get their own cache even under an explicit VLLM_CACHE_ROOT (live/A-B
+# launchers): vLLM derives the key from the backbone's traced files once and reuses it for the head (window 30:
+# FA2SM80_MTP_MLP_ROWS=1024 loaded the head graph compiled without it).
+if [ "${FA2SM80_MTP_MLP_ROWS:-0}" != "0" ]; then
+  export VLLM_CACHE_ROOT="$VLLM_CACHE_ROOT-mtpmlp$FA2SM80_MTP_MLP_ROWS"
+fi
 if [ "${FA2SM70_CLEF:-0}" = "1" ]; then
   export FA2SM70_CLEF_DIR="${FA2SM70_CLEF_DIR:-$MODEL_DIR/clef}"
   for f in clef_lora_r256_fp16.safetensors deabl_abl_fp16.safetensors joint_head_fp16.safetensors; do

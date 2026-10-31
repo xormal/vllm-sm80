@@ -43,6 +43,10 @@ export FA2SM80_M8DQ=42
 # Откат: убрать две строки и перезапустить (размеры захвата -- в хэше компиляции: прежний кэш остаётся).
 export FA2SM80_CG_SIZES=1,2,4,8,12,16,20,24,28,32,36,40,45
 export FA2SM80_MTP_LOOP_GRAPH_MAXB=9
+# [ПАМЯТЬ 01.11] Окно 30: MLP головы MTP по кускам строк (fa2sm70_mtp_w8.py) -- 31.10 19:30 OOM в черновике на шаге
+# 8192 токенов (gate_up [M, 17408] + SiLU [M, 8704] = 408 МиБ); кусками пик -- выход + кусок (~170 МиБ), выход побитно тот же.
+# Откат: убрать строку и перезапустить.
+export FA2SM80_MTP_MLP_ROWS=1024
 export VLLM_CACHE_ROOT="$STATE_DIR/acceptance/vllm-candidate-fallback-0-conv-all-1"
 export FA2SM70_CLEF_OUT="$STATE_DIR/acceptance/clef-candidate"
 cd "$CANDIDATE_REPO"

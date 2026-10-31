@@ -43,7 +43,103 @@ _MMAX = int(os.environ.get("FA2SM70_MTP_W8_MMAX", "4"))
 # проход черновика, а не на каждый слой.
 _NSPLIT = int(os.environ.get("FA2SM70_MTP_W8_NSPLIT", "1"))
 _SPLIT_NMIN = int(os.environ.get("FA2SM70_MTP_W8_SPLIT_NMIN", "8192"))
-_С = {"слоёв": 0, "МиБ": 0.0, "делённых": 0}
+
+# [ПАМЯТЬ 31.10] MLP ГОЛОВЫ ПО КУСКАМ СТРОК (A100, FA2SM80_MTP_MLP_ROWS=N, 0 -- выкл.).
+# 31.10 19:30 боевой упал OOM в черновике на шаге 8192 токенов: gate_up головы держал выход [M, 17408] (272 МиБ), а
+# SiluAndMul заводил поверх [M, 8704] (136 МиБ) -- не хватило 6 МиБ (свободно 130, ещё 499 дробных в резерве). MLP
+# основной сети режет на куски конвейер блока, голову MTP он не берёт. Здесь gate_up + SiluAndMul -- одна непрозрачная
+# операция: при M >= FA2SM80_MTP_MLP_MIN строки идут равными кусками ~N, выход [M, 8704] заполняется по кускам, пик --
+# выход + один кусок gate_up (34 МиБ при N=1024) вместо 408 МиБ. Выход побитно тот же: при M > 512 gate_up -- деквант +
+# свой GEMM (FA2SM80_CG, инвариантен к пачке), куски при N >= 1024 и M >= 2048 длиннее 512 строк и идут тем же
+# маршрутом; SiLU -- то же выражение, что сшитое inductor-ядро прежнего прохода: (g * sigmoid(g)) * u в fp32, одно
+# округление. FA2SM80_MTP_MLP_CHECK=n -- первые n резаных вызовов сверяются с целым проходом (память целого -- на время
+# сверки). Отказ памяти на куске -- кусок вдвое меньше (до 128 строк) с той же строки: обмена TP в операции нет, ранги
+# не расходятся; куски <= 512 строк идут другим ядром -- черновик такого шага может разойтись в последнем бите.
+_РЯДЫ = int(os.environ.get("FA2SM80_MTP_MLP_ROWS", "0"))
+_РЯДЫ_MIN = int(os.environ.get("FA2SM80_MTP_MLP_MIN", "2048"))
+_СВЕРКА = [int(os.environ.get("FA2SM80_MTP_MLP_CHECK", "0"))]
+_С = {"слоёв": 0, "МиБ": 0.0, "делённых": 0, "mlp_кусками": 0, "mlp_отказов": 0}
+_силу_ядро = None
+
+
+def _лог(msg):
+    print(f"[fa2_sm70 MTP-W8] {msg}", file=sys.stderr, flush=True)
+
+
+def _силу():
+    """Triton: a = (g * sigmoid(g)) * u, g и u -- половины строки gate_up [M, 2I]; fp32, одно округление в fp16.
+    То же выражение, что inductor сшивает из SiluAndMul.forward_native -- побитно как прежний проход."""
+    global _силу_ядро
+    if _силу_ядро is not None:
+        return _силу_ядро
+    import triton
+    import triton.language as tl
+
+    @triton.jit
+    def _k(g_ptr, a_ptr, n, I: tl.constexpr, BLOCK: tl.constexpr):
+        i = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+        m = i < n
+        row = i // I
+        col = i % I
+        g = tl.load(g_ptr + (col + 2 * I * row), m).to(tl.float32)
+        u = tl.load(g_ptr + (I + col + 2 * I * row), m).to(tl.float32)
+        tl.store(a_ptr + i, (g * tl.sigmoid(g)) * u, m)
+
+    def силу(g, a):
+        n = a.numel()
+        if n:
+            _k[(triton.cdiv(n, 1024),)](g, a, n, I=a.shape[1], BLOCK=1024, num_warps=4)
+
+    _силу_ядро = силу
+    return силу
+
+
+def _куски_mlp(M, ряды):
+    """Равные куски по ~ряды строк: последний не короче прочих (короткий хвост ушёл бы другим маршрутом GEMM)."""
+    шаг = -(-M // -(-M // ряды))
+    return [(r0, min(M, r0 + шаг)) for r0 in range(0, M, шаг)]
+
+
+def _gate_silu(x: torch.Tensor, wf: torch.Tensor, meta: torch.Tensor, sc: torch.Tensor,
+               K: int, N: int) -> torch.Tensor:
+    M = x.shape[0]
+    a = x.new_empty((M, N // 2))
+    силу = _силу()
+    if _РЯДЫ <= 0 or M < _РЯДЫ_MIN or torch.cuda.is_current_stream_capturing():
+        силу(torch.ops.vllm.fa2sm80_w8_mm(x, wf, meta, sc, K, N), a)
+        return a
+    _С["mlp_кусками"] += 1
+    if _С["mlp_кусками"] in (1, 1000):
+        _лог(f"MLP головы по кускам работает: M={M}, кусок ~{_РЯДЫ} строк (вызовов {_С['mlp_кусками']})")
+    куски = _куски_mlp(M, _РЯДЫ)
+    while куски:
+        r0, r1 = куски[0]
+        try:
+            g = torch.ops.vllm.fa2sm80_w8_mm(x[r0:r1], wf, meta, sc, K, N)
+        except torch.OutOfMemoryError:
+            if r1 - r0 <= 128:
+                raise
+            _С["mlp_отказов"] += 1
+            _лог(f"отказ памяти на куске {r1 - r0} строк (M={M}) -- остаток кусками вдвое меньше "
+                 f"(отказов {_С['mlp_отказов']})")
+            шаг = (r1 - r0 + 1) // 2
+            куски = [(a0, min(M, a0 + шаг)) for a0 in range(r0, M, шаг)]
+            continue
+        силу(g, a[r0:r1])
+        del g
+        куски.pop(0)
+    if _СВЕРКА[0] > 0:
+        a0 = torch.empty_like(a)
+        силу(torch.ops.vllm.fa2sm80_w8_mm(x, wf, meta, sc, K, N), a0)
+        разн = int((a.view(torch.int16) != a0.view(torch.int16)).sum())
+        # прогоны профиля и прогрева при старте подают одинаковые строки -- такая сверка слабее и в счёт не идёт
+        одинаковые = torch.equal(x[0], x[M // 2])
+        if not одинаковые:
+            _СВЕРКА[0] -= 1
+        _лог(f"сверка MLP головы по кускам M={M} ({'строки одинаковые' if одинаковые else 'строки разные'}): "
+             f"различий {разн} из {a.numel()}")
+        del a0
+    return a
 
 
 def _мтп(prefix: str) -> bool:
@@ -210,6 +306,40 @@ def установить() -> bool:
         if bias is not None:
             y = y + bias
         return y.reshape(out_shape)
+
+    if _s80:
+        from vllm.utils.torch_utils import direct_register_custom_op
+
+        def _gate_silu_fake(x: torch.Tensor, wf: torch.Tensor, meta: torch.Tensor, sc: torch.Tensor,
+                            K: int, N: int) -> torch.Tensor:
+            return x.new_empty((x.shape[0], N // 2))
+
+        # Операция регистрируется и при выключенном рычаге: файл кэша компиляции хэшируется по содержимому
+        # трассированных файлов, а не по рычагу -- граф с ней, поднятый из кэша, должен находить её (без рычага --
+        # целым проходом, побитно как прежде). Отказ регистрации не должен снять int8 головы: только без кусков.
+        try:
+            direct_register_custom_op("fa2sm80_mtp_gate_silu", _gate_silu, mutates_args=[],
+                                      fake_impl=_gate_silu_fake)
+        except Exception as e:  # noqa: BLE001
+            _лог(f"операция MLP головы не зарегистрирована ({str(e)[:120]}) -- MLP головы целиком, как прежде")
+    if _s80 and _РЯДЫ > 0 and hasattr(torch.ops.vllm, "fa2sm80_mtp_gate_silu"):
+        from vllm.model_executor.models import qwen2_moe as Q2
+        _прежний_mlp = Q2.Qwen2MoeMLP.forward
+
+        def mlp_forward(self, x):
+            # Условие статично для слоя (фа2_s80 проставлен при загрузке) -- разрешение на трассировке законно.
+            s80 = getattr(self.gate_up_proj, "фа2_s80", None)
+            if (s80 is None or self.expert_gate is not None or x.dim() != 2
+                    or type(self.act_fn).__name__ != "SiluAndMul"):
+                return _прежний_mlp(self, x)
+            a = torch.ops.vllm.fa2sm80_mtp_gate_silu(x if x.dtype == torch.float16 else x.half(),
+                                                     s80[0], s80[1], s80[2], s80[3], s80[4])
+            out, _ = self.down_proj(a)
+            return out
+
+        Q2.Qwen2MoeMLP.forward = mlp_forward
+        _лог(f"MLP головы: gate_up + SiluAndMul одной операцией, при M >= {_РЯДЫ_MIN} куски по ~{_РЯДЫ} строк"
+             + (f", сверка первых {_СВЕРКА[0]}" if _СВЕРКА[0] > 0 else ""))
 
     UnquantizedLinearMethod.process_weights_after_loading = process_weights_after_loading
     UnquantizedLinearMethod.apply = apply
