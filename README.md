@@ -5,6 +5,14 @@
 **The production vLLM stack for NVIDIA Ampere (A100, `sm_80`).** It serves Qwen3.8-27B (GPTQ-Int8) with a
 262,144-token context on two 32 GB cards, plus Cloudflare's Clef decision model on the same weights.
 
+**In production, under live Clef traffic (2026-11-02):** about **6 K tok/s of prefill shared by chats and Clef** —
+an 8K chat prompt gets 4.2–5.5 K tok/s while Clef takes another 1.3–2.0 K tok/s of input (4.5–5.1 K with Clef at
+1.1–1.7 K on the test stand); **45–49 tok/s of decode per chat** (114–152 tok/s with no Clef); Clef records of up to
+1.6 K tokens (the production average is 1.23 K) answered in **0.3–1.05 s** (median 0.5 s), 3.5 K-token records in
+0.9–1.8 s. The model's numerics are checked on every change: Clef 34/35 against the V100 production reference, LLM
+fingerprints 160/160. When Clef is saturated (8 clients sending back to back) records queue: 2,000-token records
+then wait 3.9 s at the median. Measurement and raw data: [docs/sm80/LOAD_TESTS.md](docs/sm80/LOAD_TESTS.md#production-under-live-clef-traffic-2026-11-02).
+
 This is the code of the running server: the vLLM fork, the kernel library ported to Ampere and the integration
 layer, with the launcher and the lever set. It is a fork of [xormal/vllm-sm70](https://github.com/xormal/vllm-sm70)
 (the V100 production stack; common base `8a59d8fb8`, branch `sm70`), which itself forks
@@ -127,6 +135,49 @@ otherwise. Highlights, details in [docs/sm80/KERNELS.md](docs/sm80/KERNELS.md):
   removed from the mixed LLM + Clef step, full decode graphs for every batch the state pool admits.
 * **Scheduling:** decode interleave and a prefill budget while chats decode, so a Clef queue does not stall chats.
 
+## Tensor parallelism over PCIe: AR1 and i12
+
+The two cards have no NVLink and sit behind different PCIe bridges (link trained at 3.0 x16; GPU0↔GPU1 ≈ 11 GB/s
+through the host). Tensor parallel 2 sums the partial outputs of the row-parallel projections (`out_proj` of
+attention and Gated DeltaNet, `down_proj` of the MLP) on both cards twice per layer — 128 all-reduces per model pass.
+NCCL treats them all alike; here the exchange is split by size, because small and large reductions are limited by
+different things:
+
+| | Decode and small batches | Prefill chunks and long Clef records |
+|---|---|---|
+| Size | [1–45 rows, 5120] fp16, 10–460 KB | from 2^20 elements (205 rows) up to 8,192 rows |
+| Limited by | barrier latency, not bytes | bytes: t = 0.164 ms + 0.177 ms/MB, transfer is 99.4 % of the time (V100 pair, 2026-08-14) |
+| Path | **AR1**: the whole reduction in one kernel through pinned host memory; AR1LL writes data and sequence number in one 16-byte store, so there is no fence + flag round trip | **i12**: the partial sum a card sends is packed to 12 bits (groups of 128 values with an fp16 scale), moved by the copy engine over P2P and added to the card's own exact half |
+| Result | 14.3 µs per call against 28.6 µs for NCCL: about −2.3 ms on a 22 ms decode step | 194 bytes instead of 256 per 128 values (1.32× fewer); the copy engine is 1.35× faster than NCCL and leaves the SMs to the GEMMs |
+| Numerics | exact: one fp16 addition of the two halves, the same on both cards | lossy, justified below |
+
+A block pipeline overlaps the reductions of one row chunk with the MLP GEMMs of the next on a high-priority stream
+(compute idle during an 8K prefill 710 → 190 ms). Row pipeline, i12 over the copy engine and block pipeline together:
+prefill 8K/32K/131K 3,093/3,242/2,867 → 4,725/4,804/3,820 tok/s, Clef 2,826 → 3,974 tok/s (2026-10-24).
+
+**Why the 12-bit loss is acceptable:**
+
+* Only the remote half is quantized: each card adds its own partial sum exactly and the neighbour's from 12 bits.
+  Measured relative L2 error of the sum: 3.98e-4 against 2.25e-4 for the plain fp16 path (its own rounding), 1.77×.
+* 8 bits would cost 31×. Drift over 64 layers by the measured 2^-b law: fp16 0.24 %, int14 0.12 %, int12 0.46 %,
+  int8 7.5 % — so int8 was rejected, and int12 removes a quarter of the bytes for twice the drift of fp16.
+* Only where bytes are the cost: reductions below 2^20 elements stay exact through AR1 — every pure decode step
+  (including MTP verification of up to 9 requests, ≤ 45 rows) and short Clef records. A step that carries a
+  prefill chunk of 205+ rows goes through i12 as a whole.
+* On the i12 path the two cards' sums need not be bitwise equal (each keeps its own exact half); the difference is
+  within the quantization error above.
+* End to end it is covered by the acceptance checks of every change: Clef 34/35 against the V100 production
+  reference (max |Δp| 0.0251) and LLM fingerprints 160/160 against the previous build. `FA2SM70_EXCH12_BITS` < 12
+  keeps the bytes and coarsens the values — a positive control for those checks (a path that must diverge).
+* AR1LL assumes that a 16-byte store over PCIe arrives whole. A 3M-operation stress test is clean on this platform,
+  but the PTX memory model does not guarantee it: on another host check first, or use `FA2SM80_AR_LL=0` (AR1H,
+  fence + flag, 20.4 µs).
+
+Code: [`ar1ll.cuh`](sm70/fa2_sm70/csrc/ar1ll.cuh), [`exch_i12.cu`](sm70/fa2_sm70/csrc/exch_i12.cu),
+[`fa2sm70_ar2.py`](sm70/integrations/vllm_sm70/fa2sm70_ar2.py),
+[`fa2sm70_exch_i12.py`](sm70/integrations/vllm_sm70/fa2sm70_exch_i12.py),
+[`fa2sm80_blockpipe.py`](sm70/integrations/vllm_sm70/fa2sm80_blockpipe.py).
+
 ## Measured on the reference deployment
 
 | 2× DRIVE A100 PROD 32 GB, TP2 | |
@@ -136,6 +187,8 @@ otherwise. Highlights, details in [docs/sm80/KERNELS.md](docs/sm80/KERNELS.md):
 | Clef alone, 2000-token records | 3,080 / 4,090 input tok/s with 1 / 4 clients (3 slots) |
 | Chats under a saturated Clef queue | 4 chats 32–33 tok/s, 8 chats 25–27 tok/s per stream, pause p99 0.35–0.45 s |
 | LLM prefill under a saturated Clef queue | 2.8 / 3.7 / 4.2 / 4.7–4.8 K tok/s with 1 / 4 / 8 / 16 prompts, Clef keeps 1.1–3.5 K |
+| Production under live Clef traffic (2026-11-02, Clef ~2 K input tok/s) | one chat 45–49 tok/s (decode step p50 22.4 ms); 8K prompt 3.8–5.5 K tok/s (median 4.2 K), 32K prompt 3.5–4.3 K |
+| Clef latency in production | records ≤ 1.6 K tokens 0.3–1.05 s (median 0.50 s), 3.5 K tokens 0.9–1.8 s, 12.9 K tokens 2.9–3.6 s |
 | Accuracy | Clef 34/35 against the V100 reference (max \|Δp\| 0.0251), LLM fingerprints 160/160 at 600 / 2048 / 5000 tokens |
 
 Method, configuration and every table: [docs/sm80/LOAD_TESTS.md](docs/sm80/LOAD_TESTS.md).

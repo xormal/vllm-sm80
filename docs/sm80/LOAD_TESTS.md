@@ -62,6 +62,53 @@ python scripts/bench_conc.py http://127.0.0.1:8085 out.json mylabel             
 CONC=1 PARTS=combo COMBOS=4:1,1:8,4:8,8:8,16:8 python scripts/bench_conc.py http://127.0.0.1:8085 combos.json mylabel
 ```
 
+## Production under live Clef traffic (2026-11-02)
+
+The production server itself, not the stand: the window 29b configuration plus the memory fixes of windows 30–31
+(MTP head MLP in row chunks, MTP draft-graph caps), live since 2026-11-01 19:41. Clef runs continuously — 51,246
+records in the first 7 h, 1,232 input tokens on average, about 2 records/s — so the server is almost never idle and
+these numbers are taken on that live background, not in silence.
+
+Method: [`scripts/live_clef_traffic_probe.py`](../../scripts/live_clef_traffic_probe.py) sends one request at a time
+(the load of one client), each after the queue is empty, and records the background during every measurement from
+`/metrics`: other requests finished and other prompt tokens per second. The latter includes prefix-cache hits, so it
+is an upper bound of the background prefill. Raw results:
+[`results/live-20261102-clef-traffic.json`](results/live-20261102-clef-traffic.json).
+
+#### Clef latency by record size (3 rounds, 02:5x)
+
+| record | input tokens | latency median / max s | measurements | background in-tok/s (median) |
+|---|---|---|---|---|
+| short (two test records) | 300–319 | 0.38 / 0.54 | 6 | 1,588 |
+| text, 1,500 chars, 3 questions | 839 | 0.83 / 1.05 | 3 | 2,715 |
+| text, 4,000 chars, 3 questions | 1,621 | 0.56 / 0.89 | 3 | 1,010 |
+| text, 8,000 chars, 3 questions | 3,496 | 1.48 / 1.79 | 3 | 1,961 |
+| 12 questions × 6 options | 3,692 | 0.90 / 1.71 | 3 | 878 |
+| text, 30,000 chars, 3 questions | 12,883 | 2.96 / 3.56 | 3 | 506 |
+
+Records up to 1,621 tokens: 11 of 12 under a second, median 0.50 s. Since 2026-11-01 19:41, 5 of 52,391
+`/v1/systemone` requests took longer than 60 s (67–73 s, the server logs every request above 60 s); 0 errors 5xx.
+
+#### One chat, 512 tokens, temperature 0 (6 runs)
+
+| decode tok/s | tokens per chunk | gap p50 / p99 ms | TTFT s | background in-tok/s | other requests per run |
+|---|---|---|---|---|---|
+| 44.8–49.4 (median 48.3) | 3.12–3.18 | 22.2–22.6 / 330–358 | 0.30–0.58 | 1,702–2,160 | 17–25 |
+
+The gap p50 is the pure decode step: 22.4 ms, the same as window 29b (22.2 ms for one request), so the memory fixes
+of windows 30–31 did not change it. The p99 gaps are steps that carry a Clef prefill chunk (budget 1024); with
+3.18 tokens per step and no Clef the same chat would run at ~142 tok/s.
+
+#### Prefill of a unique prompt (no prefix-cache hits), `max_tokens` 1
+
+| prompt | tok/s per run | median | background in-tok/s | other requests per run |
+|---|---|---|---|---|
+| 8,192 | 3,819 / 5,480 / 4,458 / 3,982 | 4,220 | 1,319–1,998 | 3–9 |
+| 32,768 | 4,270 / 4,260 / 3,528 | 4,260 | 371–1,061 | 4–7 |
+
+An earlier run at 00:53 (same prompts) measured 32K at 5,040–5,110 tok/s with 3–6 Clef records finishing alongside
+(background tokens not recorded).
+
 ## Results — running configuration (window 29b, 2026-10-31)
 
 Accuracy: Clef vs V100 **34/35** (max |Δp| 0.0251, same as the sm80 base), vs the sm80 base 35/35 (0.0022); LLM
