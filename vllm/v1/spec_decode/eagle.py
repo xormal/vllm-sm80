@@ -114,6 +114,18 @@ _ГР_ЦИКЛ = __import__("os").environ.get("FA2SM80_MTP_LOOP_GRAPH", "0") == 
 # ключи захватывались на ходу, и вместе с асинхронным планированием при C=8 (ожидающие запросы) ловилось
 # illegal memory access; без графа цикла или без асинхронного -- нет. Пачки идут прежним путём.
 _ГР_ЦИКЛ_МАКСБ = int(__import__("os").environ.get("FA2SM80_MTP_LOOP_GRAPH_MAXB", "1"))
+# [ПАМЯТЬ 01.11] ОДИН ПОТОК ЗАХВАТА ГРАФОВ ЦИКЛА (FA2SM80_MTP_LOOP_ONE_STREAM=1). graph_capture(device) заводит НОВЫЙ
+# поток на каждый вызов, а кэширующий аллокатор отдаёт свободный блок только тому потоку, на котором блок выделен:
+# общий пул _гр_пул_цикла не переиспользовал промежутки прежних захватов, и каждый новый ключ брал свежую память
+# (боевой 01.11: 110 захватов -- приватные пулы 92 -> 496 МиБ при занятых ~27, в 15:47 CUDA OOM на префилле 8192).
+# С одним потоком промежутки всех графов цикла -- одна память: графы играют по одному на потоке шага, выходы держит
+# запись ключа (их блоки заняты и чужому захвату не достаются), выход читается до следующего шага.
+_ГР_ЦИКЛ_ОДИН_ПОТОК = __import__("os").environ.get("FA2SM80_MTP_LOOP_ONE_STREAM", "0") == "1"
+# [ПАМЯТЬ 01.11] ПРЕДЕЛ ЧИСЛА ГРАФОВ ЦИКЛА (FA2SM80_MTP_LOOP_GRAPH_MAX, 0 -- без предела, как было): ключ (пачка x
+# пачка входа x корзина max_seq_len) на живой смеси даёт десятки ключей, у каждого свои выходы и метаданные. Как у
+# графов тела: при захвате нового выселяется дольше всех не игравший (LRU по счётчику вызовов -- одинаков у рангов
+# TP, решения о захвате и выселении у них совпадают), выселенный ключ греется обычным путём и захватывается заново.
+_ГР_ЦИКЛ_МАКС = int(__import__("os").environ.get("FA2SM80_MTP_LOOP_GRAPH_MAX", "0"))
 # A/B графа цикла в ОДНОМ процессе: P шагов с графом, P без (по счётчику вызовов -- одинаков у рангов TP, их
 # последовательности сведений не расходятся); период шага (вызов -> вызов) копится по режиму, печать раз в 400.
 _ГР_АБ = int(__import__("os").environ.get("FA2SM80_LG_AB_PERIOD", "0"))
@@ -682,6 +694,8 @@ class SpecDecodeBaseProposer:
             try:
                 if getattr(self, "_гр_пул", None) is None:
                     self._гр_пул = torch.cuda.graph_pool_handle()
+                    print(f"[MTP ГРАФ ТЕЛА] пул {tuple(self._гр_пул)}, предел {_ГР_ЧЕРН_МАКС}",
+                          file=__import__("sys").stderr, flush=True)
                 _по_слоям = {имя: мета for имя in self.attn_layer_names}
                 _слоты = self._get_slot_mapping(входных, cad.slot_mapping)
                 г = torch.cuda.CUDAGraph()
@@ -1382,16 +1396,29 @@ class SpecDecodeBaseProposer:
             з["d0"].copy_(draft_token_ids, non_blocking=True)
             з["pos"].copy_(positions, non_blocking=True)
             з["hid"].copy_(hidden_states, non_blocking=True)
+            з["такт"] = self._гр_вызовов
             з["граф"].replay()
             self._побочные_цикла(common_attn_metadata, з, k1)
             return з["выход"]
         з["счёт"] += 1
         if з["счёт"] < 4:                     # прогрев обычным путём (компиляция/формы)
             return None
+        if _ГР_ЦИКЛ_МАКС > 0:
+            живые = sorted((v.get("такт", 0), к) for к, v in гц.items() if "граф" in v)
+            while len(живые) >= _ГР_ЦИКЛ_МАКС:
+                _, старый = живые.pop(0)
+                гц[старый] = {"счёт": 0, "мёртв": False}      # граф, выходы и буферы уходят вместе с записью
+                self._гр_цикл_выселено = getattr(self, "_гр_цикл_выселено", 0) + 1
+                if self._гр_цикл_выселено <= 3 or self._гр_цикл_выселено % 100 == 0:
+                    print(f"[MTP ГРАФ ЦИКЛА] выселен ключ={старый} (предел {_ГР_ЦИКЛ_МАКС}, "
+                          f"выселений {self._гр_цикл_выселено})", file=__import__("sys").stderr, flush=True)
         try:
             # СВОЙ пул: неудачный захват цикла не должен оставлять пул графов тела «в записи»
             if getattr(self, "_гр_пул_цикла", None) is None:
                 self._гр_пул_цикла = torch.cuda.graph_pool_handle()
+                print(f"[MTP ГРАФ ЦИКЛА] пул {tuple(self._гр_пул_цикла)}, поток захвата "
+                      f"{'один' if _ГР_ЦИКЛ_ОДИН_ПОТОК else 'новый на каждый захват'}, предел {_ГР_ЦИКЛ_МАКС}",
+                      file=__import__("sys").stderr, flush=True)
             з["d0"] = draft_token_ids.clone()
             з["pos"] = positions.clone()
             з["hid"] = hidden_states.clone()
@@ -1415,13 +1442,23 @@ class SpecDecodeBaseProposer:
                 г.enable_debug_mode()
             # как у графов цели (gpu_model_runner): захват внутри graph_capture -- коммуникаторы (сбор словаря
             # черновика по TP) переходят в режим, пригодный для захвата; свой поток захвата.
-            from vllm.distributed.parallel_state import graph_capture as _graph_capture
+            import contextlib as _cl
+            from vllm.distributed import parallel_state as _ps
             # синхронизирующая операция внутри захвата (.item(), .cpu(), копия из страничной памяти) ломает его
             # МОЛЧА, а падает потом чужое ядро -- режим «error» бросает исключение ДО операции, с точной строкой
             _реж = torch.cuda.get_sync_debug_mode()
             torch.cuda.set_sync_debug_mode("error")
             try:
-                with _graph_capture(device=hidden_states.device) as _гк:
+                with _cl.ExitStack() as _стек:
+                    if _ГР_ЦИКЛ_ОДИН_ПОТОК:   # то же, что graph_capture(device), но поток -- постоянный
+                        if getattr(self, "_гр_поток_цикла", None) is None:
+                            self._гр_поток_цикла = _ps.GraphCaptureContext(
+                                torch.cuda.Stream(device=hidden_states.device))
+                        _гк = self._гр_поток_цикла
+                        _стек.enter_context(_ps.get_tp_group().graph_capture(_гк))
+                        _стек.enter_context(_ps.get_pp_group().graph_capture(_гк))
+                    else:
+                        _гк = _стек.enter_context(_ps.graph_capture(device=hidden_states.device))
                     with torch.cuda.graph(г, pool=self._гр_пул_цикла, stream=_гк.stream):
                         вых = self._цикл_черновика(з["d0"], з["pos"], з["hid"], см,
                                                    attn_metadata_builder, dict(per_layer_attn_metadata), batch_size,

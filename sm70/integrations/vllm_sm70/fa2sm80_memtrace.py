@@ -10,6 +10,7 @@
   * FA2SM80_MEMTRACE_TM=1 -- tracemalloc: топ строк по приросту выделений Python с прошлого замера;
     FA2SM80_MEMTRACE_TM_ONLY=<подстрока имени процесса> -- только в нём (имя VLLM::Worker_TP0 выставляется после
     старта процесса, поэтому tracemalloc включается на первом замере, когда имя уже известно);
+    FA2SM80_MEMTRACE_TM_BASE=1 -- прирост от первого снимка, а не от прошлого (медленный рост);
   * FA2SM80_MEMTRACE_GC=1 -- перепись объектов gc по типам с приростом (держит GIL ~секунду: на воркерах может
     сорвать ожидание флага в обмене -- включать только на стенде).
 Ничего не меняет в вычислениях: поток только читает /proc и статистику.
@@ -92,6 +93,7 @@ def _видеопамять():
             if not st.get("reserved_bytes.all.current", 0):
                 continue
             пул = пул_занято = n = 0
+            по_пулам = {}                 # [01.11] каждый пул отдельно: графы цикла и тела MTP, графы цели
             for seg in torch.cuda.memory_snapshot():
                 if seg.get("device") != d:
                     continue
@@ -100,9 +102,13 @@ def _видеопамять():
                     пул += seg.get("total_size", 0)
                     пул_занято += seg.get("allocated_size", 0)
                     n += 1
+                    п = по_пулам.setdefault(tuple(pid), [0, 0, 0])
+                    п[0] += seg.get("total_size", 0)
+                    п[1] += seg.get("allocated_size", 0)
+                    п[2] += 1
             out.append((d, st.get("allocated_bytes.all.current", 0), st.get("reserved_bytes.all.current", 0),
                         st.get("allocated_bytes.all.peak", 0), пул, пул_занято, n,
-                        st.get("num_alloc_retries", 0), st.get("num_ooms", 0)))
+                        st.get("num_alloc_retries", 0), st.get("num_ooms", 0), по_пулам))
         return out
     except Exception:  # noqa: BLE001
         return []
@@ -161,9 +167,13 @@ def _цикл(период, tm, gc_on):
              f"shm={к['shm'] / 1024:.0f} МиБ{d}")
         прежн = к
         _история_памяти()
-        for d, a, r, pk, pl, plu, n, rt, oo in _видеопамять():
+        for d, a, r, pk, pl, plu, n, rt, oo, пп in _видеопамять():
             _лог(f"{time.strftime('%H:%M:%S')} GPU{d}: выделено {a / 2**20:.0f} резерв {r / 2**20:.0f} пик {pk / 2**20:.0f} | приватные пулы "
                  f"{pl / 2**20:.0f} (занято {plu / 2**20:.0f}, сегментов {n}) МиБ | повторов {rt}, OOM {oo}")
+            if пп:
+                _лог(f"{time.strftime('%H:%M:%S')} GPU{d} по пулам (id: всего/занято МиБ, сегментов): " + " ".join(
+                    f"{pid[0]}.{pid[1]}: {v[0] / 2**20:.0f}/{v[1] / 2**20:.0f} ({v[2]})"
+                    for pid, v in sorted(пп.items(), key=lambda kv: -kv[1][0])[:8]))
         з = _закреплённая()
         if з:
             _лог("закреплённая (torch host): " + " ".join(f"{k}={v / 2**20:.0f}M" for k, v in sorted(з.items())))
@@ -177,7 +187,9 @@ def _цикл(период, tm, gc_on):
                         fr = s.traceback[0]
                         _лог(f"  tm {s.size_diff / 2**20:+.1f}M (всего {s.size / 2**20:.1f}M, x{s.count}) "
                              f"{fr.filename[-60:]}:{fr.lineno}")
-            снимок = нов
+            # [01.11] FA2SM80_MEMTRACE_TM_BASE=1 -- прирост от ПЕРВОГО снимка (медленный рост за период ниже порога)
+            if снимок is None or os.environ.get("FA2SM80_MEMTRACE_TM_BASE", "0") != "1":
+                снимок = нов
         if gc_on:
             import gc
             t0 = time.time()

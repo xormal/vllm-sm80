@@ -47,6 +47,12 @@ export FA2SM80_MTP_LOOP_GRAPH_MAXB=9
 # 8192 токенов (gate_up [M, 17408] + SiLU [M, 8704] = 408 МиБ); кусками пик -- выход + кусок (~170 МиБ), выход побитно тот же.
 # Откат: убрать строку и перезапустить.
 export FA2SM80_MTP_MLP_ROWS=1024
+# [ПАМЯТЬ 01.11] Окно 31: графы черновика MTP -- один поток захвата графов цикла (общий пул переиспользует память
+# прежних захватов) и пределы LRU числа графов цикла и тела. 01.11 15:47 CUDA OOM на префилле 8192: пулы графов
+# черновика за 14 ч выросли 92 -> 496 МиБ (каждый захват на новом потоке). Откат: убрать три строки и перезапустить.
+export FA2SM80_MTP_LOOP_ONE_STREAM=1
+export FA2SM80_MTP_LOOP_GRAPH_MAX=16
+export FA2SM70_MTP_GRAPH_MAX=16
 export VLLM_CACHE_ROOT="$STATE_DIR/acceptance/vllm-candidate-fallback-0-conv-all-1"
 export FA2SM70_CLEF_OUT="$STATE_DIR/acceptance/clef-candidate"
 cd "$CANDIDATE_REPO"
