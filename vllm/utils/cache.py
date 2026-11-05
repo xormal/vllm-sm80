@@ -190,20 +190,28 @@ class LRUCache(cachetools.LRUCache[_K, _V]):
 
     def popitem(self, remove_pinned: bool = False):
         """Remove and return the `(key, value)` pair least recently used."""
-        if not remove_pinned:
-            # pop the oldest item in the cache that is not pinned
-            lru_key = next(
-                (key for key in self.order if key not in self.pinned_items),
-                ALL_PINNED_SENTINEL,
-            )
-            if lru_key is ALL_PINNED_SENTINEL:
-                raise RuntimeError(
-                    "All items are pinned, cannot remove oldest from the cache."
+        while True:
+            if not remove_pinned:
+                # pop the oldest item in the cache that is not pinned
+                lru_key = next(
+                    (key for key in self.order if key not in self.pinned_items),
+                    ALL_PINNED_SENTINEL,
                 )
-        else:
-            lru_key = next(iter(self.order))
-        value = self.pop(cast(_K, lru_key))
-        return (lru_key, value)
+                if lru_key is ALL_PINNED_SENTINEL:
+                    raise RuntimeError(
+                        "All items are pinned, cannot remove oldest from the cache."
+                    )
+            else:
+                lru_key = next(iter(self.order))
+            # [ФАНТОМ 05.11] touch() отсутствующего ключа кладёт его в порядок без значения. Такой ключ pop() не
+            # удаляет, и цикл вытеснения cachetools (`while currsize + size > maxsize: popitem()`) крутился вечно:
+            # бой 04.11 23:40 -- поток приёма EngineCore завис на кэше картинок, запросы не доходили до
+            # планировщика, /health отвечал 200. Фантом из порядка выбрасывается, вытеснение идёт дальше.
+            if lru_key not in self:
+                del self._LRUCache__order[lru_key]  # type: ignore[attr-defined]
+                continue
+            value = self.pop(cast(_K, lru_key))
+            return (lru_key, value)
 
     def clear(self) -> None:
         while len(self) > 0:
