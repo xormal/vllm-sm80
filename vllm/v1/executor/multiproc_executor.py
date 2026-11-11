@@ -854,6 +854,27 @@ class WorkerProc:
                 # string, only for logging purpose.
                 if output_rank is None or self.rank == output_rank:
                     self.handle_output(e)
+                    continue
+                # [ОТКАЗ НЕМОГО РАНГА 04.11] Ранг, который не отвечает движку, глотал исключение и ждал
+                # следующий вызов, а его соседи оставались в коллективах шага, где его уже нет. Движок ждёт
+                # ответа только от output_rank -- до VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS. Бой 04.11 08:21:
+                # TP1 упал на срыве обмена, TP0 висел в сведении, 5 минут простоя до таймаута RPC. Теперь
+                # такой ранг завершает процесс: монитор воркеров видит смерть сразу и роняет движок, а
+                # systemd поднимает заново. FA2SM80_WORKER_FAIL_FAST=0 -- прежнее поведение.
+                if os.environ.get("FA2SM80_WORKER_FAIL_FAST", "1") == "1":
+                    logger.error(
+                        "Rank %d is not the output rank and cannot report this "
+                        "error; exiting so that the executor fails fast instead "
+                        "of leaving the other ranks stuck in collectives.",
+                        self.rank,
+                    )
+                    lg = logger
+                    while lg is not None:          # os._exit не сбрасывает буферы журналов
+                        for h in lg.handlers:
+                            with suppress(Exception):
+                                h.flush()
+                        lg = lg.parent
+                    os._exit(70)
                 continue
 
             if output_rank is None or self.rank == output_rank:

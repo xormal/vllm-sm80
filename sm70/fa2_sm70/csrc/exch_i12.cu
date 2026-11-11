@@ -219,7 +219,43 @@ void unpack_add_i12_into(torch::Tensor base, torch::Tensor pk, torch::Tensor sc,
 #include <cuda_runtime.h>
 #include <cuda.h>
 #include <dlfcn.h>
+#include <cstdlib>
 #include <string>
+
+// [СРЫВ 04.11] Стенные часы и потолок ожиданий соседа для всех путей обмена -- смысл см. у ar2_wait_kernel.
+__device__ __forceinline__ unsigned long long ce_now_ns() {
+  unsigned long long t;
+  asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+  return t;
+}
+
+static unsigned long long ce_wait_ceiling_ns() {
+  static const unsigned long long v = [] {
+    const char* s = std::getenv("FA2SM80_EXCH_WAIT_MS");
+    long long мс = s != nullptr ? std::atoll(s) : 300000;
+    if (мс < 1) мс = 1;
+    return (unsigned long long)мс * 1000000ULL;
+  }();
+  return v;
+}
+
+__device__ __forceinline__ void ce_wait_note(int* стат, unsigned long long t0) {
+  if (стат == nullptr) return;
+  const unsigned long long мс = (ce_now_ns() - t0) / 1000000ULL;
+  if (мс > 0) atomicMax(стат, (int)(мс < 0x7fffffffULL ? мс : 0x7fffffffULL));
+  if (мс >= 100) atomicAdd(стат + 1, 1);
+}
+
+// Потолок для ожиданий ВНУТРИ ядер AR1/AR1H/AR1LL (у них нет параметра потолка: ждут многие нити, протокол
+// внутри ядра) -- из памяти устройства. Умолчание то же, 300 с; ce_sync_wait_ceiling() кладёт туда
+// FA2SM80_EXCH_WAIT_MS -- зовётся при подъёме состояния обмена, вне захвата графа.
+__device__ unsigned long long ce_wait_ceiling_dev = 300000000000ULL;
+
+static void ce_sync_wait_ceiling() {
+  const unsigned long long v = ce_wait_ceiling_ns();
+  C10_CUDA_CHECK(cudaMemcpyToSymbol(ce_wait_ceiling_dev, &v, sizeof(v)));
+}
+
 #include "ar1ll.cuh"
 
 // Ручка на СВОЙ буфер -- её отдают соседу один раз при поднятии (через обычный обмен объектами).
@@ -362,22 +398,42 @@ static void ar2_signal(int64_t peer_flag_ptr, int64_t idx, int64_t val) {
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-// Ожидание с ПОТОЛКОМ ПО ТАКТАМ. Вечный spin на карте -- это не «зависнет опыт», а зависшая карта
-// и перезагрузка машины; на боевом сервере такая цена недопустима. Потолок ~2e9 тактов (около
-// 1.4 с) заведомо больше любого честного куска и заведомо меньше сторожевого таймера драйвера.
-__global__ void ar2_wait_kernel(const int* flag, int val, int* срыв) {
-  const long потолок = 2000000000L;
-  const long t0 = clock64();
+// Ожидание с ПОТОЛКОМ. Вечный spin на карте -- это не «зависнет опыт», а зависшая карта
+// и перезагрузка машины; на боевом сервере такая цена недопустима.
+// [СРЫВ 04.11] ПРОТОКОЛ: ОЖИДАНИЕ НЕ РЕШАЕТ ОБ ОТКАЗЕ. Был потолок 2e9 тактов (~1.4 с на полной частоте SM), и
+// по его истечении ядро молча брало устаревшие байты, а отказ объявлялся позже. Бой 04.11 08:21: сосед опоздал
+// дольше 1.4 с (живой, его хозяин стоял -- например, на повторе выделения со сбросом кэша), TP1 объявил срыв,
+// боевой упал. Опоздание соседа -- не отказ: ждать его надо столько, сколько он опаздывает. Отказы ловит ХОЗЯИН:
+//   * сосед умер    -- монитор воркеров (multiproc_executor) видит смерть процесса за доли секунды;
+//   * ранг упал     -- немой ранг завершает процесс (FA2SM80_WORKER_FAIL_FAST), отвечающий отдаёт ошибку движку;
+//   * всё зависло   -- дедлайн RPC шага VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS (боевой: 120 с).
+// Во всех трёх случаях процессы гибнут, и ядро ожидания умирает вместе с контекстом. Потолок здесь -- ПОСЛЕДНЯЯ
+// страховка от вечного spin, и он обязан быть БОЛЬШЕ дедлайна RPC: тогда срыв (сложение устаревших байт) не
+// наступает никогда -- раньше него процесс уже убит. По стенным часам (%globaltimer, нс), а не по тактам: такты
+// идут с частотой SM. FA2SM80_EXCH_WAIT_MS, умолчание 300000; читается при первом запуске ожидания.
+// Статистика (если `стат` не nullptr): стат[0] -- наибольшее ожидание, мс (atomicMax); стат[1] -- ожиданий
+// дольше 100 мс. Пишет одна нить одного ядра на обмен -- ничто рядом с перевозкой мегабайт.
+__global__ void ar2_wait_kernel(const int* flag, int val, int* срыв, unsigned long long потолок_нс,
+                                int* стат) {
+  const unsigned long long t0 = ce_now_ns();
   while (*(volatile const int*)flag < val) {
-    if (clock64() - t0 > потолок) { *(volatile int*)срыв = 1; return; }
+    if (ce_now_ns() - t0 > потолок_нс) { *(volatile int*)срыв = 1; ce_wait_note(стат, t0); return; }
   }
+  ce_wait_note(стат, t0);
+}
+
+// Статистика -- в срыв[2..3], если тензор срыва её вмещает (у обмена i12 -- 4 элемента; у AR2 -- 2, там
+// срыв[1] занят счётчиком блоков, и статистика не пишется).
+static int* ce_stat_ptr(const at::Tensor& срыв) {
+  return срыв.numel() >= 4 ? (int*)срыв.data_ptr() + 2 : nullptr;
 }
 
 static void ar2_wait(at::Tensor flags, int64_t idx, int64_t val, at::Tensor срыв) {
   TORCH_CHECK(flags.scalar_type() == at::kInt && срыв.scalar_type() == at::kInt,
               "ar2_wait: флаги обязаны быть int32");
   ar2_wait_kernel<<<1, 1, 0, at::cuda::getCurrentCUDAStream()>>>(
-      (const int*)flags.data_ptr() + idx, (int)val, (int*)срыв.data_ptr());
+      (const int*)flags.data_ptr() + idx, (int)val, (int*)срыв.data_ptr(), ce_wait_ceiling_ns(),
+      ce_stat_ptr(срыв));
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -414,7 +470,7 @@ static void ar2_add(at::Tensor y, at::Tensor r) {
 // байты уже у соседа; `__threadfence_system` нужен потому, что читатель -- ДРУГОЕ устройство.
 //
 // ОЖИДАНИЕ С ПОТОЛКОМ. Вечный spin на карте лечится только перезагрузкой машины, а это боевой
-// сервер. Потолок в тактах заведомо больше честного куска и заведомо меньше сторожа драйвера.
+// сервер. Потолок -- по стенным часам, FA2SM80_EXCH_WAIT_MS (см. ar2_wait_kernel, [СРЫВ 04.11]).
 __global__ void ar2_bump_kernel(int* seq) {
   if (threadIdx.x == 0) atomicAdd(seq, 1);
 }
@@ -426,13 +482,14 @@ __global__ void ar2_signal_seq_kernel(int* peer_flag, const int* seq) {
   }
 }
 
-__global__ void ar2_wait_seq_kernel(const int* flag, const int* seq, int* срыв) {
-  const long потолок = 2000000000L;
-  const long t0 = clock64();
+__global__ void ar2_wait_seq_kernel(const int* flag, const int* seq, int* срыв, unsigned long long потолок_нс,
+                                    int* стат) {
+  const unsigned long long t0 = ce_now_ns();
   const int цель = *(volatile const int*)seq;
   while (*(volatile const int*)flag < цель) {
-    if (clock64() - t0 > потолок) { *(volatile int*)срыв = 1; return; }
+    if (ce_now_ns() - t0 > потолок_нс) { *(volatile int*)срыв = 1; ce_wait_note(стат, t0); return; }
   }
+  ce_wait_note(стат, t0);
 }
 
 // y  -- вход-выход (fp16, непрерывный); recv -- МОЙ приёмник (ipc_alloc, зарегистрирован у соседа);
@@ -445,13 +502,14 @@ __global__ void ar2_wait_seq_kernel(const int* flag, const int* seq, int* сры
 // словесной кашей -- поймано 27.08.
 // Ждём, пока сосед объявит, что дочитал ПРЕДЫДУЩИЙ обмен по этому месту. В установившемся
 // режиме он давно дочитал, поэтому ожидание почти бесплатно.
-__global__ void ar2_wait_free_kernel(const int* дочитано, const int* seq, int* срыв) {
-  const long потолок = 2000000000L;
-  const long t0 = clock64();
+__global__ void ar2_wait_free_kernel(const int* дочитано, const int* seq, int* срыв,
+                                     unsigned long long потолок_нс, int* стат) {
+  const unsigned long long t0 = ce_now_ns();
   const int нужно = *(volatile const int*)seq;   // до инкремента: номер ПРЕДЫДУЩЕГО обмена
   while (*(volatile const int*)дочитано < нужно) {
-    if (clock64() - t0 > потолок) { *(volatile int*)срыв = 2; return; }
+    if (ce_now_ns() - t0 > потолок_нс) { *(volatile int*)срыв = 2; ce_wait_note(стат, t0); return; }
   }
+  ce_wait_note(стат, t0);
 }
 
 __global__ void ar2_ack_kernel(int* peer_ack, const int* seq) {
@@ -519,7 +577,8 @@ static void ar2_all_reduce_out(at::Tensor y, at::Tensor out, at::Tensor recv,
   auto поток = at::cuda::getCurrentCUDAStream();
   // 0) убедиться, что сосед дочитал ПРЕДЫДУЩИЙ обмен по этому месту (счётчик ещё не рос)
   ar2_wait_free_kernel<<<1, 1, 0, поток>>>((const int*)my_ack.data_ptr(),
-                                           (const int*)seq.data_ptr(), (int*)срыв.data_ptr());
+                                           (const int*)seq.data_ptr(), (int*)срыв.data_ptr(),
+                                           ce_wait_ceiling_ns(), nullptr);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   ar2_bump_kernel<<<1, 1, 0, поток>>>((int*)seq.data_ptr());
   C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -533,7 +592,8 @@ static void ar2_all_reduce_out(at::Tensor y, at::Tensor out, at::Tensor recv,
       (int*)срыв.data_ptr() + 1, бл);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   ar2_wait_seq_kernel<<<1, 1, 0, поток>>>((const int*)my_flag.data_ptr(),
-                                          (const int*)seq.data_ptr(), (int*)срыв.data_ptr());
+                                          (const int*)seq.data_ptr(), (int*)срыв.data_ptr(),
+                                          ce_wait_ceiling_ns(), nullptr);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   const long n2 = y.numel() / 2;
   const int thr = 256;
@@ -559,7 +619,8 @@ static void ce_graph_send(at::Tensor own, int64_t peer_recv_ptr, at::Tensor my_a
   TORCH_CHECK(own.is_cuda() && own.is_contiguous() && seq.scalar_type() == at::kInt && my_ack.scalar_type() == at::kInt &&
               срыв.scalar_type() == at::kInt, "ce_graph_send: формы/типы");
   auto st = at::cuda::getCurrentCUDAStream();
-  ar2_wait_free_kernel<<<1, 1, 0, st>>>((const int*)my_ack.data_ptr(), (const int*)seq.data_ptr(), (int*)срыв.data_ptr());
+  ar2_wait_free_kernel<<<1, 1, 0, st>>>((const int*)my_ack.data_ptr(), (const int*)seq.data_ptr(), (int*)срыв.data_ptr(),
+                                        ce_wait_ceiling_ns(), ce_stat_ptr(срыв));
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   ar2_bump_kernel<<<1, 1, 0, st>>>((int*)seq.data_ptr());
   C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -571,7 +632,8 @@ static void ce_graph_send(at::Tensor own, int64_t peer_recv_ptr, at::Tensor my_a
 
 static void ce_graph_wait(at::Tensor my_flag, at::Tensor seq, at::Tensor срыв) {
   auto st = at::cuda::getCurrentCUDAStream();
-  ar2_wait_seq_kernel<<<1, 1, 0, st>>>((const int*)my_flag.data_ptr(), (const int*)seq.data_ptr(), (int*)срыв.data_ptr());
+  ar2_wait_seq_kernel<<<1, 1, 0, st>>>((const int*)my_flag.data_ptr(), (const int*)seq.data_ptr(), (int*)срыв.data_ptr(),
+                                       ce_wait_ceiling_ns(), ce_stat_ptr(срыв));
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -606,9 +668,9 @@ __device__ __forceinline__ void ar1_st_rel(int* p, int v) {
   asm volatile("st.release.sys.global.b32 [%0], %1;\n" :: "l"(p), "r"(v) : "memory");
 }
 __device__ __forceinline__ void ar1_wait(const int* p, int цель, int* срыв, int код) {
-  const long t0 = clock64();
+  const unsigned long long t0 = ce_now_ns(), потолок = ce_wait_ceiling_dev;   // [СРЫВ 04.11]
   while (ar1_ld_acq(p) < цель) {
-    if (clock64() - t0 > 2000000000L) { atomicExch(срыв, код); return; }
+    if (ce_now_ns() - t0 > потолок) { atomicExch(срыв, код); return; }
   }
 }
 
@@ -834,7 +896,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("ce_graph_ack", &ce_graph_ack, "[граф] «дочитано» соседу");
   m.def("ar2_signal", &ar2_signal, "поставить флаг готовности куска У СОСЕДА",
         pybind11::arg("peer_flag_ptr"), pybind11::arg("idx"), pybind11::arg("val"));
-  m.def("ar2_wait", &ar2_wait, "ждать флаг куска (с потолком по тактам)",
+  m.def("ce_sync_wait_ceiling", &ce_sync_wait_ceiling,
+        "[СРЫВ 04.11] потолок ожиданий AR1/AR1H/AR1LL на этой карте <- FA2SM80_EXCH_WAIT_MS (вне захвата)");
+  m.def("ar2_wait", &ar2_wait, "ждать флаг куска (с потолком FA2SM80_EXCH_WAIT_MS по стенным часам)",
         pybind11::arg("flags"), pybind11::arg("idx"), pybind11::arg("val"), pybind11::arg("срыв"));
   m.def("ar2_add", &ar2_add, "y += recv парами half2");
   m.def("ar2_all_reduce_out", &ar2_all_reduce_out,

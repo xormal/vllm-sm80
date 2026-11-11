@@ -58,17 +58,17 @@ __global__ __launch_bounds__(THR) void ar1ll_kernel(const uint32_t* __restrict__
   if (threadIdx.x == 0) {
     long last = (long)b * THR + THR - 1;
     if (last >= cells) last = cells - 1;
-    const long t0 = clock64();
+    const unsigned long long t0 = ce_now_ns(), потолок = ce_wait_ceiling_dev;   // [СРЫВ 04.11] стенные часы
     while (ld_vol4(peer_cells + par + last).w != e) {
-      if (clock64() - t0 > 2000000000L) { atomicExch(срыв, 3); break; }
+      if (ce_now_ns() - t0 > потолок) { atomicExch(срыв, 3); break; }
     }
   }
   __syncthreads();
   if (live) {
     uint4 r = ld_vol4(peer_cells + par + q);
-    const long t0 = clock64();
+    const unsigned long long t0 = ce_now_ns(), потолок = ce_wait_ceiling_dev;
     while (r.w != e) {
-      if (clock64() - t0 > 2000000000L) { atomicExch(срыв, 3); break; }
+      if (ce_now_ns() - t0 > потолок) { atomicExch(срыв, 3); break; }
       r = ld_vol4(peer_cells + par + q);
     }
     out[3 * q] = add2(d0, r.x);
